@@ -19,7 +19,7 @@ fn logical_path_enforces_depth() {
 
 #[test]
 fn token_estimate_is_explicitly_approximate() {
-    let value = estimate_tokens("123456789").expect("estimate");
+    let value = estimate_tokens("123456789".to_string()).expect("estimate");
     assert_eq!(value.method, "local_estimate");
     assert!(value.approximate);
     assert_eq!(value.count, 3);
