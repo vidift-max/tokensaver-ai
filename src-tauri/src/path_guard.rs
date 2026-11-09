@@ -143,10 +143,18 @@ fn save_roots(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()> {
     fs::rename(&tmp,&path).map_err(|_|{let _=fs::remove_file(&tmp);AppError::new("STORAGE_ERROR","Não foi possível finalizar as áreas de importação.")})
 }
 
+fn is_forbidden_link_name(path:&Path)->bool {
+    path.file_name()
+        .and_then(|name|name.to_str())
+        .map(|name|name.eq_ignore_ascii_case("import_roots.json") || name.ends_with(".lnk") || name.ends_with(".url"))
+        .unwrap_or(false)
+}
+
 pub fn add_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>> {
     if path.len()>4096{return Err(AppError::new("PATH_NOT_ALLOWED","Caminho de importação muito longo."));}
     let p=PathBuf::from(path);
     if !p.is_absolute(){return Err(AppError::new("PATH_NOT_ALLOWED","A área de importação deve usar caminho absoluto."));}
+    if is_forbidden_link_name(&p){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não podem ser áreas de importação."));}
     let canonical=canonical_without_redirect(&p)?;
     if !canonical.is_dir(){return Err(AppError::new("INVALID_FILE","A área de importação deve ser um diretório."));}
     let mut roots=load_roots(app)?;
@@ -159,6 +167,7 @@ pub fn add_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>> {
 pub fn remove_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>> {
     let p=PathBuf::from(path);
     if !p.is_absolute(){return Err(AppError::new("PATH_NOT_ALLOWED","A área de importação deve usar caminho absoluto."));}
+    if is_forbidden_link_name(&p){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não podem ser áreas de importação."));}
     let mut roots=load_roots(app)?;
     roots.retain(|r|!same_path(Path::new(&r.path),&p));
     save_roots(app,&roots)?;
