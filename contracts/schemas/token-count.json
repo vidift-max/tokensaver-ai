@@ -1,0 +1,16 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"tokensaver://schemas/token-count.json",
+  "title":"Token Count",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["method","count","approximate"],
+  "properties":{
+    "method":{"type":"string","enum":["local_estimate","tokenizer","api_reported","provider_usage"]},
+    "count":{"type":"integer","minimum":0},
+    "approximate":{"type":"boolean"},
+    "provider":{"type":["string","null"]},
+    "model":{"type":["string","null"]},
+    "limitation":{"type":["string","null"]}
+  }
+}
