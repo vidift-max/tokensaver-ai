@@ -35,11 +35,31 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     let blob=root.join("blobs").join(&sha); let mut file=File::open(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
     let actual_len=file.metadata().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob do arquivo."))?.len(); if actual_len!=total as u64{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
     if offset>=total{return Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset:total,data:String::new(),eof:true});}
+    let (data,next_offset,eof)=read_utf8_chunk(&mut file,offset,total,limit)?;
+    Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset,data,eof})
+}
+
+pub(crate) fn read_utf8_chunk(file:&mut File,offset:usize,total:usize,limit:usize)->AppResult<(String,usize,bool)>{
+    if offset>=total{return Ok((String::new(),total,true));}
     file.seek(SeekFrom::Start(offset as u64)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível posicionar a leitura."))?;
     let read_len=limit.min(total-offset); let mut buf=vec![0u8;read_len]; let mut filled=0usize;
     while filled<read_len{let n=file.read(&mut buf[filled..]).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler o blob do arquivo."))?; if n==0{break;} filled+=n;}
     buf.truncate(filled);
-    while !std::str::from_utf8(&buf).is_ok() && !buf.is_empty(){buf.pop();}
-    let data=std::str::from_utf8(&buf).map_err(|_|AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."))?.to_owned();
-    let next_offset=offset+buf.len(); Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset,data,eof:next_offset>=total})
+    loop{
+        match std::str::from_utf8(&buf){
+            Ok(_)=>break,
+            Err(e)=>{
+                let valid=e.valid_up_to();
+                if valid>0{buf.truncate(valid);break;}
+                if e.error_len().is_some(){return Err(AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."));}
+                let mut b=[0u8;1];
+                let n=file.read(&mut b).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler o blob do arquivo."))?;
+                if n==0{return Err(AppError::new("STORAGE_ERROR","O conteúdo armazenado está truncado."));}
+                buf.push(b[0]);
+            }
+        }
+    }
+    let data=String::from_utf8(buf).map_err(|_|AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."))?;
+    let next_offset=offset+data.len();
+    Ok((data,next_offset,next_offset>=total))
 }

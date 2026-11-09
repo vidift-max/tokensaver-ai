@@ -166,3 +166,31 @@ fn future_schema_version_is_rejected_with_migration_error() {
     assert_eq!(err.code, "MIGRATION_ERROR");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn utf8_chunk_pagination_guarantees_progress_and_exact_reconstruction() {
+    let original = "açé\u{1F600} texto com acentos e emoji \u{1F680} fim";
+    let dir = std::env::temp_dir().join(format!("tokensaver-utf8-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let blob_path = dir.join("blob");
+    std::fs::write(&blob_path, original.as_bytes()).expect("write blob");
+    let total = original.len();
+    for limit in [1usize, 2, 3, 7, 64] {
+        let mut file = std::fs::File::open(&blob_path).expect("open blob");
+        let mut offset = 0usize;
+        let mut rebuilt = String::new();
+        let mut steps = 0usize;
+        loop {
+            let (data, next_offset, eof) =
+                file_center::read_utf8_chunk(&mut file, offset, total, limit).expect("chunk");
+            assert!(next_offset > offset, "paginação sem progresso (limit={limit})");
+            rebuilt.push_str(&data);
+            offset = next_offset;
+            steps += 1;
+            assert!(steps <= total + 1, "loop sem fim detectado (limit={limit})");
+            if eof { break; }
+        }
+        assert_eq!(rebuilt, original, "reconstrução exata falhou (limit={limit})");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
