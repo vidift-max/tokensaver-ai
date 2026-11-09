@@ -64,3 +64,13 @@ pub(crate) fn read_utf8_chunk(file:&mut File,offset:usize,total:usize,limit:usiz
     let next_offset=offset+data.len();
     Ok((data,next_offset,next_offset>=total))
 }
+
+pub(crate) fn verify_blob_integrity(file:&mut File, expected_sha:&str, expected_len:usize)->AppResult<()> {
+    file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível posicionar a verificação do blob."))?;
+    let mut data=Vec::with_capacity(expected_len);
+    file.take(expected_len as u64 + 1).read_to_end(&mut data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar a integridade do blob."))?;
+    if data.len()!=expected_len{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
+    if hash::sha256_bytes(&data)!=expected_sha{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está corrompido."));}
+    file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível reposicionar o blob."))?;
+    Ok(())
+}
