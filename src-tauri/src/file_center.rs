@@ -72,7 +72,7 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     let actual_len=file.metadata().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob do arquivo."))?.len();
     if actual_len != total as u64 { return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente.")); }
     file.seek(SeekFrom::Start(offset as u64)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível posicionar a leitura."))?;
-    let read_len=(limit).min(total-offset);
+    let read_len=limit.min(total-offset);
     let mut buf=vec![0u8;read_len];
     let mut filled=0usize;
     while filled<read_len {
@@ -83,5 +83,5 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     buf.truncate(filled);
     let end=offset+filled;
     let data=std::str::from_utf8(&buf).map_err(|_|AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."))?.to_owned();
-    Ok(FileChunk{file_id,version_no,sha256,byte_len,offset,data,eof:end>=total})
+    Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,data,eof:end>=total})
 }
