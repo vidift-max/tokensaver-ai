@@ -234,7 +234,7 @@ fn import_text_file(
                 |r| r.get(0),
             )
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível verificar a versão atual."))?;
-        if same == sha {
+        if same.as_deref() == Some(sha.as_str()) {
             return Ok(sha);
         }
     }
