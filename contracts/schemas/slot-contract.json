@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"tokensaver://schemas/slot-contract.json",
+  "title":"Content Slot",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["id","type"],
+  "properties":{
+    "id":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
+    "type":{"type":"string","enum":["rich_text","section","component","carousel","internal_links","image","table"]}
+  }
+}
