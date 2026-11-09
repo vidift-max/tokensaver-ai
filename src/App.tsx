@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 
 const modules = [
-  "Dashboard","File Center","Token Counter","Smart Context","Safe Optimizer",
-  "Project Memory","Claude Connection","Template Master","Editorial Engine",
-  "Article Library","Internal Links","Final Page Builder","OneShot Capture",
-  "Cost Simulator","Integrity Guardian","Settings","History"
+  {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
+  {name:"Smart Context",ready:false},{name:"Safe Optimizer",ready:false},{name:"Project Memory",ready:false},
+  {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
+  {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
+  {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:false},
+  {name:"Settings",ready:true},{name:"History",ready:false}
 ];
 
 type FileRow = { id:string; logical_path:string; latest_version:number; byte_len:number; sha256:string };
@@ -21,6 +23,11 @@ export default function App() {
   const [rootInput, setRootInput] = useState("");
   const [rootBusy, setRootBusy] = useState(false);
 
+  function errorMessage(error: unknown, fallback: string) {
+    const normalized = api.normalizeError(error);
+    return normalized.code === "INTERNAL_ERROR" ? fallback : `[${normalized.code}] ${normalized.message}`;
+  }
+
   useEffect(() => {
     api.health().then(() => setBackend("online")).catch(() => setBackend("offline"));
     loadImportRoots();
@@ -31,7 +38,7 @@ export default function App() {
       const roots = await api.listImportRoots();
       setImportRoots(roots);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Não foi possível carregar as áreas de importação.");
+      setError(errorMessage(e, "Não foi possível carregar as áreas de importação."));
     }
   }
 
@@ -45,7 +52,7 @@ export default function App() {
       setImportRoots(roots);
       setRootInput("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Não foi possível autorizar a área de importação.");
+      setError(errorMessage(e, "Não foi possível autorizar a área de importação."));
     } finally {
       setRootBusy(false);
     }
@@ -58,7 +65,7 @@ export default function App() {
       const roots = await api.removeImportRoot(path);
       setImportRoots(roots);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Não foi possível remover a área de importação.");
+      setError(errorMessage(e, "Não foi possível remover a área de importação."));
     } finally {
       setRootBusy(false);
     }
@@ -72,7 +79,7 @@ export default function App() {
       const page = await api.listProjectFiles(projectId, 0, 50);
       setFiles(page.items);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Não foi possível carregar os arquivos.");
+      setError(errorMessage(e, "Não foi possível carregar os arquivos."));
     } finally {
       setLoadingFiles(false);
     }
@@ -82,7 +89,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span>TS</span><div><strong>TokenSaver</strong><small>AI Foundation</small></div></div>
-        <nav>{modules.map(m => <button className={active===m ? "active" : ""} onClick={() => setActive(m)} key={m}>{m}</button>)}</nav>
+        <nav>{modules.map(m => <button className={active===m.name ? "active" : ""} onClick={() => m.ready && setActive(m.name)} disabled={!m.ready} key={m.name}>{m.name}{!m.ready && " · futuro"}</button>)}</nav>
       </aside>
       <section className="content">
         <header>
