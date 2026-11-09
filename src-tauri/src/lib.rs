@@ -94,7 +94,7 @@ fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,s
         let token_count=((String::from_utf8_lossy(&bytes).chars().count() as f64)/4.0).ceil() as i64;
         tx.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,provider,model,limitation,created_at) VALUES(?1,?2,'local_estimate',?3,1,NULL,NULL,?4,?5)",rusqlite::params![Uuid::new_v4().to_string(),version_id,token_count,"Estimativa local por caracteres; não substitui a contagem do provedor.",now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar a contagem de tokens."))?;
         tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a importação."))?;
-        Ok(sha)
+        Ok(sha.clone())
     })();
     if result.is_err() && blob_created{
         let blob_abs=root.join(&blob_rel);
