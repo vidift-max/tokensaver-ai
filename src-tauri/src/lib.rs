@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod error;
+mod file_center;
 mod hash;
 mod limits;
 
