@@ -1,0 +1,22 @@
+name: TokenSaver AI CI
+
+on:
+  push:
+    branches: [v2-saas-alpha]
+  pull_request:
+    branches: [v2-saas-alpha]
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: npm ci
+      - run: npm run build
