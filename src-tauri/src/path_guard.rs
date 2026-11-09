@@ -68,7 +68,7 @@ fn is_within(root:&Path,candidate:&Path)->bool {
     loop {
         match (r.next(),c.next()) {
             (None,_)=>true,
-            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} true }
+            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} continue; }
             (Some(_),None)=>false,
         }
     }
@@ -89,7 +89,17 @@ fn identity(file:&File)->AppResult<FileIdentity> {
     #[cfg(unix)]
     { use std::os::unix::fs::MetadataExt; return Ok(FileIdentity::Unix{dev:metadata.dev(),ino:metadata.ino()}); }
     #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt; let volume=metadata.volume_serial_number().ok_or_else(||AppError::new("PATH_NOT_ALLOWED","Não foi possível obter a identidade segura do arquivo."))?; let index=metadata.file_index().ok_or_else(||AppError::new("PATH_NOT_ALLOWED","Não foi possível obter a identidade segura do arquivo."))?; return Ok(FileIdentity::Windows{volume,index}); }
+    {
+        use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let mut info=MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok=unsafe{GetFileInformationByHandle(file.as_raw_handle(),info.as_mut_ptr())};
+        if ok==0{return Err(AppError::new("PATH_NOT_ALLOWED","Não foi possível obter a identidade segura do arquivo."));}
+        let info=unsafe{info.assume_init()};
+        let index=((info.nFileIndexHigh as u64)<<32)|(info.nFileIndexLow as u64);
+        if index==0{return Err(AppError::new("PATH_NOT_ALLOWED","Não foi possível obter a identidade segura do arquivo."));}
+        return Ok(FileIdentity::Windows{volume:info.dwVolumeSerialNumber,index});
+    }
     #[cfg(not(any(unix,windows)))]
     { Err(AppError::new("PATH_NOT_ALLOWED","A plataforma não oferece identidade segura de arquivo.")) }
 }
