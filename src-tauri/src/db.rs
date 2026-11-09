@@ -8,15 +8,15 @@ pub fn open(path: &Path) -> Result<Connection> {
         std::fs::create_dir_all(parent)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     }
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    migrate(&conn)?;
+    migrate(&mut conn)?;
     Ok(conn)
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
+fn migrate(conn: &mut Connection) -> Result<()> {
     let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if current > SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
