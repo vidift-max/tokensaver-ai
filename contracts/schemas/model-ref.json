@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"tokensaver://schemas/model-ref.json",
+  "title":"Provider Model Reference",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["provider","model"],
+  "properties":{
+    "provider":{"type":"string","enum":["anthropic","openai","google","kimi","mock"]},
+    "model":{"type":"string","minLength":1}
+  }
+}
