@@ -68,7 +68,7 @@ fn is_within(root:&Path,candidate:&Path)->bool {
     loop {
         match (r.next(),c.next()) {
             (None,_)=>true,
-            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} continue; }
+            (Some(rc),Some(cc))=>if component_eq(&rc,&cc){continue}else{return false},
             (Some(_),None)=>false,
         }
     }
