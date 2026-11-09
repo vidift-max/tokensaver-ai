@@ -54,18 +54,21 @@ fn same_path(a:&Path,b:&Path)->bool {
     { a==b }
 }
 
+#[cfg(windows)]
+fn component_eq(a:&Component<'_>,b:&Component<'_>)->bool {
+    a.as_os_str().to_string_lossy().eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn component_eq(a:&Component<'_>,b:&Component<'_>)->bool { a==b }
+
 fn is_within(root:&Path,candidate:&Path)->bool {
     let mut r=root.components();
     let mut c=candidate.components();
     loop {
         match (r.next(),c.next()) {
             (None,_)=>true,
-            (Some(rc),Some(cc))=>{
-                #[cfg(windows)]
-                { if rc.as_os_str().to_string_lossy().to_ascii_lowercase()!=cc.as_os_str().to_string_lossy().to_ascii_lowercase(){return false;} }
-                #[cfg(not(windows))]
-                { if rc!=cc{return false;} true }
-            }
+            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} }
             (Some(_),None)=>false,
         }
     }
