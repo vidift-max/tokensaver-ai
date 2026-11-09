@@ -39,3 +39,24 @@ A branch ativa de desenvolvimento é `v2-saas-alpha`. Esta etapa inicial cria so
 - `storage/` — política de blobs e versões
 - `tests/` — plano de testes
 - `templates/` — fronteira futura do Template Master
+
+## Foundation status
+
+Current branch: `v2-saas-alpha`.
+
+Implemented in the foundation:
+
+- Tauri 2 desktop shell with React + TypeScript.
+- Rust backend with SQLite WAL and transactional schema migration.
+- Content-addressed project blobs using SHA-256.
+- Immutable logical-file versions with duplicate-content reuse.
+- Centralized file/batch/path limits.
+- Stable IPC error contract.
+- UTF-8 validation and sanitized storage/database errors.
+- Paginated File Center listing and streamed blob reads.
+- Explicit approximate token estimation metadata.
+- Rust regression tests for paths, token estimates and migrations.
+- GitHub Actions CI for Rust and frontend builds.
+- File Center UI connected to the real backend health/project index.
+
+The CI workflow is intentionally part of the repository so every subsequent module is checked before we move toward Claude, optimization and editorial layers.
