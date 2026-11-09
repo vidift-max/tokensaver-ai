@@ -194,3 +194,20 @@ fn utf8_chunk_pagination_guarantees_progress_and_exact_reconstruction() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn token_count_schema_accepts_local_estimate_metadata() {
+    let dir = std::env::temp_dir().join(format!("tokensaver-token-count-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let conn = db::open(&dir.join("db.sqlite")).expect("database");
+    conn.execute("INSERT INTO projects(id,name,created_at) VALUES('p','p','1')", []).expect("project");
+    let file_id=uuid::Uuid::new_v4().to_string();
+    let version_id=uuid::Uuid::new_v4().to_string();
+    conn.execute("INSERT INTO files(id,project_id,logical_path,created_at) VALUES(?1,'p','a.md','1')",rusqlite::params![file_id]).expect("file");
+    conn.execute("INSERT INTO blobs(sha256,byte_len,relative_path,created_at) VALUES('s',1,'blobs/s','1')",[]).expect("blob");
+    conn.execute("INSERT INTO file_versions(id,file_id,version_no,blob_sha256,byte_len,created_at) VALUES(?1,?2,1,'s',1,'1')",rusqlite::params![version_id,file_id]).expect("version");
+    conn.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,limitation,created_at) VALUES('t',?1,'local_estimate',1,1,'approx','1')",rusqlite::params![version_id]).expect("count");
+    let row:(String,i64,i64)=conn.query_row("SELECT method,count,approximate FROM token_counts WHERE file_version_id=?1",rusqlite::params![version_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("query");
+    assert_eq!(row,("local_estimate".into(),1,1));
+    drop(conn); let _=std::fs::remove_dir_all(dir);
+}
