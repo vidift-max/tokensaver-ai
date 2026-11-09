@@ -17,10 +17,52 @@ export default function App() {
   const [files, setFiles] = useState<FileRow[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [error, setError] = useState("");
+  const [importRoots, setImportRoots] = useState<{path:string}[]>([]);
+  const [rootInput, setRootInput] = useState("");
+  const [rootBusy, setRootBusy] = useState(false);
 
   useEffect(() => {
     api.health().then(() => setBackend("online")).catch(() => setBackend("offline"));
+    loadImportRoots();
   }, []);
+
+  async function loadImportRoots() {
+    try {
+      const roots = await api.listImportRoots();
+      setImportRoots(roots);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Não foi possível carregar as áreas de importação.");
+    }
+  }
+
+  async function addImportRoot() {
+    const path = rootInput.trim();
+    if (!path) return;
+    setRootBusy(true);
+    setError("");
+    try {
+      const roots = await api.addImportRoot(path);
+      setImportRoots(roots);
+      setRootInput("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Não foi possível autorizar a área de importação.");
+    } finally {
+      setRootBusy(false);
+    }
+  }
+
+  async function removeImportRoot(path: string) {
+    setRootBusy(true);
+    setError("");
+    try {
+      const roots = await api.removeImportRoot(path);
+      setImportRoots(roots);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Não foi possível remover a área de importação.");
+    } finally {
+      setRootBusy(false);
+    }
+  }
 
   async function loadFiles() {
     setLoadingFiles(true);
@@ -60,6 +102,16 @@ export default function App() {
             <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
             {error && <p className="error">{error}</p>}
             {files.length === 0 ? <p className="muted">Nenhum arquivo importado ainda.</p> : <div className="file-list">{files.map(file => <div className="file-row" key={file.id}><strong>{file.logical_path}</strong><span>v{file.latest_version} · {file.byte_len} bytes · {file.sha256.slice(0,12)}…</span></div>)}</div>}
+          </section>
+        ) : active === "Settings" ? (
+          <section className="panel">
+            <div className="panel-head"><div><h2>Áreas de importação autorizadas</h2><p className="muted">Somente arquivos dentro destas pastas podem ser importados. Links, junctions, UNC e atalhos são rejeitados pelo backend.</p></div><button className="primary" onClick={loadImportRoots} disabled={rootBusy}>Atualizar</button></div>
+            <div className="project-row">
+              <label style={{flex:1}}>Caminho absoluto <input value={rootInput} onChange={e=>setRootInput(e.target.value)} placeholder="C:\\Projetos\\MeuProjeto" onKeyDown={e=>{if(e.key==="Enter") void addImportRoot();}} /></label>
+              <button className="primary" onClick={addImportRoot} disabled={rootBusy || !rootInput.trim()}>{rootBusy ? "Salvando..." : "Autorizar pasta"}</button>
+            </div>
+            {error && <p className="error">{error}</p>}
+            {importRoots.length === 0 ? <p className="muted">Nenhuma área autorizada. Configure pelo menos uma pasta antes de importar arquivos.</p> : <div className="file-list">{importRoots.map(root => <div className="file-row" key={root.path}><strong>{root.path}</strong><button onClick={() => void removeImportRoot(root.path)} disabled={rootBusy}>Remover</button></div>)}</div>}
           </section>
         ) : (
           <section className="panel"><h2>Fundação funcional</h2><p>O backend Rust já expõe saúde, SHA-256, estimativa de tokens, inicialização de projeto, importação e leitura paginada de arquivos. Os módulos avançados serão ativados sobre esses contratos, sem enviar conteúdo para APIs externas nesta fase.</p></section>
