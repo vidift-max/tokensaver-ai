@@ -211,3 +211,22 @@ fn token_count_schema_accepts_local_estimate_metadata() {
     assert_eq!(row,("local_estimate".into(),1,1));
     drop(conn); let _=std::fs::remove_dir_all(dir);
 }
+
+
+#[test]
+fn read_blob_integrity_detects_same_size_corruption() {
+    let dir = std::env::temp_dir().join(format!("tokensaver-integrity-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("blob");
+    let original = b"same-size-original";
+    std::fs::write(&path, original).expect("write");
+    let mut file = std::fs::File::open(&path).expect("open");
+    let sha = hash::sha256_bytes(original);
+    file_center::verify_blob_integrity(&mut file, &sha, original.len()).expect("valid blob");
+    drop(file);
+    std::fs::write(&path, b"same-size-mutated").expect("mutate");
+    let mut file = std::fs::File::open(&path).expect("reopen");
+    let err = file_center::verify_blob_integrity(&mut file, &sha, original.len()).expect_err("corruption must be detected");
+    assert_eq!(err.code, "STORAGE_ERROR");
+    let _ = std::fs::remove_dir_all(dir);
+}
