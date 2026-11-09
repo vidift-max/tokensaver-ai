@@ -1,7 +1,7 @@
 use crate::{db, error::{AppError, AppResult}, limits};
 use rusqlite::params;
 use serde::Serialize;
-use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};
+use std::{fs::File, io::{Read, Seek, SeekFrom}, path::PathBuf};
 use tauri::Manager;
 
 #[derive(Debug, Serialize)]
@@ -62,14 +62,26 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     if version_no <= 0 { return Err(AppError::new("INVALID_REQUEST", "version_no inválido.")); }
     let limit=limit.clamp(1, limits::MAX_FILE_BYTES as usize);
     let root=project_root(&app,&project_id)?;
-    let conn=db::open(&root.join("db.sqlite")).map_err(|_| AppError::new("DATABASE_ERROR","Não foi possível abrir o banco do projeto."))?;
+    let conn=db::open(&root.join("db.sqlite")).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível abrir o banco do projeto."))?;
     let (sha, byte_len):(String,i64)=conn.query_row("SELECT v.blob_sha256,v.byte_len FROM file_versions v JOIN files f ON f.id=v.file_id WHERE v.file_id=?1 AND v.version_no=?2 AND f.project_id=?3",params![file_id,version_no,project_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|AppError::new("FILE_NOT_FOUND","Versão do arquivo não encontrada."))?;
-    if offset >= byte_len.max(0) as usize { return Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,data:String::new(),eof:true}); }
+    if byte_len < 0 { return Err(AppError::new("STORAGE_ERROR","Tamanho do arquivo está inconsistente.")); }
+    let total=byte_len as usize;
+    if offset >= total { return Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,data:String::new(),eof:true}); }
     let blob=root.join("blobs").join(&sha);
-    let bytes=fs::read(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
-    if bytes.len() as i64 != byte_len { return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente.")); }
-    let end=(offset+limit).min(bytes.len());
-    let slice=&bytes[offset..end];
-    let data=std::str::from_utf8(slice).map_err(|_|AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."))?.to_owned();
-    Ok(FileChunk{file_id,version_no,sha256,byte_len,offset,data,eof:end>=bytes.len()})
+    let mut file=File::open(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
+    let actual_len=file.metadata().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob do arquivo."))?.len();
+    if actual_len != total as u64 { return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente.")); }
+    file.seek(SeekFrom::Start(offset as u64)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível posicionar a leitura."))?;
+    let read_len=(limit).min(total-offset);
+    let mut buf=vec![0u8;read_len];
+    let mut filled=0usize;
+    while filled<read_len {
+        let n=file.read(&mut buf[filled..]).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler o blob do arquivo."))?;
+        if n==0 { break; }
+        filled+=n;
+    }
+    buf.truncate(filled);
+    let end=offset+filled;
+    let data=std::str::from_utf8(&buf).map_err(|_|AppError::new("ENCODING_INVALID","O conteúdo armazenado não é UTF-8 válido."))?.to_owned();
+    Ok(FileChunk{file_id,version_no,sha256,byte_len,offset,data,eof:end>=total})
 }

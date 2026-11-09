@@ -34,6 +34,8 @@
         "installMode": "currentUser"
       }
     },
-    "icon": []
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }
