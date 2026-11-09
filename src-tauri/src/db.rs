@@ -1,28 +1,39 @@
-use rusqlite::{Connection, Result, TransactionBehavior};
+use crate::error::{AppError, AppResult};
+use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
 pub const SCHEMA_VERSION: i32 = 1;
 
-pub fn open(path: &Path) -> Result<Connection> {
+pub fn open(path: &Path) -> AppResult<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível preparar o diretório do banco."))?;
     }
-    let mut conn = Connection::open(path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let mut conn = Connection::open(path)
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível abrir o banco do projeto."))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível configurar o banco do projeto."))?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível configurar o banco do projeto."))?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível configurar o banco do projeto."))?;
     migrate(&mut conn)?;
     Ok(conn)
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
-    let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+fn migrate(conn: &mut Connection) -> AppResult<()> {
+    let current: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível verificar a versão do banco."))?;
     if current > SCHEMA_VERSION {
-        return Err(rusqlite::Error::InvalidQuery);
+        return Err(AppError::with_details(
+            "MIGRATION_ERROR",
+            "O banco foi criado por uma versão mais recente do aplicativo.",
+            serde_json::json!({"supported_version": SCHEMA_VERSION, "found_version": current}),
+        ));
     }
     if current == 0 {
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
         tx.execute_batch(r#"
 CREATE TABLE IF NOT EXISTS projects (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL
@@ -56,9 +67,11 @@ CREATE TABLE IF NOT EXISTS operations (
 );
 CREATE INDEX IF NOT EXISTS idx_file_versions_file_version ON file_versions(file_id, version_no);
 CREATE INDEX IF NOT EXISTS idx_token_counts_version ON token_counts(file_version_id);
-"#)?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        tx.commit()?;
+"#).map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível criar o esquema do banco."))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
+        tx.commit()
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
     }
     Ok(())
 }

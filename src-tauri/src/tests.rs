@@ -152,3 +152,17 @@ fn batch_limits_are_enforced() {
     assert!(commands::validate_batch(1, limits::MAX_BATCH_BYTES + 1).is_err());
     assert!(commands::validate_batch(1, limits::MAX_BATCH_BYTES).is_ok());
 }
+
+#[test]
+fn future_schema_version_is_rejected_with_migration_error() {
+    let dir = std::env::temp_dir().join(format!("tokensaver-future-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("db.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("raw connection");
+        conn.pragma_update(None, "user_version", 99_i32).expect("set future version");
+    }
+    let err = db::open(&db_path).expect_err("schema futuro deve ser rejeitado");
+    assert_eq!(err.code, "MIGRATION_ERROR");
+    let _ = std::fs::remove_dir_all(dir);
+}

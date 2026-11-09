@@ -19,7 +19,7 @@ fn project_root(app: &tauri::AppHandle, project_id: &str) -> AppResult<PathBuf> 
 #[tauri::command]
 pub fn list_project_files(app: tauri::AppHandle, project_id: String, offset: usize, limit: usize) -> AppResult<Page<FileSummary>> {
     let limit=limit.clamp(1,100); let root=project_root(&app,&project_id)?;
-    let conn=db::open(&root.join("db.sqlite")).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível abrir o banco do projeto."))?;
+    let conn=db::open(&root.join("db.sqlite"))?;
     let mut stmt=conn.prepare("SELECT f.id,f.logical_path,COALESCE(v.version_no,0),COALESCE(v.byte_len,0),COALESCE(v.blob_sha256,'') FROM files f LEFT JOIN file_versions v ON v.file_id=f.id AND v.version_no=(SELECT MAX(v2.version_no) FROM file_versions v2 WHERE v2.file_id=f.id) WHERE f.project_id=?1 ORDER BY f.logical_path LIMIT ?2 OFFSET ?3").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar os arquivos."))?;
     let rows=stmt.query_map(params![project_id,limit as i64+1,offset as i64],|r|Ok(FileSummary{id:r.get(0)?,logical_path:r.get(1)?,latest_version:r.get(2)?,byte_len:r.get(3)?,sha256:r.get(4)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar os arquivos."))?;
     let mut items=Vec::new(); for row in rows.take(limit+1){items.push(row.map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler o índice de arquivos."))?);} let has_more=items.len()>limit; if has_more{items.truncate(limit);} Ok(Page{items,offset,limit,has_more})
