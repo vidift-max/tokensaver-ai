@@ -91,12 +91,12 @@ fn estimate_tokens(input: String) -> AppResult<TokenEstimate> {
 fn initialize_project(app: tauri::AppHandle, project_id: String) -> AppResult<ProjectInfo> {
     safe_project_id(&project_id)?;
     let root = app.path().app_data_dir()
-        .map_err(|e| AppError::with_details("STORAGE_ERROR", "Não foi possível localizar o armazenamento.", serde_json::json!({"reason": e.to_string()})))?
+        .map_err(|e| AppError::with_details("STORAGE_ERROR", "Não foi possível localizar o armazenamento.", serde_json::json!({})))?
         .join("storage").join("projects").join(&project_id);
     fs::create_dir_all(root.join("blobs"))
-        .map_err(|e| AppError::new("STORAGE_ERROR", &e.to_string()))?;
+        .map_err(|e| AppError::new("STORAGE_ERROR", "Não foi possível gravar no armazenamento."))?;
     let db_path = root.join("db.sqlite");
-    db::open(&db_path).map_err(|e| AppError::new("DATABASE_ERROR", &e.to_string()))?;
+    db::open(&db_path).map_err(|e| AppError::new("DATABASE_ERROR", "Não foi possível atualizar o banco do projeto."))?;
     Ok(ProjectInfo { id: project_id, path: root.to_string_lossy().into_owned() })
 }
 
@@ -112,7 +112,7 @@ fn import_text_file(app: tauri::AppHandle, project_id: String, logical_path: Str
     if meta.len() > limits::MAX_FILE_BYTES {
         return Err(AppError::with_details("FILE_TOO_LARGE", "O arquivo excede o limite permitido.", serde_json::json!({"limit_bytes": limits::MAX_FILE_BYTES, "actual_bytes": meta.len()})));
     }
-    let bytes = fs::read(&source).map_err(|e| AppError::new("INVALID_FILE", &e.to_string()))?;
+    let bytes = fs::read(&source).map_err(|e| AppError::new("INVALID_FILE", "Não foi possível ler o arquivo informado."))?;
     if std::str::from_utf8(&bytes).is_err() {
         return Err(AppError::new("ENCODING_INVALID", "O arquivo não é UTF-8 válido."));
     }
