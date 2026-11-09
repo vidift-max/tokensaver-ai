@@ -18,7 +18,7 @@ fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
         if let Some(Component::Prefix(prefix)) = absolute.components().next() {
             use std::path::Prefix;
             match prefix.kind() {
-                Prefix::Unc(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::DeviceNS(_) => {
+                Prefix::Unc(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::DeviceNS(_) => {
                     return Err(AppError::new("PATH_NOT_ALLOWED", "Caminhos UNC ou namespaces de dispositivo não são permitidos."));
                 }
                 _ => {}
@@ -68,7 +68,7 @@ fn is_within(root:&Path,candidate:&Path)->bool {
     loop {
         match (r.next(),c.next()) {
             (None,_)=>true,
-            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} }
+            (Some(rc),Some(cc))=>{ if !component_eq(&rc,&cc){return false;} true }
             (Some(_),None)=>false,
         }
     }
@@ -165,16 +165,17 @@ pub fn list_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
 
 pub fn open_verified(app:&tauri::AppHandle,source:&Path)->AppResult<File> {
     if source.as_os_str().is_empty() || !source.is_absolute(){return Err(AppError::new("PATH_NOT_ALLOWED","O caminho de importação deve ser absoluto."));}
+    let normalized_source=normalize_absolute(source)?;
     if source.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir)){return Err(AppError::new("PATH_NOT_ALLOWED","O caminho de importação não pode conter componentes relativos."));}
     if source.extension().and_then(|e|e.to_str()).map(|e|e.eq_ignore_ascii_case("lnk")||e.eq_ignore_ascii_case("url")).unwrap_or(false){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não são permitidos como arquivos de origem."));}
     let roots=load_roots(app)?;
     if roots.is_empty(){return Err(AppError::new("PATH_NOT_ALLOWED","Nenhuma área de importação autorizada foi configurada."));}
-    let canonical=fs::canonicalize(source).map_err(|_|AppError::new("FILE_NOT_FOUND","Arquivo não encontrado."))?;
+    let canonical=fs::canonicalize(&normalized_source).map_err(|_|AppError::new("FILE_NOT_FOUND","Arquivo não encontrado."))?;
     if roots.iter().any(|r|canonical_without_redirect(Path::new(&r.path)).is_err()){return Err(AppError::new("PATH_NOT_ALLOWED","Uma área de importação autorizada está inválida."));}
     if roots.iter().any(|r|same_path(Path::new(&r.path),&canonical)||is_within(Path::new(&r.path),&canonical))==false{return Err(AppError::new("PATH_NOT_ALLOWED","O arquivo está fora das áreas de importação autorizadas."));}
-    if !same_path(source,&canonical){return Err(AppError::new("PATH_NOT_ALLOWED","O caminho atravessa um link, junction ou redirecionamento."));}
+    if !same_path(&normalized_source,&canonical){return Err(AppError::new("PATH_NOT_ALLOWED","O caminho atravessa um link, junction ou redirecionamento."));}
     let expected_id=canonical_identity(&canonical)?;
-    let file=OpenOptions::new().read(true).open(source).map_err(|_|AppError::new("FILE_NOT_FOUND","Arquivo não encontrado."))?;
+    let file=OpenOptions::new().read(true).open(&normalized_source).map_err(|_|AppError::new("FILE_NOT_FOUND","Arquivo não encontrado."))?;
     let opened_id=identity(&file)?;
     if opened_id!=expected_id{return Err(AppError::new("PATH_NOT_ALLOWED","O arquivo foi alterado durante a validação."));}
     Ok(file)
