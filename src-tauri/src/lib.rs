@@ -157,7 +157,7 @@ fn import_text_file(app: tauri::AppHandle, project_id: String, logical_path: Str
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![health, sha256_text, estimate_tokens, initialize_project, import_text_file])
+        .invoke_handler(tauri::generate_handler![health, sha256_text, estimate_tokens, initialize_project, import_text_file, file_center::list_project_files, file_center::read_file_version])
         .setup(|app| {
             let _ = app.path();
             Ok(())
