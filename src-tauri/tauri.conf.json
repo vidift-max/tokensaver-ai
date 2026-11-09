@@ -10,10 +10,30 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{"title":"TokenSaver AI","width":1280,"height":800,"minWidth":960,"minHeight":640,"resizable":true}],
+    "windows": [
+      {
+        "title": "TokenSaver AI",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
-  "bundle": {"active":true,"targets":["nsis"],"windows":{"nsis":{"installMode":"currentUser"}}}
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "icon": []
+  }
 }
