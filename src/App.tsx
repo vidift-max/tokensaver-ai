@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "./api";
 
 const modules = [
   "Dashboard","File Center","Token Counter","Smart Context","Safe Optimizer",
@@ -7,8 +8,34 @@ const modules = [
   "Cost Simulator","Integrity Guardian","Settings","History"
 ];
 
+type FileRow = { id:string; logical_path:string; latest_version:number; byte_len:number; sha256:string };
+
 export default function App() {
   const [active, setActive] = useState("Dashboard");
+  const [backend, setBackend] = useState("checking");
+  const [projectId, setProjectId] = useState("default");
+  const [files, setFiles] = useState<FileRow[]>([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.health().then(() => setBackend("online")).catch(() => setBackend("offline"));
+  }, []);
+
+  async function loadFiles() {
+    setLoadingFiles(true);
+    setError("");
+    try {
+      await api.initializeProject(projectId);
+      const page = await api.listProjectFiles(projectId, 0, 50);
+      setFiles(page.items);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Não foi possível carregar os arquivos.");
+    } finally {
+      setLoadingFiles(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -16,13 +43,27 @@ export default function App() {
         <nav>{modules.map(m => <button className={active===m ? "active" : ""} onClick={() => setActive(m)} key={m}>{m}</button>)}</nav>
       </aside>
       <section className="content">
-        <header><div><p className="eyebrow">FOUNDATION / {active.toUpperCase()}</p><h1>{active}</h1><p className="muted">Base segura para economia de tokens, contexto determinístico e operações rastreáveis.</p></div><div className="status">● Foundation</div></header>
+        <header>
+          <div><p className="eyebrow">FOUNDATION / {active.toUpperCase()}</p><h1>{active}</h1><p className="muted">Base segura para economia de tokens, contexto determinístico e operações rastreáveis.</p></div>
+          <div className="status">{backend === "online" ? "● Backend online" : backend === "offline" ? "● Backend offline" : "● Verificando"}</div>
+        </header>
+
         <div className="cards">
-          <article><b>Projeto</b><strong>TokenSaver AI</strong><span>Arquitetura Tauri 2 + React + TypeScript + Rust + SQLite.</span></article>
-          <article><b>Integridade</b><strong>Original imutável</strong><span>Versões futuras usarão SHA-256 e armazenamento por conteúdo.</span></article>
-          <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Contagem sempre identificará método, modelo e limitações.</span></article>
+          <article><b>Projeto</b><strong>TokenSaver AI</strong><span>Tauri 2 + React + TypeScript + Rust + SQLite.</span></article>
+          <article><b>Integridade</b><strong>Original imutável</strong><span>Versões usam SHA-256 e armazenamento por conteúdo.</span></article>
+          <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Método, modelo e limitações acompanham cada contagem.</span></article>
         </div>
-        <section className="panel"><h2>Próxima etapa</h2><p>Foundation criada. O backend Rust, banco SQLite, contratos e operações de arquivos serão adicionados sem executar conteúdo importado.</p></section>
+
+        {active === "File Center" ? (
+          <section className="panel">
+            <div className="panel-head"><div><h2>Arquivos do projeto</h2><p className="muted">Índice paginado do armazenamento local.</p></div><button className="primary" onClick={loadFiles} disabled={loadingFiles}>{loadingFiles ? "Carregando..." : "Atualizar"}</button></div>
+            <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
+            {error && <p className="error">{error}</p>}
+            {files.length === 0 ? <p className="muted">Nenhum arquivo importado ainda.</p> : <div className="file-list">{files.map(file => <div className="file-row" key={file.id}><strong>{file.logical_path}</strong><span>v{file.latest_version} · {file.byte_len} bytes · {file.sha256.slice(0,12)}…</span></div>)}</div>}
+          </section>
+        ) : (
+          <section className="panel"><h2>Fundação funcional</h2><p>O backend Rust já expõe saúde, SHA-256, estimativa de tokens, inicialização de projeto, importação e leitura paginada de arquivos. Os módulos avançados serão ativados sobre esses contratos, sem enviar conteúdo para APIs externas nesta fase.</p></section>
+        )}
       </section>
     </main>
   );
