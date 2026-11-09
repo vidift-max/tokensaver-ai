@@ -1,6 +1,7 @@
 use crate::{error::{AppError, AppResult}, limits};
 use serde::{Deserialize, Serialize};
 use std::{fs::{self, File, OpenOptions}, path::{Component, Path, PathBuf}};
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRoot { pub path: String }
@@ -63,7 +64,7 @@ fn is_within(root:&Path,candidate:&Path)->bool {
                 #[cfg(windows)]
                 { if rc.as_os_str().to_string_lossy().to_ascii_lowercase()!=cc.as_os_str().to_string_lossy().to_ascii_lowercase(){return false;} }
                 #[cfg(not(windows))]
-                { if rc!=cc{return false;} }
+                { if rc!=cc{return false;} true }
             }
             (Some(_),None)=>false,
         }
