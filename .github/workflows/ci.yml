@@ -21,3 +21,17 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run build
+
+
+  foundation-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: npm install
+      - run: npm run build
