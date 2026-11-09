@@ -92,10 +92,10 @@ fn estimate_tokens(input: String) -> AppResult<TokenEstimate> {
 fn initialize_project(app: tauri::AppHandle, project_id: String) -> AppResult<ProjectInfo> {
     safe_project_id(&project_id)?;
     let root = app.path().app_data_dir()
-        .map_err(|e| AppError::with_details("STORAGE_ERROR", "Não foi possível localizar o armazenamento.", serde_json::json!({})))?
+        .map_err(|_| AppError::with_details("STORAGE_ERROR", "Não foi possível localizar o armazenamento.", serde_json::json!({})))?
         .join("storage").join("projects").join(&project_id);
     fs::create_dir_all(root.join("blobs"))
-        .map_err(|e| AppError::new("STORAGE_ERROR", "Não foi possível gravar no armazenamento."))?;
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível gravar no armazenamento."))?;
     let db_path = root.join("db.sqlite");
     db::open(&db_path).map_err(|e| AppError::new("DATABASE_ERROR", "Não foi possível atualizar o banco do projeto."))?;
     Ok(ProjectInfo { id: project_id, path: root.to_string_lossy().into_owned() })
@@ -119,11 +119,11 @@ fn import_text_file(app: tauri::AppHandle, project_id: String, logical_path: Str
     }
 
     let root = app.path().app_data_dir()
-        .map_err(|e| AppError::new("STORAGE_ERROR", &e.to_string()))?
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível acessar o armazenamento."))?
         .join("storage").join("projects").join(&project_id);
-    fs::create_dir_all(root.join("blobs")).map_err(|e| AppError::new("STORAGE_ERROR", &e.to_string()))?;
+    fs::create_dir_all(root.join("blobs")).map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível acessar o armazenamento."))?;
     let db_path = root.join("db.sqlite");
-    let conn = db::open(&db_path).map_err(|e| AppError::new("DATABASE_ERROR", &e.to_string()))?;
+    let conn = db::open(&db_path).map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível acessar o banco do projeto."))?;
 
     let sha = hash::sha256_bytes(&bytes);
     let blob_rel = format!("blobs/{}", sha);
@@ -136,7 +136,7 @@ fn import_text_file(app: tauri::AppHandle, project_id: String, logical_path: Str
 
     let now = format!("{:?}", std::time::SystemTime::now());
     conn.execute("INSERT OR IGNORE INTO projects(id,name,created_at) VALUES(?1,?2,?3)", rusqlite::params![project_id, project_id, now])
-        .map_err(|e| AppError::new("DATABASE_ERROR", &e.to_string()))?;
+        .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível acessar o banco do projeto."))?;
     conn.execute("INSERT OR IGNORE INTO blobs(sha256,byte_len,relative_path,created_at) VALUES(?1,?2,?3,?4)", rusqlite::params![sha, bytes.len() as i64, blob_rel, now])
         .map_err(|e| AppError::new("DATABASE_ERROR", &e.to_string()))?;
     let file_id = Uuid::new_v4().to_string();
