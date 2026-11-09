@@ -34,6 +34,7 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     if byte_len<0{return Err(AppError::new("STORAGE_ERROR","Tamanho do arquivo está inconsistente."));} let total=byte_len as usize;
     let blob=root.join("blobs").join(&sha); let mut file=File::open(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
     let actual_len=file.metadata().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob do arquivo."))?.len(); if actual_len!=total as u64{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
+    verify_blob_integrity(&mut file, &sha, total)?;
     if offset>=total{return Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset:total,data:String::new(),eof:true});}
     let (data,next_offset,eof)=read_utf8_chunk(&mut file,offset,total,limit)?;
     Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset,data,eof})
