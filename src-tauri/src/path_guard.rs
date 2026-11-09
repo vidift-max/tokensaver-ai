@@ -18,7 +18,7 @@ fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
         if let Some(Component::Prefix(prefix)) = absolute.components().next() {
             use std::path::Prefix;
             match prefix.kind() {
-                Prefix::Unc(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::DeviceNS(_) => {
+                Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::DeviceNS(_) => {
                     return Err(AppError::new("PATH_NOT_ALLOWED", "Caminhos UNC ou namespaces de dispositivo não são permitidos."));
                 }
                 _ => {}
@@ -66,11 +66,9 @@ fn is_within(root:&Path,candidate:&Path)->bool {
     let mut r=root.components();
     let mut c=candidate.components();
     loop {
-        match (r.next(),c.next()) {
-            (None,_)=>true,
-            (Some(rc),Some(cc))=>if component_eq(&rc,&cc){continue}else{return false},
-            (Some(_),None)=>false,
-        }
+        let rc=match r.next(){Some(value)=>value,None=>return true};
+        let cc=match c.next(){Some(value)=>value,None=>return false};
+        if !component_eq(&rc,&cc){return false;}
     }
 }
 
