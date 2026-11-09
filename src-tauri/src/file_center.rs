@@ -1,7 +1,8 @@
 use crate::{db, error::{AppError, AppResult}, limits};
 use rusqlite::params;
 use serde::Serialize;
-use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};\nuse tauri::Manager;
+use std::{fs, io::{Read, Seek, SeekFrom}, path::PathBuf};
+use tauri::Manager;
 
 #[derive(Debug, Serialize)]
 pub struct FileSummary {
