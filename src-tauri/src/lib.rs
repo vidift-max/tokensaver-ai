@@ -85,7 +85,7 @@ fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,s
             let same:Option<String>=tx.query_row("SELECT blob_sha256 FROM file_versions WHERE file_id=?1 AND version_no=?2",rusqlite::params![actual_file_id,last],|r|r.get(0)).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível verificar a versão atual."))?;
             if same.as_deref()==Some(sha.as_str()){
                 tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a importação."))?;
-                return Ok(sha);
+                return Ok(sha.clone());
             }
         }
         let next=last+1;
