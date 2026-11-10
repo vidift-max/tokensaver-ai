@@ -125,7 +125,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn limited_copy_rejects_oversized_source() {
         let root = temp_dir();
         fs::create_dir_all(&root).unwrap();
