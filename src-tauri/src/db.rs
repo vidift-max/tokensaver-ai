@@ -138,6 +138,25 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    #[test]
+    fn v3_migration_scopes_project_memory() {
+        let path = std::env::temp_dir().join(format!(
+            "tokensaver-db-v3-{}.sqlite",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let mut conn = Connection::open(&path).expect("open");
+        conn.execute_batch("CREATE TABLE project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL); INSERT INTO project_memory VALUES ('legacy','value','1'); CREATE TABLE operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, created_at TEXT NOT NULL, finished_at TEXT, error_code TEXT); PRAGMA user_version=3;").expect("prepare v3");
+        migrate(&mut conn).expect("migrate");
+        let version:i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let project_id:String = conn.query_row("SELECT project_id FROM project_memory WHERE key='legacy'",[],|r|r.get(0)).unwrap();
+        assert_eq!(project_id, "__legacy__");
+        let cols:i64 = conn.query_row("SELECT count(*) FROM pragma_table_info('operations') WHERE name='project_id'",[],|r|r.get(0)).unwrap();
+        assert_eq!(cols, 1);
+        drop(conn);
+        let _=std::fs::remove_file(path);
+    }
+
     fn v1_migration_creates_v2_extensions() {
         let path = std::env::temp_dir().join(format!(
             "tokensaver-db-migration-{}.sqlite",
