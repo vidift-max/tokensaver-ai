@@ -128,7 +128,6 @@ impl Drop for RootsLock {
             let mut ov: OVERLAPPED = std::mem::zeroed();
             let _ = UnlockFileEx(self.file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut ov);
         }
-        let _ = fs::remove_file(&self.path);
     }
 }
 
