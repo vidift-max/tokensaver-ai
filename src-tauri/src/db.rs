@@ -60,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
         tx.execute_batch(r#"
+ALTER TABLE operations ADD COLUMN project_id TEXT;
 CREATE TABLE project_memory_v4 (
  key TEXT NOT NULL,
  value TEXT NOT NULL,
@@ -183,7 +184,6 @@ mod tests {
         let _=std::fs::remove_file(path);
     }
 
-    #[test]
     #[test]
     fn v2_migration_scopes_legacy_project_memory() {
         let path = std::env::temp_dir().join(format!(
