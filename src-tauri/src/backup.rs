@@ -271,6 +271,14 @@ pub fn restore_project_backup(
     drop(stmt);
     drop(snapshot);
 
+    let backup_blobs_dir = canonical_backup.join("blobs");
+    let blobs_meta = fs::symlink_metadata(&backup_blobs_dir)
+        .map_err(|_| AppError::new("BACKUP_INVALID", "Pasta de blobs do backup ausente."))?;
+    if blobs_meta.file_type().is_symlink() || !blobs_meta.is_dir()
+        || backup_blobs_dir.canonicalize().ok().and_then(|p| p.parent().map(|v| v.to_path_buf())) != Some(canonical_backup.clone()) {
+        return Err(AppError::new("BACKUP_INVALID", "Pasta de blobs do backup inválida."));
+    }
+
     let mut manifest_blobs = std::collections::BTreeMap::new();
     for blob in &manifest.blobs {
         if blob.sha256.len() != 64 || !blob.sha256.bytes().all(|b| b.is_ascii_hexdigit())
@@ -278,7 +286,7 @@ pub fn restore_project_backup(
             || manifest_blobs.insert(blob.sha256.to_ascii_lowercase(), blob.byte_len).is_some() {
             return Err(AppError::new("BACKUP_INVALID", "Manifesto contém blob inválido ou duplicado."));
         }
-        let path = canonical_backup.join("blobs").join(&blob.file_name);
+        let path = backup_blobs_dir.join(&blob.file_name);
         let meta = fs::symlink_metadata(&path)
             .map_err(|_| AppError::new("BACKUP_CORRUPT", "Um blob do backup está ausente."))?;
         if meta.file_type().is_symlink() || !meta.is_file() {
