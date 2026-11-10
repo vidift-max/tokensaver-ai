@@ -64,6 +64,26 @@ pub fn publish_noreplace(stage: &Path, target: &Path) -> io::Result<()> {
 
 /// Hashes a regular file while enforcing a hard byte budget.
 /// The byte count is based on bytes actually read, not filesystem metadata.
+/// Copies a regular file while enforcing a hard byte budget and returning actual bytes copied.
+pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Result<u64> {
+    let mut input = File::open(source)?;
+    let mut output = File::create(target)?;
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = input.read(&mut buffer)?;
+        if n == 0 { break; }
+        total = total.checked_add(n as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "byte count overflow"))?;
+        if total > max_bytes {
+            return Err(io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds configured byte budget"));
+        }
+        std::io::Write::write_all(&mut output, &buffer[..n])?;
+    }
+    output.sync_all()?;
+    Ok(total)
+}
+
 pub fn sha256_file_limited(path: &Path, max_bytes: u64) -> io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -101,6 +121,19 @@ mod tests {
         publish_noreplace(&stage, &target).unwrap();
         assert!(target.is_dir());
         assert!(!stage.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[test]
+    fn limited_copy_rejects_oversized_source() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, vec![7u8; 32]).unwrap();
+        let err = copy_file_limited(&source, &target, 16).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
         let _ = fs::remove_dir_all(root);
     }
 
