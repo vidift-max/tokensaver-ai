@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::{fs::File, io::{self, Read}, path::Path};
+use std::{fs::{File, OpenOptions}, io::{self, Read}, path::Path};
 
 /// Atomically publishes stage at target without replacing an existing target.
 /// Fails closed on platforms without a supported native primitive.
@@ -62,8 +62,6 @@ pub fn publish_noreplace(stage: &Path, target: &Path) -> io::Result<()> {
 
 
 
-/// Hashes a regular file while enforcing a hard byte budget.
-/// The byte count is based on bytes actually read, not filesystem metadata.
 /// Copies a regular file while enforcing a hard byte budget and returning actual bytes copied.
 pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Result<u64> {
     if target.exists() {
@@ -72,7 +70,7 @@ pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Re
     let temp = target.with_file_name(format!(".{}.{}.tmp", target.file_name().and_then(|v| v.to_str()).unwrap_or("copy"), uuid::Uuid::new_v4()));
     let result = (|| -> io::Result<u64> {
         let mut input = File::open(source)?;
-        let mut output = File::create(&temp)?;
+        let mut output = OpenOptions::new().write(true).create_new(true).open(&temp)?;
         let mut total = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
