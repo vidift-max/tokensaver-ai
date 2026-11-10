@@ -87,6 +87,7 @@ pub(crate) fn verify_blob_integrity(file:&mut File, expected_sha:&str, expected_
     }
     if total!=expected_len{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
     if format!("{:x}",hasher.finalize())!=expected_sha{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está corrompido."));}
+    drop(limited);
     file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível reposicionar o blob."))?;
     Ok(())
 }
