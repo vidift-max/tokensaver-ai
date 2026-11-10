@@ -1,3 +1,4 @@
+use tauri::Manager;
 use crate::{db,error::{AppError,AppResult}};
 use serde::Serialize;
 #[derive(Debug,Serialize)] pub struct OperationRow{pub id:String,pub kind:String,pub status:String,pub progress:i64,pub created_at:String,pub finished_at:Option<String>,pub error_code:Option<String>}
