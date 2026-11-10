@@ -34,7 +34,7 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
     if current == 1 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);")
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL); ALTER TABLE operations ADD COLUMN project_id TEXT;")
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o esquema do banco."))?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
