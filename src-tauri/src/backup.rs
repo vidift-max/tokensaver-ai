@@ -400,11 +400,27 @@ pub fn restore_project_backup(
         fs::create_dir(stage.join("blobs"))
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível preparar os blobs restaurados."))?;
         for blob in &manifest.blobs {
-            fs::copy(canonical_backup.join("blobs").join(&blob.file_name), stage.join("blobs").join(&blob.file_name))
-                .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível restaurar um blob."))?;
+            filesystem::copy_file_limited(
+                &canonical_backup.join("blobs").join(&blob.file_name),
+                &stage.join("blobs").join(&blob.file_name),
+                limits::MAX_FILE_BYTES,
+            )
+            .map_err(|err| if err.kind() == std::io::ErrorKind::FileTooLarge {
+                AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido.")
+            } else {
+                AppError::new("RESTORE_ERROR", "Não foi possível restaurar um blob.")
+            })?;
         }
-        fs::copy(&backup_db, stage.join("db.sqlite"))
-            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível restaurar o banco."))?;
+        filesystem::copy_file_limited(
+            &backup_db,
+            &stage.join("db.sqlite"),
+            MAX_BACKUP_DATABASE_BYTES,
+        )
+        .map_err(|err| if err.kind() == std::io::ErrorKind::FileTooLarge {
+            AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco excede o limite de tamanho do backup.")
+        } else {
+            AppError::new("RESTORE_ERROR", "Não foi possível restaurar o banco.")
+        })?;
         let mut restored_db = Connection::open(stage.join("db.sqlite"))
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível abrir o banco restaurado."))?;
         restored_db.pragma_update(None, "foreign_keys", "ON")
