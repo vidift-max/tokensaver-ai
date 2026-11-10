@@ -97,3 +97,29 @@ CREATE INDEX IF NOT EXISTS idx_templates_name ON templates(name);
 "#).map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível preparar o esquema dos módulos avançados."))?;
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn v1_migration_creates_v2_extensions() {
+        let path = std::env::temp_dir().join(format!(
+            "tokensaver-db-migration-{}.sqlite",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let mut conn = Connection::open(&path).expect("open");
+        conn.execute_batch("PRAGMA user_version=1;").expect("set v1");
+        migrate(&mut conn).expect("migrate");
+        let version:i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let memory:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='project_memory'",[],|r|r.get(0)).unwrap();
+        let templates:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='templates'",[],|r|r.get(0)).unwrap();
+        let claude:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='claude_config'",[],|r|r.get(0)).unwrap();
+        assert_eq!((memory,templates,claude),(1,1,1));
+        drop(conn);
+        let _=std::fs::remove_file(path);
+    }
+}
