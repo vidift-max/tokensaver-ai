@@ -203,6 +203,7 @@ mod tests {
         let _=std::fs::remove_file(path);
     }
 
+    #[test]
     fn v1_migration_creates_v2_extensions() {
         let path = std::env::temp_dir().join(format!(
             "tokensaver-db-migration-{}.sqlite",
