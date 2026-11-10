@@ -68,8 +68,9 @@ pub fn editorial_validate(title:String,body:String)->AppResult<EditorialResult>{
 #[tauri::command]
 pub fn list_articles(app:tauri::AppHandle,project_id:String,query:String)->AppResult<Vec<ArticleRow>>{
     valid_text(&query,512)?; let root=project_root(&app,&project_id)?; let c=db::open(&root.join("db.sqlite"))?;
-    let q=format!("%{}%",query.trim().replace("%","").replace("_",""));
-    let mut st=c.prepare("SELECT f.id,f.logical_path,v.version_no,v.byte_len,v.blob_sha256 FROM files f JOIN file_versions v ON v.file_id=f.id WHERE v.version_no=(SELECT MAX(v2.version_no) FROM file_versions v2 WHERE v2.file_id=f.id) AND (?1='' OR f.logical_path LIKE ?1) ORDER BY f.logical_path").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível listar artigos."))?;
+    let escaped=query.trim().replace('\\','\\\\').replace('%','\\%').replace('_','\\_');
+    let q=format!("%{}%",escaped);
+    let mut st=c.prepare("SELECT f.id,f.logical_path,v.version_no,v.byte_len,v.blob_sha256 FROM files f JOIN file_versions v ON v.file_id=f.id WHERE v.version_no=(SELECT MAX(v2.version_no) FROM file_versions v2 WHERE v2.file_id=f.id) AND (?1='' OR f.logical_path LIKE ?1 ESCAPE '\\') ORDER BY f.logical_path").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível listar artigos."))?;
     let rows=st.query_map(params![q],|r|Ok(ArticleRow{file_id:r.get(0)?,logical_path:r.get(1)?,version_no:r.get(2)?,byte_len:r.get(3)?,sha256:r.get(4)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível listar artigos."))?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler um artigo."))
 }
