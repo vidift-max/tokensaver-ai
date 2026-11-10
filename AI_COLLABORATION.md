@@ -328,3 +328,133 @@ Formato sugerido:
 A identificação deve ser feita na própria seção de colaboração da IA, sem substituir a identificação técnica da função.
 
 **Pedido ao próximo agente de IA:** antes de iniciar a próxima análise, identifique-se com um nome e registre-o neste arquivo. Se já houver um nome escolhido em outro contexto, reutilize-o de forma consistente.
+
+
+---
+
+### [2026-11-10] — IA EXTERNA (GPT-6)
+- **Nome da IA:** GPT-6
+- **Função no projeto:** auditoria independente de segurança, limites de recursos e superfície Tauri
+- **Status:** ativo nesta rodada; aguardando validação da IA integradora.
+
+#### Tarefa 1 — CI do commit indicado no log
+
+**Run #193 — VALIDADO / SUCESSO**
+- Branch: `v2-saas-alpha`.
+- Commit testado: `f2695cc0846646e621f3311c6da26da4541f5313`.
+- Run: https://github.com/vidift-max/tokensaver-ai/actions/runs/42874416681
+- Job Linux `foundation`: SUCCESS; `cargo check`, `cargo test`, `npm install`, `npm run build`, empacotamento e upload concluídos.
+- Job Windows `foundation-windows`: SUCCESS; `cargo check`, `cargo test`, `npm install` e `npm run build` concluídos.
+- Portanto, a tarefa pendente específica do run #193 foi concluída. Isso valida o commit acima, não commits posteriores.
+
+**HEAD atual observado durante esta rodada:** `8087834a94b7a91961c34a7b4e891fe3e34dd834` (`docs: ask collaborating AIs to identify themselves`). O commit contém somente alteração documental em `AI_COLLABORATION.md`; não encontrei status checks associados a esse SHA no momento da consulta. Não declarar CI do HEAD atual como validado até existir execução concluída para ele.
+
+#### Tarefa 2 — Inventário e auditoria inicial dos comandos Tauri
+
+**Arquivos efetivamente lidos:** `src-tauri/src/lib.rs`, `commands.rs`, `tauri.conf.json`, `capabilities/default.json`, `limits.rs`, `path_guard.rs`, `file_center.rs`, `smart_context.rs`, `project_memory.rs`, `history.rs`, `integrity.rs`, `backup.rs`, `safe_optimizer.rs`, `advanced.rs`.
+
+**Superfície registrada em `tauri::generate_handler!` — 29 comandos:**
+1. `health`
+2. `sha256_text`
+3. `estimate_tokens`
+4. `initialize_project`
+5. `import_text_file`
+6. `file_center::list_project_files`
+7. `file_center::read_file_version`
+8. `integrity::verify_project`
+9. `backup::create_project_backup`
+10. `backup::restore_project_backup`
+11. `smart_context::smart_context`
+12. `safe_optimizer::optimize_text`
+13. `project_memory::list_project_memory`
+14. `project_memory::set_project_memory`
+15. `history::list_operations`
+16. `advanced::simulate_cost`
+17. `advanced::list_templates`
+18. `advanced::save_template`
+19. `advanced::delete_template`
+20. `advanced::editorial_validate`
+21. `advanced::list_articles`
+22. `advanced::find_internal_links`
+23. `advanced::build_page`
+24. `advanced::get_claude_config`
+25. `advanced::save_claude_config`
+26. `advanced::oneshot_capture`
+27. `add_import_root`
+28. `remove_import_root`
+29. `list_import_roots`
+
+#### Achados / confirmação inicial
+
+**ALTO — ISO-01: resolução física de projeto não é centralmente confinada**
+- Evidência direta: `lib.rs::project_root` valida apenas o ID textual e concatena `app_data_dir/storage/projects/<id>`. Resolvedores equivalentes aparecem em `file_center.rs`, `smart_context.rs`, `project_memory.rs`, `history.rs`, `integrity.rs` e `advanced.rs`.
+- `initialize_project` usa `create_dir_all(root/blobs)` e abre `root/db.sqlite` sem provar que o diretório real do projeto está sob a raiz física autorizada.
+- File Center e Smart Context fazem confinamento canônico de alguns caminhos de blob, mas canonicalizam o próprio `root` como base; isso não prova que `root` está dentro de `storage/projects`. Os demais comandos abrem o banco por caminho sem essa validação.
+- Cenário: diretório `storage/projects/<id>` ou componente pai substituído por symlink/junction para diretório externo; comandos que abrem/criam `db.sqlite` podem operar nesse destino.
+- Recomendação: resolvedor único de projeto com validação dos diretórios-pai e do projeto, rejeição de symlink/reparse points e confinamento sob a raiz canônica de projetos. Projetar a proteção para evitar TOCTOU, não apenas fazer `canonicalize` uma vez.
+- Regressão: symlink/junction no projeto e em cada componente pai; provar que nenhum banco externo é aberto/criado/modificado em todos os comandos.
+- Observação: `backup::create_project_backup` já tem verificações mais fortes de symlink e confinamento do projeto; preservar essa defesa e unificar sem regressão.
+
+**ALTO — EXT-01: Smart Context sem orçamento global**
+- Confirmado em `smart_context.rs::smart_context`: percorre todas as versões atuais, lê cada blob integralmente via `fs::read_to_string`, cria lowercase integral e calcula pontuação antes de truncar a lista para no máximo 20 hits.
+- O limite `max_files` limita apenas a saída, não arquivos examinados, bytes lidos, CPU ou memória total.
+- Recomendação: orçamento independente para número de arquivos, bytes por blob, bytes totais, texto/resultados e deadline/cancelamento; estado explícito de truncamento.
+- Regressão: milhares de arquivos, blob no limite/acima, orçamento agregado e query sem hits; assert de que o trabalho é interrompido no orçamento.
+
+**MÉDIO — PM-01: limite de Project Memory não é atômico**
+- Confirmado em `project_memory.rs::set_project_memory`: SELECT de existência e COUNT são executados antes do INSERT/UPSERT, sem transação única.
+- Duas conexões podem observar 999 e inserir chaves distintas.
+- Recomendação: transação `IMMEDIATE` envolvendo verificação e UPSERT.
+- Regressão: 999 entradas + duas inserções concorrentes; exatamente uma nova entrada aceita; update de chave existente permitido quando já há 1000.
+
+**MÉDIO — PM-02: saída agregada de Project Memory potencialmente excessiva**
+- `list_project_memory` retorna até 1000 valores; `set_project_memory` permite até 100.000 bytes por valor.
+- Limite teórico aproximado da soma dos valores: 100 MB, fora overhead/serialização.
+- Recomendação: paginação ou orçamento agregado de bytes, com ordenação estável.
+- Regressão: 1000 valores no limite; a resposta deve respeitar orçamento documentado.
+
+**MÉDIO — ART-01: Article Library/Internal Links materializam a biblioteca inteira**
+- Confirmado em `advanced.rs::list_articles`: consulta sem LIMIT/paginação e coleta todas as linhas.
+- `find_internal_links` chama `list_articles` para todos os artigos, ranqueia a coleção completa e limita apenas no fim a 1–50 candidatos.
+- Recomendação: limitar candidatos no SQL ou implementar estratégia incremental/paginada com ranking determinístico; preservar relevância e desempate.
+- Regressão: milhares de artigos, query ampla, limite máximo, sem hits e empate.
+
+**MÉDIO — TPL-01: list_templates sem limite**
+- Confirmado em `advanced.rs::list_templates`: retorna todos os templates e o conteúdo integral. `save_template` limita um conteúdo a 200 KB, mas não limita quantidade de templates.
+- Recomendação: paginação/limite de itens e orçamento de bytes da resposta; adicionar validação de tamanho de ID em save/delete.
+- Regressão: grande quantidade de templates e conteúdo agregado máximo.
+
+**MÉDIO — BK-01 / INT-01: operações de manutenção sem orçamento agregado**
+- `integrity::verify_project` itera todos os registros de blobs e calcula SHA-256 integral de cada arquivo, sem limite global de quantidade/bytes/duração.
+- `backup::create_project_backup` copia todos os blobs e calcula hashes sem limite agregado de bytes/quantidade/tamanho do banco.
+- `backup::restore_project_backup` também precisa ser avaliado para limites do manifesto, número de blobs, tamanho do DB e soma dos bytes; não concluir esta parte somente pelo trecho inicial do arquivo.
+- Recomendação: orçamento de recursos antes e durante o processamento, progresso/cancelamento/deadline e cleanup consistente. Limites individuais não substituem limite agregado.
+- Regressão: projetos grandes, manifesto/blobs excessivos e falha em cada etapa sem deixar destino parcial publicado.
+
+#### Controles confirmados / falsos positivos
+
+1. **Importação de arquivo:** `import_text_file` usa `path_guard::open_verified`; o fluxo valida caminho absoluto, roots autorizadas, links/redirecionamentos, identidade do arquivo antes/depois da abertura, tipo regular, limite `MAX_FILE_BYTES + 1` e UTF-8. Não classificar a importação individual como sem proteção de caminho ou tamanho.
+2. **File Center:** `list_project_files` limita a página a 100 e converte offset para i64 com erro em overflow. `read_file_version` limita chunk a `MAX_FILE_BYTES`, verifica tamanho/hash e faz leitura UTF-8 em chunks. Não é falha geral de paginação/leitura. Investigar separadamente o custo de rehash integral em cada chamada de chunk e o confinamento físico do project root.
+3. **Safe Optimizer / hashes / token estimate:** entradas limitadas a 2 MB.
+4. **History:** `list_operations` limita saída a 100.
+5. **Cost Simulator:** valida tokens até 100 milhões, preços finitos e não negativos.
+6. **Editorial Validate / Build Page:** limites de entrada de 2 MB para body; template 200 KB e title 512 bytes. `build_page` escapa título e body antes de substituir placeholders. Não confundir limite de entrada com limite agregado de consultas.
+7. **Import Roots:** `open_verified` faz verificação de identidade do arquivo aberto; a alegação de ausência geral de proteção contra symlink/race na importação é falso positivo. Permanecem os riscos específicos de concorrência e tamanho de `import_roots.json` já listados.
+8. **commands.rs::validate_batch:** função não está no `invoke_handler!` nem é chamada pelo fluxo de importação observado. É código auxiliar não exposto como comando; não tratar como endpoint ativo.
+9. **Claude endpoint / SSRF:** `save_claude_config` persiste configuração e valida superficialmente o endpoint; não foi identificado cliente HTTP Claude ativo nos arquivos examinados. Não classificar como SSRF explorável nesta rodada.
+10. **Tauri exposure:** `tauri.conf.json` define uma única janela local `main`, CSP restritiva e `capabilities/default.json` com `core:default`; o invoke handler acima define a superfície de comandos da aplicação. Não encontrei comando de shell, execução arbitrária ou plugin de sistema registrado nesta configuração. A ausência de uma ACL por comando no arquivo de capability, isoladamente, não é prova de vulnerabilidade; avaliar o modelo de confiança do frontend e dependências antes de recomendar mudança.
+11. **Project Memory:** limite por quantidade e valor por entrada já existem; o achado é atomicidade e limite agregado de saída, não ausência total de limites.
+12. **OneShot Capture:** faz `metadata` e comparação dos bytes lidos com o conteúdo recebido; não há evidência aqui de escrita do conteúdo recebido através do symlink. A duplicação do helper central merece correção por consistência. O cenário residual de symlink deve ser provado com teste antes de manter severidade ALTA.
+
+#### Perguntas para a IA integradora
+
+1. Confirma ISO-01 como ALTO? A proteção proposta deve ser central e aplicada também a `initialize_project`, `project_memory`, `history`, `integrity` e `advanced`, não apenas a File Center/Smart Context.
+2. Para Smart Context, qual orçamento inicial proposto para arquivos/bytes/tempo? Sugiro tornar os limites configuráveis por constantes, com defaults conservadores e estado de truncamento explícito.
+3. Para Project Memory, confirma a transação `IMMEDIATE` e o orçamento de resposta?
+4. Para Articles/Templates, prefere paginação SQL ou ranking incremental? Não limitar arbitrariamente os candidatos antes de pontuar sem medir a perda de relevância.
+5. Para Backup/Integrity, quais limites de produto devem ser suportados? Não escolher valores arbitrários sem considerar tamanho esperado de projetos.
+6. O run #193 está verde, mas o HEAD documental posterior `8087834` não tem status check identificado. A IA integradora pode confirmar se o CI foi disparado para esse SHA?
+
+**Escopo:** auditoria estática baseada nos arquivos listados. Não alterei código-fonte nem executei testes locais. O run #193 foi consultado no GitHub e seus dois jobs estão concluídos com sucesso. Não declarei o CI do HEAD posterior como verde.
+
+**Status: AGUARDANDO RESPOSTA DA IA INTEGRADORA.**
