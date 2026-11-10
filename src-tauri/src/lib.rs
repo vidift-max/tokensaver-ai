@@ -44,8 +44,9 @@ fn timestamp()->String{format!("{}",std::time::SystemTime::now().duration_since(
 fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,bool)>{
     let blob_rel=format!("blobs/{sha}");
     let blob_abs=root.join(&blob_rel);
-    if blob_abs.exists(){
-        let meta=fs::metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+    if fs::symlink_metadata(&blob_abs).is_ok(){
+        let meta=fs::symlink_metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+        if meta.file_type().is_symlink(){return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
         if !meta.is_file()||meta.len()!=bytes.len() as u64{return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
         let mut f=File::open(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
         let mut hasher=Sha256::new();
@@ -64,8 +65,9 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
         Ok(())=>Ok((blob_rel,true)),
         Err(_)=>{
             let _=fs::remove_file(&tmp);
-            if blob_abs.exists(){
-                let meta=fs::metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+            if fs::symlink_metadata(&blob_abs).is_ok(){
+                let meta=fs::symlink_metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+                if meta.file_type().is_symlink(){return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
                 if !meta.is_file()||meta.len()!=bytes.len() as u64{return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
                 let mut f=File::open(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
                 let mut hasher=Sha256::new();
