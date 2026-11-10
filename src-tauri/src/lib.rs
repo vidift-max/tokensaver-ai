@@ -10,6 +10,7 @@ mod safe_optimizer;
 mod project_memory;
 mod history;
 mod limits;
+mod filesystem;
 mod path_guard;
 mod advanced;
 
