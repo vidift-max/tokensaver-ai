@@ -18,6 +18,9 @@ sha2 = "0.10"
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
