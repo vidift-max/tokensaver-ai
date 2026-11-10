@@ -22,6 +22,8 @@ export default function App() {
   const [importRoots, setImportRoots] = useState<{path:string}[]>([]);
   const [rootInput, setRootInput] = useState("");
   const [rootBusy, setRootBusy] = useState(false);
+  const [integrity, setIntegrity] = useState<Awaited<ReturnType<typeof api.verifyProject>> | null>(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -71,6 +73,19 @@ export default function App() {
     }
   }
 
+  async function verifyIntegrity() {
+    setIntegrityBusy(true);
+    setError("");
+    try {
+      await api.initializeProject(projectId);
+      setIntegrity(await api.verifyProject(projectId));
+    } catch (e) {
+      setError(errorMessage(e, "Não foi possível verificar a integridade do projeto."));
+    } finally {
+      setIntegrityBusy(false);
+    }
+  }
+
   async function loadFiles() {
     setLoadingFiles(true);
     setError("");
@@ -109,6 +124,17 @@ export default function App() {
             <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
             {error && <p className="error">{error}</p>}
             {files.length === 0 ? <p className="muted">Nenhum arquivo importado ainda.</p> : <div className="file-list">{files.map(file => <div className="file-row" key={file.id}><strong>{file.logical_path}</strong><span>v{file.latest_version} · {file.byte_len} bytes · {file.sha256.slice(0,12)}…</span></div>)}</div>}
+          </section>
+        ) : active === "Integrity Guardian" ? (
+          <section className="panel">
+            <div className="panel-head"><div><h2>Integrity Guardian</h2><p className="muted">Verifica blobs, referências e integridade SHA-256 sem alterar o conteúdo.</p></div><button className="primary" onClick={() => void verifyIntegrity()} disabled={integrityBusy}>{integrityBusy ? "Verificando..." : "Verificar agora"}</button></div>
+            <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
+            {error && <p className="error">{error}</p>}
+            {!integrity ? <p className="muted">Nenhuma verificação executada ainda.</p> : <div className="cards">
+              <article><b>Estado</b><strong>{integrity.healthy ? "Íntegro" : "Atenção"}</strong><span>{integrity.checked_blobs} blobs verificados.</span></article>
+              <article><b>Problemas</b><strong>{integrity.missing_blobs + integrity.corrupt_blobs + integrity.broken_references}</strong><span>ausentes, corrompidos ou com referência quebrada.</span></article>
+              <article><b>Órfãos</b><strong>{integrity.orphan_blobs}</strong><span>blobs sem versão lógica referenciando-os.</span></article>
+            </div>}
           </section>
         ) : active === "Settings" ? (
           <section className="panel">
