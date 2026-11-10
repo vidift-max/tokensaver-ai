@@ -14,9 +14,9 @@ Aplicativo desktop Windows para economia de tokens, otimização determinística
 - arquitetura preparada para provedores Claude/Anthropic e outros, sem API de rede nesta fase
 - conteúdo importado tratado como dado, nunca como instrução
 
-## Módulos planejados
+## Módulos implementados
 
-Dashboard, File Center, Token Counter, Smart Context, Safe Optimizer, Project Memory, Claude Connection, Template Master, Editorial Engine, Article Library, Internal Links, Final Page Builder, OneShot Capture, Cost Simulator, Integrity Guardian, Settings e History.
+Dashboard, File Center, Token Counter, Smart Context, Safe Optimizer, Project Memory, Claude Connection (configuração, sem armazenamento de segredo), Template Master, Editorial Engine, Article Library, Internal Links, Final Page Builder, OneShot Capture, Cost Simulator, Integrity Guardian, Backup Center, Settings e History. Os módulos avançados são locais/determinísticos nesta fase; conexão real com o provedor Claude ainda exige uma camada segura de credenciais/HTTP antes de enviar conteúdo.
 
 ## Armazenamento
 
