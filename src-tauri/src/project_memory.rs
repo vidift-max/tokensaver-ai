@@ -24,7 +24,6 @@ pub fn set_project_memory(app: tauri::AppHandle, project_id:String, key:String, 
     if !valid_key(&key) { return Err(AppError::new("INVALID_REQUEST","Chave de memória inválida.")); }
     if value.len()>100_000 { return Err(AppError::new("INVALID_REQUEST","Valor de memória excede o limite.")); }
     let root=app.path().app_data_dir().map_err(|_|AppError::new("STORAGE_ERROR","Armazenamento indisponível."))?.join("storage/projects").join(&project_id);
-    let conn=db::open(&root.join("db.sqlite"))?;
     let mut conn = db::open(&root.join("db.sqlite"))?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
