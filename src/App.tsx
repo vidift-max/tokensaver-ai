@@ -4,9 +4,9 @@ import { api } from "./api";
 const modules = [
   {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
   {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:true},{name:"Project Memory",ready:true},
-  {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
-  {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
-  {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
+  {name:"Claude Connection",ready:true},{name:"Template Master",ready:true},{name:"Editorial Engine",ready:true},
+  {name:"Article Library",ready:true},{name:"Internal Links",ready:true},{name:"Final Page Builder",ready:true},
+  {name:"OneShot Capture",ready:true},{name:"Cost Simulator",ready:true},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
   {name:"Settings",ready:true},{name:"History",ready:true}
 ];
 
@@ -38,6 +38,15 @@ export default function App() {
   const [memory, setMemory] = useState<Awaited<ReturnType<typeof api.listProjectMemory>>>([]);
   const [memoryKey, setMemoryKey] = useState(""); const [memoryValue, setMemoryValue] = useState("");
   const [history, setHistory] = useState<Awaited<ReturnType<typeof api.listOperations>>>([]);
+  const [costInput,setCostInput]=useState("10000"), [costOutput,setCostOutput]=useState("2000"), [costInPrice,setCostInPrice]=useState("3"), [costOutPrice,setCostOutPrice]=useState("15");
+  const [costResult,setCostResult]=useState<Awaited<ReturnType<typeof api.simulateCost>>|null>(null);
+  const [templates,setTemplates]=useState<Awaited<ReturnType<typeof api.listTemplates>>>([]), [templateName,setTemplateName]=useState(""), [templateContent,setTemplateContent]=useState("<article><h1>{{title}}</h1><div>{{body}}</div></article>");
+  const [editorialTitle,setEditorialTitle]=useState(""), [editorialBody,setEditorialBody]=useState(""), [editorial,setEditorial]=useState<Awaited<ReturnType<typeof api.editorialValidate>>|null>(null);
+  const [articleQuery,setArticleQuery]=useState(""), [articles,setArticles]=useState<Awaited<ReturnType<typeof api.listArticles>>>([]);
+  const [linkQuery,setLinkQuery]=useState(""), [links,setLinks]=useState<Awaited<ReturnType<typeof api.findInternalLinks>>>([]);
+  const [pageTitle,setPageTitle]=useState(""), [pageBody,setPageBody]=useState(""), [pageTemplate,setPageTemplate]=useState(""), [pageHtml,setPageHtml]=useState("");
+  const [capturePath,setCapturePath]=useState("captured.md"), [captureContent,setCaptureContent]=useState("");
+  const [claude,setClaude]=useState<Awaited<ReturnType<typeof api.getClaudeConfig>>|null>(null), [claudeEndpoint,setClaudeEndpoint]=useState(""), [claudeModel,setClaudeModel]=useState("claude-3-5-sonnet"), [claudeEnabled,setClaudeEnabled]=useState(false);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -147,6 +156,16 @@ export default function App() {
 
   async function loadMemory() { try { await api.initializeProject(projectId); setMemory(await api.listProjectMemory(projectId)); } catch(e){setError(errorMessage(e,"Não foi possível carregar a memória."));} }
   async function saveMemory(){ if(!memoryKey.trim()) return; try { await api.initializeProject(projectId); await api.setProjectMemory(projectId,memoryKey.trim(),memoryValue); setMemory(await api.listProjectMemory(projectId)); setMemoryKey(""); setMemoryValue(""); } catch(e){setError(errorMessage(e,"Não foi possível salvar a memória."));} }
+  async function loadTemplates(){try{await api.initializeProject(projectId);setTemplates(await api.listTemplates(projectId));}catch(e){setError(errorMessage(e,"Não foi possível carregar templates."));}}
+  async function saveTemplate(){try{await api.initializeProject(projectId);await api.saveTemplate(projectId,null,templateName,templateContent);setTemplateName("");setTemplates(await api.listTemplates(projectId));}catch(e){setError(errorMessage(e,"Não foi possível salvar o template."));}}
+  async function runCost(){try{setCostResult(await api.simulateCost(Number(costInput)||0,Number(costOutput)||0,Number(costInPrice)||0,Number(costOutPrice)||0));}catch(e){setError(errorMessage(e,"Não foi possível calcular o custo."));}}
+  async function runEditorial(){try{setEditorial(await api.editorialValidate(editorialTitle,editorialBody));}catch(e){setError(errorMessage(e,"Não foi possível validar o editorial."));}}
+  async function loadArticles(){try{await api.initializeProject(projectId);setArticles(await api.listArticles(projectId,articleQuery));}catch(e){setError(errorMessage(e,"Não foi possível carregar a biblioteca."));}}
+  async function runLinks(){try{await api.initializeProject(projectId);setLinks(await api.findInternalLinks(projectId,linkQuery,20));}catch(e){setError(errorMessage(e,"Não foi possível encontrar links."));}}
+  async function runPage(){try{setPageHtml(await api.buildPage(pageTitle,pageBody,pageTemplate));}catch(e){setError(errorMessage(e,"Não foi possível montar a página."));}}
+  async function runCapture(){try{await api.initializeProject(projectId);await api.oneshotCapture(projectId,capturePath,captureContent);setError("");}catch(e){setError(errorMessage(e,"Não foi possível capturar o conteúdo."));}}
+  async function loadClaude(){try{await api.initializeProject(projectId);const x=await api.getClaudeConfig(projectId);setClaude(x);setClaudeEnabled(x.enabled);setClaudeEndpoint(x.endpoint);setClaudeModel(x.model);}catch(e){setError(errorMessage(e,"Não foi possível carregar a configuração Claude."));}}
+  async function saveClaude(){try{await api.initializeProject(projectId);setClaude(await api.saveClaudeConfig(projectId,claudeEnabled,claudeEndpoint,claudeModel));}catch(e){setError(errorMessage(e,"Não foi possível salvar a configuração Claude."));}}
   async function loadHistory(){ try { await api.initializeProject(projectId); setHistory(await api.listOperations(projectId,50)); } catch(e){setError(errorMessage(e,"Não foi possível carregar o histórico."));} }
 
   async function loadFiles() {
@@ -239,6 +258,22 @@ export default function App() {
             </div>
             {restoreResult && <p className="success">Projeto restaurado: <strong>{restoreResult.project_id}</strong> · {restoreResult.blob_count} blobs validados.</p>}
           </section>
+        ) : active === "Cost Simulator" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Cost Simulator</h2><p className="muted">Cálculo local e determinístico; preços são informados por você.</p></div><button className="primary" onClick={()=>void runCost()}>Calcular</button></div><div className="project-row"><input value={costInput} onChange={e=>setCostInput(e.target.value)} placeholder="Tokens de entrada"/><input value={costOutput} onChange={e=>setCostOutput(e.target.value)} placeholder="Tokens de saída"/><input value={costInPrice} onChange={e=>setCostInPrice(e.target.value)} placeholder="USD/M tokens entrada"/><input value={costOutPrice} onChange={e=>setCostOutPrice(e.target.value)} placeholder="USD/M tokens saída"/></div>{costResult&&<div className="cards"><article><b>Entrada</b><strong>US$ {costResult.input_cost.toFixed(6)}</strong></article><article><b>Saída</b><strong>US$ {costResult.output_cost.toFixed(6)}</strong></article><article><b>Total</b><strong>US$ {costResult.total_cost.toFixed(6)}</strong></article></div>}</section>
+        ) : active === "Template Master" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Template Master</h2><p className="muted">Templates locais com placeholders {{title}} e {{body}}.</p></div><button className="primary" onClick={()=>void saveTemplate()} disabled={!templateName.trim()}>Salvar template</button></div><div className="project-row"><input value={templateName} onChange={e=>setTemplateName(e.target.value)} placeholder="Nome"/><textarea value={templateContent} onChange={e=>setTemplateContent(e.target.value)} rows={4}/></div><button onClick={()=>void loadTemplates()}>Atualizar</button>{templates.map(t=><div className="file-row" key={t.id}><strong>{t.name}</strong><span>{t.updated_at}</span></div>)}</section>
+        ) : active === "Editorial Engine" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Editorial Engine</h2><p className="muted">Validação local de título, corpo, tamanho e contagem de palavras.</p></div><button className="primary" onClick={()=>void runEditorial()}>Validar</button></div><input value={editorialTitle} onChange={e=>setEditorialTitle(e.target.value)} placeholder="Título"/><textarea value={editorialBody} onChange={e=>setEditorialBody(e.target.value)} rows={14} placeholder="Conteúdo"/>{editorial&&<div className="cards"><article><b>Estado</b><strong>{editorial.valid?"Válido":"Atenção"}</strong></article><article><b>Palavras</b><strong>{editorial.word_count}</strong></article><article><b>Avisos</b><span>{editorial.warnings.join(" · ")||"Nenhum"}</span></article></div>}</section>
+        ) : active === "Article Library" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Article Library</h2><p className="muted">Índice dos arquivos com versão mais recente.</p></div><button className="primary" onClick={()=>void loadArticles()}>Pesquisar</button></div><input value={articleQuery} onChange={e=>setArticleQuery(e.target.value)} placeholder="Filtrar caminho"/>{articles.map(a=><div className="file-row" key={a.file_id}><strong>{a.logical_path}</strong><span>v{a.version_no} · {a.byte_len} bytes · {a.sha256.slice(0,12)}…</span></div>)}</section>
+        ) : active === "Internal Links" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Internal Links</h2><p className="muted">Sugestões por correspondência de termos nos caminhos dos artigos.</p></div><button className="primary" onClick={()=>void runLinks()}>Encontrar</button></div><input value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Termos do artigo"/>{links.map(l=><div className="file-row" key={l.file_id}><strong>{l.logical_path}</strong><span>score {l.score}</span></div>)}</section>
+        ) : active === "Final Page Builder" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Final Page Builder</h2><p className="muted">Monta HTML determinístico e escapa título/corpo antes da publicação.</p></div><button className="primary" onClick={()=>void runPage()}>Montar</button></div><input value={pageTitle} onChange={e=>setPageTitle(e.target.value)} placeholder="Título"/><textarea value={pageBody} onChange={e=>setPageBody(e.target.value)} rows={10} placeholder="Corpo"/><textarea value={pageTemplate} onChange={e=>setPageTemplate(e.target.value)} rows={5} placeholder="Template opcional com {{title}} e {{body}}"/>{pageHtml&&<textarea value={pageHtml} readOnly rows={12}/>}</section>
+        ) : active === "OneShot Capture" ? (
+          <section className="panel"><div className="panel-head"><div><h2>OneShot Capture</h2><p className="muted">Captura texto diretamente em uma nova versão do projeto.</p></div><button className="primary" onClick={()=>void runCapture()} disabled={!capturePath.trim()}>Capturar</button></div><input value={capturePath} onChange={e=>setCapturePath(e.target.value)} placeholder="caminho.md"/><textarea value={captureContent} onChange={e=>setCaptureContent(e.target.value)} rows={16} placeholder="Cole o conteúdo aqui"/></section>
+        ) : active === "Claude Connection" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Claude Connection</h2><p className="muted">Configuração segura de conexão. Nenhuma chave secreta é armazenada pelo núcleo.</p></div><button className="primary" onClick={()=>void saveClaude()}>Salvar</button></div><label><input type="checkbox" checked={claudeEnabled} onChange={e=>setClaudeEnabled(e.target.checked)}/> Habilitar conexão</label><input value={claudeEndpoint} onChange={e=>setClaudeEndpoint(e.target.value)} placeholder="https://endpoint-do-provedor"/><input value={claudeModel} onChange={e=>setClaudeModel(e.target.value)} placeholder="Modelo"/><button onClick={()=>void loadClaude()}>Carregar configuração</button>{claude&&<p className="muted">Configurado: {claude.enabled?"sim":"não"} · {claude.model||"sem modelo"}</p>}</section>
         ) : active === "Settings" ? (
           <section className="panel">
             <div className="panel-head"><div><h2>Áreas de importação autorizadas</h2><p className="muted">Somente arquivos dentro destas pastas podem ser importados. Links, junctions, UNC e atalhos são rejeitados pelo backend.</p></div><button className="primary" onClick={loadImportRoots} disabled={rootBusy}>Atualizar</button></div>
