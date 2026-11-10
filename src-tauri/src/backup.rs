@@ -198,6 +198,29 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
     result
 }
 
+fn remap_project_scope(
+    tx: &rusqlite::Transaction<'_>,
+    source_project_id: &str,
+    target_project_id: &str,
+) -> AppResult<()> {
+    tx.execute(
+        "UPDATE files SET project_id=?1 WHERE project_id=?2",
+        rusqlite::params![target_project_id, source_project_id],
+    )
+    .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar os arquivos ao novo projeto."))?;
+    tx.execute(
+        "UPDATE project_memory SET project_id=?1 WHERE project_id=?2",
+        rusqlite::params![target_project_id, source_project_id],
+    )
+    .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar a memória ao novo projeto."))?;
+    tx.execute(
+        "UPDATE operations SET project_id=?1 WHERE project_id=?2",
+        rusqlite::params![target_project_id, source_project_id],
+    )
+    .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar o histórico ao novo projeto."))?;
+    Ok(())
+}
+
 fn validate_backup_id(id: &str) -> AppResult<()> {
     let parsed = Uuid::parse_str(id).map_err(|_| AppError::new("INVALID_REQUEST", "backup_id inválido."))?;
     if parsed.to_string() != id.to_ascii_lowercase() {
@@ -383,15 +406,7 @@ pub fn restore_project_backup(
         tx.execute("INSERT INTO projects(id,name,created_at) VALUES(?1,?2,?3)",
             rusqlite::params![target_project_id, name, created_at])
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível registrar o projeto restaurado."))?;
-        tx.execute("UPDATE files SET project_id=?1 WHERE project_id=?2",
-            rusqlite::params![target_project_id, source_project_id])
-            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar os arquivos ao novo projeto."))?;
-        tx.execute("UPDATE project_memory SET project_id=?1 WHERE project_id=?2",
-            rusqlite::params![target_project_id, source_project_id])
-            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar a memória ao novo projeto."))?;
-        tx.execute("UPDATE operations SET project_id=?1 WHERE project_id=?2",
-            rusqlite::params![target_project_id, source_project_id])
-            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar o histórico ao novo projeto."))?;
+        remap_project_scope(&tx, &source_project_id, &target_project_id)?;
         tx.execute("DELETE FROM projects WHERE id=?1", [&source_project_id])
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível finalizar a identificação do projeto restaurado."))?;
         tx.commit().map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível confirmar a restauração."))?;
@@ -424,6 +439,37 @@ mod tests {
         assert!(validate_project_id("nested/project").is_err());
         assert!(validate_backup_id(&Uuid::new_v4().to_string()).is_ok());
         assert!(validate_backup_id("../backup").is_err());
+    }
+
+    #[test]
+    fn remap_project_scope_moves_only_requested_project_rows() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(r#"
+            CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE files (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+            CREATE TABLE project_memory (key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, project_id TEXT NOT NULL);
+            CREATE TABLE operations (id TEXT PRIMARY KEY, project_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, created_at TEXT NOT NULL, finished_at TEXT, error_code TEXT);
+            INSERT INTO projects VALUES ('source','Source','1'),('other','Other','1');
+            INSERT INTO files VALUES ('f1','source'),('f2','other');
+            INSERT INTO project_memory VALUES ('k1','v1','1','source'),('k2','v2','1','other');
+            INSERT INTO operations VALUES ('o1','source','import','completed',100,'1',NULL,NULL),('o2','other','import','completed',100,'1',NULL,NULL);
+        "#).expect("prepare");
+
+        let tx = conn.unchecked_transaction().expect("transaction");
+        remap_project_scope(&tx, "source", "restored").expect("remap");
+        tx.commit().expect("commit");
+
+        let source_files:i64 = conn.query_row("SELECT count(*) FROM files WHERE project_id='source'",[],|r|r.get(0)).unwrap();
+        let restored_files:i64 = conn.query_row("SELECT count(*) FROM files WHERE project_id='restored'",[],|r|r.get(0)).unwrap();
+        let other_files:i64 = conn.query_row("SELECT count(*) FROM files WHERE project_id='other'",[],|r|r.get(0)).unwrap();
+        let restored_memory:i64 = conn.query_row("SELECT count(*) FROM project_memory WHERE project_id='restored'",[],|r|r.get(0)).unwrap();
+        let other_memory:i64 = conn.query_row("SELECT count(*) FROM project_memory WHERE project_id='other'",[],|r|r.get(0)).unwrap();
+        let restored_ops:i64 = conn.query_row("SELECT count(*) FROM operations WHERE project_id='restored'",[],|r|r.get(0)).unwrap();
+        let other_ops:i64 = conn.query_row("SELECT count(*) FROM operations WHERE project_id='other'",[],|r|r.get(0)).unwrap();
+
+        assert_eq!((source_files, restored_files, other_files), (0, 1, 1));
+        assert_eq!((restored_memory, other_memory), (1, 1));
+        assert_eq!((restored_ops, other_ops), (1, 1));
     }
 
     #[test]
