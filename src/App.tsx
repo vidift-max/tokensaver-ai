@@ -25,7 +25,11 @@ export default function App() {
   const [integrity, setIntegrity] = useState<Awaited<ReturnType<typeof api.verifyProject>> | null>(null);
   const [integrityBusy, setIntegrityBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
-  const [backupResult, setBackupResult] = useState<Awaited<ReturnType<typeof api.createProjectBackup>> | null>(null);\n  const [restoreBackupId, setRestoreBackupId] = useState("");\n  const [restoreTargetId, setRestoreTargetId] = useState("");\n  const [restoreBusy, setRestoreBusy] = useState(false);\n  const [restoreResult, setRestoreResult] = useState<Awaited<ReturnType<typeof api.restoreProjectBackup>> | null>(null);
+  const [backupResult, setBackupResult] = useState<Awaited<ReturnType<typeof api.createProjectBackup>> | null>(null);
+  const [restoreBackupId, setRestoreBackupId] = useState("");
+  const [restoreTargetId, setRestoreTargetId] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreResult, setRestoreResult] = useState<Awaited<ReturnType<typeof api.restoreProjectBackup>> | null>(null);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -88,13 +92,31 @@ export default function App() {
     }
   }
 
-  async function restoreBackup() {\n    if (!restoreBackupId.trim() || !restoreTargetId.trim()) return;\n    if (!window.confirm(`Restaurar o backup para um NOVO projeto chamado "${restoreTargetId}"? O projeto original não será substituído.`)) return;\n    setRestoreBusy(true);\n    setError("");\n    setRestoreResult(null);\n    try {\n      setRestoreResult(await api.restoreProjectBackup(projectId, restoreBackupId.trim(), restoreTargetId.trim()));\n    } catch (e) {\n      setError(errorMessage(e, "Não foi possível restaurar o backup."));\n    } finally {\n      setRestoreBusy(false);\n    }\n  }\n\n  async function createBackup() {
+  async function restoreBackup() {
+    if (!restoreBackupId.trim() || !restoreTargetId.trim()) return;
+    if (!window.confirm(`Restaurar o backup para um NOVO projeto chamado "${restoreTargetId}"? O projeto original não será substituído.`)) return;
+    setRestoreBusy(true);
+    setError("");
+    setRestoreResult(null);
+    try {
+      setRestoreResult(await api.restoreProjectBackup(projectId, restoreBackupId.trim(), restoreTargetId.trim()));
+    } catch (e) {
+      setError(errorMessage(e, "Não foi possível restaurar o backup."));
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
+  async function createBackup() {
     setBackupBusy(true);
     setError("");
     setBackupResult(null);
     try {
       await api.initializeProject(projectId);
-      setBackupResult(await api.createProjectBackup(projectId));
+      const created = await api.createProjectBackup(projectId);
+      setBackupResult(created);
+      setRestoreBackupId(created.backup_id);
+      setRestoreTargetId(`${projectId}-restored`);
     } catch (e) {
       setError(errorMessage(e, "Não foi possível criar um backup verificado."));
     } finally {
@@ -163,7 +185,15 @@ export default function App() {
               <article><b>Banco SQLite</b><strong>{backupResult.database_bytes} bytes</strong><span>Integridade SQLite validada.</span></article>
               <article><b>Local</b><span style={{overflowWrap:"anywhere"}}>{backupResult.backup_path}</span></article>
             </div>}
-            <hr />\n            <h3>Restaurar para um novo projeto</h3>\n            <p className="muted">A restauração valida o manifesto, o SHA-256 do banco e de todos os blobs. O projeto existente nunca é sobrescrito.</p>\n            <div className="project-row">\n              <label style={{flex:1}}>ID do backup <input value={restoreBackupId} onChange={e=>setRestoreBackupId(e.target.value)} placeholder="UUID do backup" /></label>\n              <label style={{flex:1}}>Novo ID do projeto <input value={restoreTargetId} onChange={e=>setRestoreTargetId(e.target.value)} maxLength={64} placeholder={`${projectId}-restored`} /></label>\n              <button className="primary" onClick={() => void restoreBackup()} disabled={restoreBusy || !restoreBackupId.trim() || !restoreTargetId.trim()}>{restoreBusy ? "Restaurando..." : "Restaurar backup"}</button>\n            </div>\n            {restoreResult && <p className="success">Projeto restaurado: <strong>{restoreResult.project_id}</strong> · {restoreResult.blob_count} blobs validados.</p>}
+            <hr />
+            <h3>Restaurar para um novo projeto</h3>
+            <p className="muted">A restauração valida o manifesto, o SHA-256 do banco e de todos os blobs. O projeto existente nunca é sobrescrito.</p>
+            <div className="project-row">
+              <label style={{flex:1}}>ID do backup <input value={restoreBackupId} onChange={e=>setRestoreBackupId(e.target.value)} placeholder="UUID do backup" /></label>
+              <label style={{flex:1}}>Novo ID do projeto <input value={restoreTargetId} onChange={e=>setRestoreTargetId(e.target.value)} maxLength={64} placeholder={`${projectId}-restored`} /></label>
+              <button className="primary" onClick={() => void restoreBackup()} disabled={restoreBusy || !restoreBackupId.trim() || !restoreTargetId.trim()}>{restoreBusy ? "Restaurando..." : "Restaurar backup"}</button>
+            </div>
+            {restoreResult && <p className="success">Projeto restaurado: <strong>{restoreResult.project_id}</strong> · {restoreResult.blob_count} blobs validados.</p>}
           </section>
         ) : active === "Settings" ? (
           <section className="panel">
