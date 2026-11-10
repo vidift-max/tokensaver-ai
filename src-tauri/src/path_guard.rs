@@ -163,8 +163,15 @@ fn load_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
     let file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     let mut bytes=Vec::new(); file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     if bytes.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
-    let text=String::from_utf8(bytes).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
-    let roots:Vec<ImportRoot>=serde_json::from_str(&text).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
+    parse_roots_json(&bytes)
+}
+
+fn parse_roots_json(bytes: &[u8]) -> AppResult<Vec<ImportRoot>> {
+    if bytes.len() as u64 > MAX_IMPORT_ROOTS_JSON_BYTES {
+        return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));
+    }
+    let text=std::str::from_utf8(bytes).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
+    let roots:Vec<ImportRoot>=serde_json::from_str(text).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
     if roots.len()>limits::MAX_IMPORT_ROOTS { return Err(AppError::new("PATH_NOT_ALLOWED","Número de áreas de importação excede o limite.")); }
     for root in &roots {
         let p=Path::new(&root.path);
@@ -254,6 +261,23 @@ pub fn open_verified(app:&tauri::AppHandle,source:&Path)->AppResult<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn roots_json_rejects_oversized_input_before_parsing() {
+        let bytes = vec![b' '; (MAX_IMPORT_ROOTS_JSON_BYTES as usize) + 1];
+        assert!(parse_roots_json(&bytes).is_err());
+    }
+
+    #[test]
+    fn roots_json_rejects_malformed_and_invalid_utf8() {
+        assert!(parse_roots_json(b"{not-json").is_err());
+        assert!(parse_roots_json(&[0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn roots_json_accepts_empty_list() {
+        assert!(parse_roots_json(b"[]").unwrap().is_empty());
+    }
+
     #[test]
     fn normalize_absolute_rejects_relative_and_parent_components(){
         assert!(normalize_absolute(Path::new("relative/file.txt")).is_err());
