@@ -496,6 +496,18 @@ mod tests {
     }
 
     #[test]
+    fn source_database_budget_rejects_combined_database_and_wal_over_limit() {
+        let root = std::env::temp_dir().join(format!("tokensaver-db-budget-over-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("db.sqlite");
+        let file = fs::File::create(&database).unwrap();
+        file.set_len(MAX_BACKUP_DATABASE_BYTES).unwrap();
+        fs::write(root.join("db.sqlite-wal"), b"x").unwrap();
+        assert!(validate_source_database_budget(&database).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn source_database_budget_rejects_non_file_wal() {
         let root = std::env::temp_dir().join(format!("tokensaver-db-wal-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
