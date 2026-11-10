@@ -42,7 +42,7 @@ pub fn simulate_cost(input_tokens:u64,output_tokens:u64,input_price_per_million:
 pub fn list_templates(app:tauri::AppHandle,project_id:String)->AppResult<Vec<Template>>{
     let root=project_root(&app,&project_id)?; let c=db::open(&root.join("db.sqlite"))?; let mut st=c.prepare("SELECT id,name,content,updated_at FROM templates ORDER BY name").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível listar templates."))?;
     let rows=st.query_map([],|r|Ok(Template{id:r.get(0)?,name:r.get(1)?,content:r.get(2)?,updated_at:r.get(3)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível listar templates."))?;
-    Ok(rows.filter_map(Result::ok).collect())
+    rows.collect::<Result<Vec<_>,_>>().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler um registro."))
 }
 #[tauri::command]
 pub fn save_template(app:tauri::AppHandle,project_id:String,id:Option<String>,name:String,content:String)->AppResult<Template>{
