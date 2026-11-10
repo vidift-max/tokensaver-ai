@@ -160,6 +160,41 @@ mod tests {
     }
 
     #[test]
+    fn limited_copy_accepts_exact_byte_budget() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, b"12345678").unwrap();
+        assert_eq!(copy_file_limited(&source, &target, 8).unwrap(), 8);
+        assert_eq!(fs::read(&target).unwrap(), b"12345678");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn limited_hash_accepts_exact_budget_and_returns_digest() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        fs::write(&source, b"abc").unwrap();
+        let (digest, size) = sha256_file_limited(&source, 3).unwrap();
+        assert_eq!(size, 3);
+        assert_eq!(digest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn limited_hash_rejects_oversized_file() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        fs::write(&source, b"four").unwrap();
+        let err = sha256_file_limited(&source, 3).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn refuses_existing_target() {
         let root = temp_dir();
         fs::create_dir_all(&root).unwrap();
