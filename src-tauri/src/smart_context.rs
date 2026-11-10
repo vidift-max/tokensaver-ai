@@ -1,7 +1,7 @@
 use tauri::Manager;
 use crate::{db, error::{AppError, AppResult}, limits};
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use std::{fs, io::Read, path::PathBuf};
 
 #[derive(Debug, Serialize)]
 pub struct ContextHit {
