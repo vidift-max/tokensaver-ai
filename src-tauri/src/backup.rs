@@ -1,4 +1,4 @@
-use crate::{db, error::{AppError, AppResult}};
+use crate::{db, error::{AppError, AppResult}, filesystem};
 use rusqlite::{backup::Backup, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -411,8 +411,8 @@ pub fn restore_project_backup(
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível finalizar a identificação do projeto restaurado."))?;
         tx.commit().map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível confirmar a restauração."))?;
         drop(restored_db);
-        fs::rename(&stage, &target)
-            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível publicar o projeto restaurado."))?;
+        filesystem::publish_noreplace(&stage, &target)
+            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível publicar o projeto restaurado: o destino já existe ou a publicação segura não está disponível."))?;
         Ok(())
     })();
 
