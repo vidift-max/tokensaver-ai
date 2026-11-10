@@ -18,13 +18,17 @@ fn safe_normalize(input: &str) -> String {
     for raw in input.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
         let line = raw.trim_end_matches([' ', '\t']);
         if line.trim().is_empty() {
-            if !out.ends_with("\n\n") && !out.is_empty() { out.push('\n'); }
+            if !out.ends_with("\n\n") && !out.is_empty() {
+                out.push('\n');
+            }
         } else {
             out.push_str(line);
             out.push('\n');
         }
     }
-    if out.ends_with('\n') { out.pop(); }
+    while out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
@@ -51,6 +55,7 @@ pub fn optimize_text(input: String) -> AppResult<OptimizationResult> {
 #[cfg(test)]
 mod tests {
     use super::safe_normalize;
+
     #[test]
     fn optimizer_preserves_content_and_removes_only_redundant_line_whitespace() {
         let input = "a  \n\n\n b  \n";
