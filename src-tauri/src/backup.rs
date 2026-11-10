@@ -87,6 +87,12 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
     let backup_id = Uuid::new_v4().to_string();
     let backup_parent = storage.join("backups").join(&project_id);
     fs::create_dir_all(&backup_parent).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível preparar a pasta de backups."))?;
+    let canonical_storage = storage.canonicalize().map_err(|_| AppError::new("STORAGE_ERROR", "Armazenamento indisponível."))?;
+    let canonical_backups = storage.join("backups").canonicalize().map_err(|_| AppError::new("BACKUP_ERROR", "Pasta de backups indisponível."))?;
+    let canonical_backup_parent = backup_parent.canonicalize().map_err(|_| AppError::new("BACKUP_ERROR", "Pasta do projeto de backup indisponível."))?;
+    if !canonical_backups.starts_with(&canonical_storage) || canonical_backup_parent.parent() != Some(canonical_backups.as_path()) || canonical_backup_parent.file_name().and_then(|v| v.to_str()) != Some(project_id.as_str()) {
+        return Err(AppError::new("BACKUP_ERROR", "Pasta de backup fora do armazenamento autorizado."));
+    }
     let staging = backup_parent.join(format!(".{backup_id}.tmp"));
     let final_dir = backup_parent.join(&backup_id);
     fs::create_dir(&staging).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível criar a área temporária do backup."))?;
@@ -197,6 +203,13 @@ pub fn restore_project_backup(
     }
     let canonical_parent = backup_parent.canonicalize()
         .map_err(|_| AppError::new("BACKUP_NOT_FOUND", "Pasta de backups não encontrada."))?;
+    let canonical_storage = storage.canonicalize()
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Armazenamento indisponível."))?;
+    let canonical_backups = storage.join("backups").canonicalize()
+        .map_err(|_| AppError::new("BACKUP_NOT_FOUND", "Pasta de backups não encontrada."))?;
+    if !canonical_backups.starts_with(&canonical_storage) || canonical_parent.parent() != Some(canonical_backups.as_path()) || canonical_parent.file_name().and_then(|v| v.to_str()) != Some(source_project_id.as_str()) {
+        return Err(AppError::new("BACKUP_INVALID", "Pasta de backup fora do armazenamento autorizado."));
+    }
     let canonical_backup = backup_dir.canonicalize()
         .map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível validar a pasta do backup."))?;
     if canonical_backup.parent() != Some(canonical_parent.as_path()) {
