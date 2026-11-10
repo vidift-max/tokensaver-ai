@@ -1,4 +1,4 @@
-use crate::{db, error::{AppError, AppResult}, hash, limits};
+use crate::{db, error::{AppError, AppResult}, limits};
 use sha2::{Digest, Sha256};
 use rusqlite::params;
 use serde::Serialize;
