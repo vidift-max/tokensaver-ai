@@ -228,7 +228,7 @@ mod tests {
         barrier.wait();
         let results = [a.join().unwrap(), b.join().unwrap()];
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-        assert_eq!(results.iter().filter(|r| r.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::AlreadyExists)).count(), 1);
+        assert_eq!(results.iter().filter(|r| r.as_ref().err().map(|e| e.kind() == io::ErrorKind::AlreadyExists).unwrap_or(false)).count(), 1);
         let winner = fs::read(target.join("winner")).unwrap();
         assert!(winner == b"a" || winner == b"b");
         let _ = fs::remove_dir_all(root);
