@@ -30,6 +30,7 @@ fn project_root(app:&tauri::AppHandle,id:&str)->AppResult<PathBuf>{
 }
 fn now()->String{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs().to_string()}
 fn valid_text(s:&str,max:usize)->AppResult<()> { if s.len()>max {return Err(AppError::with_details("INPUT_TOO_LARGE","Entrada excede o limite.",serde_json::json!({"max_bytes":max})));} Ok(()) }
+fn escape_like_query(s:&str)->String { s.replace("\\\\","\\\\\\\\").replace('%',"\\%").replace('_',"\\_") }
 
 #[tauri::command]
 pub fn simulate_cost(input_tokens:u64,output_tokens:u64,input_price_per_million:f64,output_price_per_million:f64)->AppResult<CostResult>{
