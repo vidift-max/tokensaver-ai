@@ -18,6 +18,9 @@ export default function App() {
   const [projectId, setProjectId] = useState("default");
   const [files, setFiles] = useState<FileRow[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [importSourcePath, setImportSourcePath] = useState("");
+  const [importLogicalPath, setImportLogicalPath] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
   const [error, setError] = useState("");
   const [importRoots, setImportRoots] = useState<{path:string}[]>([]);
   const [rootInput, setRootInput] = useState("");
@@ -168,6 +171,22 @@ export default function App() {
   async function saveClaude(){try{await api.initializeProject(projectId);setClaude(await api.saveClaudeConfig(projectId,claudeEnabled,claudeEndpoint,claudeModel));}catch(e){setError(errorMessage(e,"Não foi possível salvar a configuração Claude."));}}
   async function loadHistory(){ try { await api.initializeProject(projectId); setHistory(await api.listOperations(projectId,50)); } catch(e){setError(errorMessage(e,"Não foi possível carregar o histórico."));} }
 
+  async function importFile() {
+    if (!importSourcePath.trim() || !importLogicalPath.trim()) return;
+    setImportBusy(true);
+    setError("");
+    try {
+      await api.initializeProject(projectId);
+      await api.importTextFile(projectId, importLogicalPath.trim(), importSourcePath.trim());
+      setImportSourcePath("");
+      await loadFiles();
+    } catch (e) {
+      setError(errorMessage(e, "Não foi possível importar o arquivo."));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   async function loadFiles() {
     setLoadingFiles(true);
     setError("");
@@ -223,6 +242,12 @@ export default function App() {
           <section className="panel">
             <div className="panel-head"><div><h2>Arquivos do projeto</h2><p className="muted">Índice paginado do armazenamento local.</p></div><button className="primary" onClick={loadFiles} disabled={loadingFiles}>{loadingFiles ? "Carregando..." : "Atualizar"}</button></div>
             <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
+            <div className="project-row">
+              <label style={{flex:1}}>Arquivo autorizado <input value={importSourcePath} onChange={e=>setImportSourcePath(e.target.value)} placeholder="C:\\Projetos\\artigo.md" /></label>
+              <label style={{flex:1}}>Caminho lógico <input value={importLogicalPath} onChange={e=>setImportLogicalPath(e.target.value)} placeholder="articles/artigo.md" /></label>
+              <button className="primary" onClick={() => void importFile()} disabled={importBusy || !importSourcePath.trim() || !importLogicalPath.trim()}>{importBusy ? "Importando..." : "Importar arquivo"}</button>
+            </div>
+            <p className="muted">O arquivo de origem precisa estar dentro de uma área autorizada em Settings. Formatos aceitos: TXT, MD, JSON, HTML e CSS.</p>
             {error && <p className="error">{error}</p>}
             {files.length === 0 ? <p className="muted">Nenhum arquivo importado ainda.</p> : <div className="file-list">{files.map(file => <div className="file-row" key={file.id}><strong>{file.logical_path}</strong><span>v{file.latest_version} · {file.byte_len} bytes · {file.sha256.slice(0,12)}…</span></div>)}</div>}
           </section>
