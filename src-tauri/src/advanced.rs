@@ -103,7 +103,7 @@ pub fn save_claude_config(app:tauri::AppHandle,project_id:String,enabled:bool,en
 }
 
 fn validate_logical_path(path: &str) -> AppResult<()> {
-    if path.is_empty() || path.len() > 512 || path.contains('\\0') || path.starts_with('/') || path.starts_with('\\') {
+    if path.is_empty() || path.len() > 512 || path.contains('\0') || path.starts_with('/') || path.starts_with('\\') {
         return Err(AppError::new("PATH_NOT_ALLOWED", "Caminho lógico inválido."));
     }
     let mut components = 0usize;
