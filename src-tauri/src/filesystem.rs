@@ -66,22 +66,32 @@ pub fn publish_noreplace(stage: &Path, target: &Path) -> io::Result<()> {
 /// The byte count is based on bytes actually read, not filesystem metadata.
 /// Copies a regular file while enforcing a hard byte budget and returning actual bytes copied.
 pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Result<u64> {
-    let mut input = File::open(source)?;
-    let mut output = File::create(target)?;
-    let mut total = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let n = input.read(&mut buffer)?;
-        if n == 0 { break; }
-        total = total.checked_add(n as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "byte count overflow"))?;
-        if total > max_bytes {
-            return Err(io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds configured byte budget"));
-        }
-        std::io::Write::write_all(&mut output, &buffer[..n])?;
+    if target.exists() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target already exists"));
     }
-    output.sync_all()?;
-    Ok(total)
+    let temp = target.with_file_name(format!(".{}.{}.tmp", target.file_name().and_then(|v| v.to_str()).unwrap_or("copy"), uuid::Uuid::new_v4()));
+    let result = (|| -> io::Result<u64> {
+        let mut input = File::open(source)?;
+        let mut output = File::create(&temp)?;
+        let mut total = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let n = input.read(&mut buffer)?;
+            if n == 0 { break; }
+            total = total.checked_add(n as u64)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "byte count overflow"))?;
+            if total > max_bytes {
+                return Err(io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds configured byte budget"));
+            }
+            std::io::Write::write_all(&mut output, &buffer[..n])?;
+        }
+        output.sync_all()?;
+        drop(output);
+        publish_noreplace(&temp, target)?;
+        Ok(total)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+    result
 }
 
 pub fn sha256_file_limited(path: &Path, max_bytes: u64) -> io::Result<(String, u64)> {
@@ -133,6 +143,19 @@ mod tests {
         fs::write(&source, vec![7u8; 32]).unwrap();
         let err = copy_file_limited(&source, &target, 16).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn limited_copy_publishes_complete_file() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, b"complete-copy").unwrap();
+        let copied = copy_file_limited(&source, &target, 1024).unwrap();
+        assert_eq!(copied, 13);
+        assert_eq!(fs::read(&target).unwrap(), b"complete-copy");
         let _ = fs::remove_dir_all(root);
     }
 
