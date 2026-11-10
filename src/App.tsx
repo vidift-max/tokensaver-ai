@@ -3,7 +3,7 @@ import { api } from "./api";
 
 const modules = [
   {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
-  {name:"Smart Context",ready:false},{name:"Safe Optimizer",ready:false},{name:"Project Memory",ready:false},
+  {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:false},{name:"Project Memory",ready:false},
   {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
   {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
   {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
@@ -29,7 +29,7 @@ export default function App() {
   const [restoreBackupId, setRestoreBackupId] = useState("");
   const [restoreTargetId, setRestoreTargetId] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
-  const [restoreResult, setRestoreResult] = useState<Awaited<ReturnType<typeof api.restoreProjectBackup>> | null>(null);
+  const [restoreResult, setRestoreResult] = useState<Awaited<ReturnType<typeof api.restoreProjectBackup>> | null>(null);\n  const [contextQuery, setContextQuery] = useState("");\n  const [contextHits, setContextHits] = useState<Awaited<ReturnType<typeof api.smartContext>>>([]);\n  const [contextBusy, setContextBusy] = useState(false);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -124,7 +124,7 @@ export default function App() {
     }
   }
 
-  async function loadFiles() {
+  async function runSmartContext() {\n    if (!contextQuery.trim()) return;\n    setContextBusy(true); setError("");\n    try { await api.initializeProject(projectId); setContextHits(await api.smartContext(projectId, contextQuery, 8)); }\n    catch (e) { setError(errorMessage(e, "Não foi possível montar o contexto.")); }\n    finally { setContextBusy(false); }\n  }\n\n  async function loadFiles() {
     setLoadingFiles(true);
     setError("");
     try {
@@ -156,7 +156,7 @@ export default function App() {
           <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Método, modelo e limitações acompanham cada contagem.</span></article>
         </div>
 
-        {active === "File Center" ? (
+        {active === "Smart Context" ? (\n          <section className="panel">\n            <div className="panel-head"><div><h2>Smart Context</h2><p className="muted">Busca local e determinística nos arquivos importados. O conteúdo não é enviado para APIs externas.</p></div><button className="primary" onClick={() => void runSmartContext()} disabled={contextBusy || !contextQuery.trim()}>{contextBusy ? "Montando..." : "Montar contexto"}</button></div>\n            <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label><label style={{flex:1}}>Consulta <input value={contextQuery} onChange={e=>setContextQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") void runSmartContext();}} placeholder="ex.: title, schema, produto" /></label></div>\n            {error && <p className="error">{error}</p>}\n            {contextHits.length===0 ? <p className="muted">Nenhum arquivo relevante encontrado.</p> : <div className="file-list">{contextHits.map(h=><div className="file-row" key={h.file_id}><strong>{h.logical_path}</strong><span>score {h.score} · v{h.version_no} · ~{h.token_estimate} tokens</span><p className="muted" style={{margin:"6px 0 0"}}>{h.excerpt}</p></div>)}</div>}\n          </section>\n        ) : active === "File Center" ? (
           <section className="panel">
             <div className="panel-head"><div><h2>Arquivos do projeto</h2><p className="muted">Índice paginado do armazenamento local.</p></div><button className="primary" onClick={loadFiles} disabled={loadingFiles}>{loadingFiles ? "Carregando..." : "Atualizar"}</button></div>
             <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
