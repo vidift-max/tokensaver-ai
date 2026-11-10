@@ -164,13 +164,14 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
         tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a captura."))?; Ok(sha)
     })();
 
+    let output_sha = result.clone();
     if result.is_err() && created_blob {
         if let Ok(check) = db::open(&root.join("db.sqlite")) {
             let referenced:i64=check.query_row("SELECT COUNT(*) FROM blobs WHERE sha256=?1 OR EXISTS (SELECT 1 FROM file_versions WHERE blob_sha256=?1)",params![sha],|r|r.get(0)).unwrap_or(1);
             if referenced==0 { let _=fs::remove_file(&blob); }
         } else { let _=fs::remove_file(&blob); }
     }
-    result
+    output_sha
 }
 
 #[cfg(test)]
