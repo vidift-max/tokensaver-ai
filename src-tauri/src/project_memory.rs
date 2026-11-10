@@ -61,7 +61,6 @@ fn set_project_memory_in_db(
     tx.commit().map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível concluir a operação de memória."))?;
     Ok(MemoryEntry { key: key.to_string(), value: value.to_string(), updated_at: now })
 }
-}
 
 #[cfg(test)]
 mod tests {
