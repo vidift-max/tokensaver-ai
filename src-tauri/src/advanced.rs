@@ -226,7 +226,7 @@ mod tests {
             sha256: "a".repeat(64),
         };
         let rows = vec![
-            article("low", "articles/a-rust.md"),
+            article("low", "articles/a.md"),
             article("tie", "articles/b-tauri.md"),
             article("high", "articles/z-rust-tauri.md"),
         ];
