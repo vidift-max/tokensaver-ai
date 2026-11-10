@@ -1,9 +1,10 @@
-use crate::{db, error::{AppError, AppResult}, hash, limits};
+use crate::{db, error::{AppError, AppResult}};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::PathBuf};
 use uuid::Uuid;
+use tauri::Manager;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CostResult { pub input_tokens:u64, pub output_tokens:u64, pub input_cost:f64, pub output_cost:f64, pub total_cost:f64, pub currency:String }
