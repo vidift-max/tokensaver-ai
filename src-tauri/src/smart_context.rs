@@ -45,3 +45,15 @@ pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, m
     for row in rows { let (id,path,version,bytes,sha)=row.map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler o contexto."))?; if sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()){continue;} let blob=blobs.join(&sha); let canonical=match blob.canonicalize(){Ok(p)=>p,Err(_)=>continue}; if canonical.parent()!=Some(blobs.as_path()){continue;} let text=match fs::read_to_string(&canonical){Ok(t)=>t,Err(_)=>continue}; let lower=text.to_lowercase(); let path_lower=path.to_lowercase(); let mut score=0i64; let mut first="".to_string(); for t in &terms { let pc=path_lower.matches(t).count() as i64; let cc=lower.matches(t).count() as i64; score += pc*12 + cc.min(20); if first.is_empty() && cc>0 {first=excerpt(&text,t);} } if score>0 {hits.push(ContextHit{file_id:id,logical_path:path,version_no:version,byte_len:bytes,token_estimate:((text.chars().count() as f64)/4.0).ceil() as i64,score,excerpt:if first.is_empty(){text.chars().take(360).collect()}else{first}});} }
     hits.sort_by(|a,b| b.score.cmp(&a.score).then_with(||a.logical_path.cmp(&b.logical_path))); hits.truncate(limit); Ok(hits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::excerpt;
+
+    #[test]
+    fn excerpt_handles_unicode_case_expansion_without_panicking() {
+        let text = "prefix İSTO contexto final";
+        let result = excerpt(text, "isto");
+        assert!(result.contains("İSTO") || result.contains("contexto"));
+    }
+}
