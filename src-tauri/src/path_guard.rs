@@ -1,6 +1,6 @@
 use crate::{error::{AppError, AppResult}, limits};
 use serde::{Deserialize, Serialize};
-use std::{fs::{self, File, OpenOptions}, path::{Component, Path, PathBuf}};
+use std::{fs::{self, File, OpenOptions}, io::Read, path::{Component, Path, PathBuf}, time::{Duration, Instant}};
 use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +113,46 @@ fn canonical_identity(path:&Path)->AppResult<FileIdentity> {
     identity(&f)
 }
 
+
+const MAX_IMPORT_ROOTS_JSON_BYTES: u64 = 160 * 1024;
+const MAX_IMPORT_ROOT_PATH_BYTES: usize = 4096;
+
+struct RootsLock { file: File, path: PathBuf }
+impl Drop for RootsLock {
+    fn drop(&mut self) {
+        #[cfg(unix)] unsafe { let _ = libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.file), libc::LOCK_UN); }
+        #[cfg(windows)] unsafe {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+            let mut ov: OVERLAPPED = std::mem::zeroed();
+            let _ = UnlockFileEx(self.file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut ov);
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
+    let path=config_path(app)?.with_file_name("import_roots.lock");
+    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar as configurações do aplicativo."))?;}
+    let file=OpenOptions::new().read(true).write(true).create(true).open(&path)
+        .map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível abrir o bloqueio das áreas de importação."))?;
+    #[cfg(unix)] {
+        use std::os::unix::io::AsRawFd;
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop { let rc=unsafe{libc::flock(file.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)}; if rc==0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
+    }
+    #[cfg(windows)] unsafe {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::LockFileEx;
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+        let mut ov: OVERLAPPED = std::mem::zeroed();
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop { let ok=LockFileEx(file.as_raw_handle(),0x00000002,0, u32::MAX,u32::MAX,&mut ov); if ok!=0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
+    }
+    Ok(RootsLock{file,path})
+}
+
 fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
     app.path().app_config_dir().map(|p|p.join("import_roots.json")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível localizar as configurações do aplicativo."))
 }
@@ -120,26 +160,33 @@ fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
 fn load_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
     let path=config_path(app)?;
     if !path.exists(){return Ok(Vec::new());}
-    let text=fs::read_to_string(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    let mut file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    let mut bytes=Vec::new(); file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    if bytes.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
+    let text=String::from_utf8(bytes).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
     let roots:Vec<ImportRoot>=serde_json::from_str(&text).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
     if roots.len()>limits::MAX_IMPORT_ROOTS { return Err(AppError::new("PATH_NOT_ALLOWED","Número de áreas de importação excede o limite.")); }
     for root in &roots {
         let p=Path::new(&root.path);
-        if p.as_os_str().is_empty() || !p.is_absolute() || p.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir)) {
+        if root.path.len()>MAX_IMPORT_ROOT_PATH_BYTES || p.as_os_str().is_empty() || !p.is_absolute() || p.components().any(|c|matches!(c,Component::ParentDir|Component::CurDir)) {
             return Err(AppError::new("PATH_NOT_ALLOWED","Área de importação persistida inválida."));
         }
     }
     Ok(roots)
 }
 
-fn save_roots(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()> {
+fn save_roots_unlocked(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()> {
+    if roots.len()>limits::MAX_IMPORT_ROOTS{return Err(AppError::new("PATH_NOT_ALLOWED","Número de áreas de importação excede o limite."));}
+    if roots.iter().any(|r|r.path.len()>MAX_IMPORT_ROOT_PATH_BYTES){return Err(AppError::new("PATH_NOT_ALLOWED","Caminho de importação muito longo."));}
     let path=config_path(app)?;
     if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar as configurações do aplicativo."))?;}
-    let tmp=path.with_extension("json.tmp");
+    let tmp=path.with_file_name(format!(".import_roots.{}.tmp",Uuid::new_v4()));
     let data=serde_json::to_vec_pretty(roots).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível serializar as áreas de importação."))?;
+    if data.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
     fs::write(&tmp,data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
     #[cfg(windows)]
-    { if path.exists(){fs::remove_file(&path).map_err(|_|{let _=fs::remove_file(&tmp);AppError::new("STORAGE_ERROR","Não foi possível substituir as áreas de importação.")})?;} }
+    { use std::os::windows::ffi::OsStrExt; use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH}; let from:Vec<u16>=tmp.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let to:Vec<u16>=path.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let ok=unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}; if ok==0{let _=fs::remove_file(&tmp);return Err(AppError::new("STORAGE_ERROR","Não foi possível substituir as áreas de importação."));} }
+    #[cfg(not(windows))]
     fs::rename(&tmp,&path).map_err(|_|{let _=fs::remove_file(&tmp);AppError::new("STORAGE_ERROR","Não foi possível finalizar as áreas de importação.")})
 }
 
@@ -157,10 +204,12 @@ pub fn add_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>> {
     if is_forbidden_link_name(&p){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não podem ser áreas de importação."));}
     let canonical=canonical_without_redirect(&p)?;
     if !canonical.is_dir(){return Err(AppError::new("INVALID_FILE","A área de importação deve ser um diretório."));}
+    let _lock=lock_roots(app)?;
+    let _lock=lock_roots(app)?;
     let mut roots=load_roots(app)?;
     let canonical_string=canonical.to_string_lossy().into_owned();
     if roots.len()>=limits::MAX_IMPORT_ROOTS && !roots.iter().any(|r|same_path(Path::new(&r.path),&canonical)){return Err(AppError::new("PATH_NOT_ALLOWED","Número máximo de áreas de importação atingido."));}
-    if !roots.iter().any(|r|same_path(Path::new(&r.path),&canonical)){roots.push(ImportRoot{path:canonical_string});save_roots(app,&roots)?;}
+    if !roots.iter().any(|r|same_path(Path::new(&r.path),&canonical)){roots.push(ImportRoot{path:canonical_string});save_roots_unlocked(app,&roots)?;}
     Ok(roots)
 }
 
@@ -170,7 +219,7 @@ pub fn remove_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>
     if is_forbidden_link_name(&p){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não podem ser áreas de importação."));}
     let mut roots=load_roots(app)?;
     roots.retain(|r|!same_path(Path::new(&r.path),&p));
-    save_roots(app,&roots)?;
+    save_roots_unlocked(app,&roots)?;
     Ok(roots)
 }
 
