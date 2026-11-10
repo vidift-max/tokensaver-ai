@@ -90,3 +90,18 @@ pub fn verify_project(app: tauri::AppHandle, project_id: String) -> AppResult<In
         healthy: missing == 0 && corrupt == 0 && broken_references == 0,
     })
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_paths_are_confined_to_blobs_directory() {
+        let root = Path::new("/project");
+        assert!(safe_blob_path(root, "blobs/abc").is_ok());
+        assert!(safe_blob_path(root, "../outside").is_err());
+        assert!(safe_blob_path(root, "blobs/../outside").is_err());
+        assert!(safe_blob_path(root, "/blobs/abc").is_err());
+    }
+}
