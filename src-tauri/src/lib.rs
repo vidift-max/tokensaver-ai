@@ -5,7 +5,7 @@ mod error;
 mod file_center;
 mod hash;
 mod integrity;
-mod smart_context;
+mod smart_context;\nmod safe_optimizer;
 mod limits;
 mod path_guard;
 
@@ -127,4 +127,4 @@ fn remove_import_root(app:tauri::AppHandle,path:String)->AppResult<Vec<path_guar
 #[tauri::command]
 fn list_import_roots(app:tauri::AppHandle)->AppResult<Vec<path_guard::ImportRoot>>{path_guard::list_roots(&app)}
 #[cfg(test)] mod tests;
-#[cfg_attr(mobile,tauri::mobile_entry_point)] pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![health,sha256_text,estimate_tokens,initialize_project,import_text_file,file_center::list_project_files,file_center::read_file_version,integrity::verify_project,backup::create_project_backup,backup::restore_project_backup,smart_context::smart_context,add_import_root,remove_import_root,list_import_roots]).setup(|app|{let _=app.path();Ok(())}).run(tauri::generate_context!()).expect("error while running TokenSaver AI");}
+#[cfg_attr(mobile,tauri::mobile_entry_point)] pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![health,sha256_text,estimate_tokens,initialize_project,import_text_file,file_center::list_project_files,file_center::read_file_version,integrity::verify_project,backup::create_project_backup,backup::restore_project_backup,smart_context::smart_context,safe_optimizer::optimize_text,add_import_root,remove_import_root,list_import_roots]).setup(|app|{let _=app.path();Ok(())}).run(tauri::generate_context!()).expect("error while running TokenSaver AI");}
