@@ -2,7 +2,7 @@ use crate::error::{AppError, AppResult};
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 pub fn open(path: &Path) -> AppResult<Connection> {
     if let Some(parent) = path.parent() {
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS token_counts (
  approximate INTEGER NOT NULL CHECK(approximate IN (0,1)),
  provider TEXT, model TEXT, limitation TEXT, created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS operations (
+CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS operations (
  id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
  progress INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
  finished_at TEXT, error_code TEXT
