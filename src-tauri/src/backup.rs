@@ -327,6 +327,20 @@ pub fn restore_project_backup(
     if manifest_blobs != db_blobs {
         return Err(AppError::new("BACKUP_CORRUPT", "Manifesto e banco possuem listas de blobs diferentes."));
     }
+    let entries = fs::read_dir(&backup_blobs_dir)
+        .map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível listar os blobs do backup."))?;
+    for entry in entries {
+        let entry = entry.map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível ler a pasta de blobs do backup."))?;
+        let meta = fs::symlink_metadata(entry.path())
+            .map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível validar um arquivo do backup."))?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(AppError::new("BACKUP_INVALID", "A pasta de blobs contém uma entrada inválida."));
+        }
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !manifest_blobs.contains_key(&name) {
+            return Err(AppError::new("BACKUP_CORRUPT", "O backup contém um blob não registrado no manifesto."));
+        }
+    }
 
     let projects_root = storage.join("projects");
     fs::create_dir_all(&projects_root)
