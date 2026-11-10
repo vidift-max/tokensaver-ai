@@ -40,7 +40,6 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
         tx.commit()
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
-        return Ok(());
     }
     if current == 0 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
@@ -85,5 +84,16 @@ CREATE INDEX IF NOT EXISTS idx_token_counts_version ON token_counts(file_version
         tx.commit()
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
     }
+    // Keep v2 extensions idempotent so databases created by earlier v2 builds receive new modules.
+    conn.execute_batch(r#"
+CREATE TABLE IF NOT EXISTS templates (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claude_config (
+ id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+ endpoint TEXT NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_templates_name ON templates(name);
+"#).map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível preparar o esquema dos módulos avançados."))?;
     Ok(())
 }
