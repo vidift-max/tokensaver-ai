@@ -78,10 +78,34 @@ fn safe_blob_source(root: &Path, relative: &str) -> AppResult<PathBuf> {
 pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppResult<BackupResult> {
     validate_project_id(&project_id)?;
     let storage = app_storage(&app)?;
-    let project_root = storage.join("projects").join(&project_id);
+    let projects_root = storage.join("projects");
+    let project_root = projects_root.join(&project_id);
     let source_db = project_root.join("db.sqlite");
-    if !source_db.is_file() {
-        return Err(AppError::new("PROJECT_NOT_FOUND", "O projeto ainda não possui banco de dados."));
+    let projects_meta = fs::symlink_metadata(&projects_root)
+        .map_err(|_| AppError::new("PROJECT_NOT_FOUND", "Pasta de projetos não encontrada."))?;
+    let project_meta = fs::symlink_metadata(&project_root)
+        .map_err(|_| AppError::new("PROJECT_NOT_FOUND", "O projeto ainda não possui armazenamento."))?;
+    let db_meta = fs::symlink_metadata(&source_db)
+        .map_err(|_| AppError::new("PROJECT_NOT_FOUND", "O projeto ainda não possui banco de dados."))?;
+    if projects_meta.file_type().is_symlink() || !projects_meta.is_dir()
+        || project_meta.file_type().is_symlink() || !project_meta.is_dir()
+        || db_meta.file_type().is_symlink() || !db_meta.is_file() {
+        return Err(AppError::new("STORAGE_ERROR", "O armazenamento do projeto não é um diretório ou arquivo regular."));
+    }
+    let canonical_storage = storage.canonicalize()
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Armazenamento indisponível."))?;
+    let canonical_projects = projects_root.canonicalize()
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Pasta de projetos indisponível."))?;
+    let canonical_project_root = project_root.canonicalize()
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Diretório do projeto indisponível."))?;
+    let canonical_source_db = source_db.canonicalize()
+        .map_err(|_| AppError::new("PROJECT_NOT_FOUND", "Banco de dados do projeto indisponível."))?;
+    if !canonical_projects.starts_with(&canonical_storage)
+        || canonical_projects.parent() != Some(canonical_storage.as_path())
+        || canonical_project_root.parent() != Some(canonical_projects.as_path())
+        || canonical_project_root.file_name().and_then(|v| v.to_str()) != Some(project_id.as_str())
+        || canonical_source_db.parent() != Some(canonical_project_root.as_path()) {
+        return Err(AppError::new("STORAGE_ERROR", "O projeto está fora do armazenamento autorizado."));
     }
 
     let backup_id = Uuid::new_v4().to_string();
@@ -95,6 +119,9 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
     }
     let staging = backup_parent.join(format!(".{backup_id}.tmp"));
     let final_dir = backup_parent.join(&backup_id);
+    if fs::symlink_metadata(&final_dir).is_ok() {
+        return Err(AppError::new("BACKUP_ERROR", "Já existe um backup com esse identificador."));
+    }
     fs::create_dir(&staging).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível criar a área temporária do backup."))?;
 
     let result = (|| -> AppResult<BackupResult> {
@@ -305,7 +332,15 @@ pub fn restore_project_backup(
     fs::create_dir_all(&projects_root)
         .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível preparar a pasta de projetos."))?;
     let target = projects_root.join(&target_project_id);
-    if target.exists() {
+    let projects_meta = fs::symlink_metadata(&projects_root)
+        .map_err(|_| AppError::new("RESTORE_ERROR", "Pasta de projetos indisponível."))?;
+    let canonical_projects = projects_root.canonicalize()
+        .map_err(|_| AppError::new("RESTORE_ERROR", "Pasta de projetos indisponível."))?;
+    if projects_meta.file_type().is_symlink() || !projects_meta.is_dir()
+        || canonical_projects.parent() != Some(canonical_storage.as_path()) {
+        return Err(AppError::new("RESTORE_ERROR", "Pasta de projetos fora do armazenamento autorizado."));
+    }
+    if fs::symlink_metadata(&target).is_ok() {
         return Err(AppError::new("RESTORE_TARGET_EXISTS", "Já existe um projeto com esse identificador. Nada foi alterado."));
     }
     let stage = projects_root.join(format!(".restore-{}.tmp", Uuid::new_v4()));
@@ -355,4 +390,34 @@ pub fn restore_project_backup(
         database_bytes: db_bytes,
         backup_path: target.to_string_lossy().into_owned(),
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_and_backup_ids_reject_path_components() {
+        assert!(validate_project_id("project-01").is_ok());
+        assert!(validate_project_id("../outside").is_err());
+        assert!(validate_project_id("nested/project").is_err());
+        assert!(validate_backup_id(&Uuid::new_v4().to_string()).is_ok());
+        assert!(validate_backup_id("../backup").is_err());
+    }
+
+    #[test]
+    fn blob_source_accepts_only_direct_files_inside_project_blobs() {
+        let root = std::env::temp_dir().join(format!("tokensaver-backup-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("blobs")).expect("create blob directory");
+        let bytes = b"backup test";
+        fs::write(root.join("blobs/test-blob"), bytes).expect("write blob");
+
+        assert!(safe_blob_source(&root, "blobs/test-blob").is_ok());
+        assert!(safe_blob_source(&root, "../outside").is_err());
+        assert!(safe_blob_source(&root, "blobs/../../outside").is_err());
+        assert!(safe_blob_source(&root, "other/test-blob").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
