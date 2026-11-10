@@ -3,11 +3,11 @@ import { api } from "./api";
 
 const modules = [
   {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
-  {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:true},{name:"Project Memory",ready:false},
+  {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:true},{name:"Project Memory",ready:true},
   {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
   {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
   {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
-  {name:"Settings",ready:true},{name:"History",ready:false}
+  {name:"Settings",ready:true},{name:"History",ready:true}
 ];
 
 type FileRow = { id:string; logical_path:string; latest_version:number; byte_len:number; sha256:string };
@@ -35,6 +35,9 @@ export default function App() {
   const [contextBusy, setContextBusy] = useState(false);
   const [optimizerInput, setOptimizerInput] = useState("");
   const [optimizerResult, setOptimizerResult] = useState<Awaited<ReturnType<typeof api.optimizeText>> | null>(null);
+  const [memory, setMemory] = useState<Awaited<ReturnType<typeof api.listProjectMemory>>>([]);
+  const [memoryKey, setMemoryKey] = useState(""); const [memoryValue, setMemoryValue] = useState("");
+  const [history, setHistory] = useState<Awaited<ReturnType<typeof api.listOperations>>>([]);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -142,6 +145,10 @@ export default function App() {
     try { setOptimizerResult(await api.optimizeText(optimizerInput)); } catch (e) { setError(errorMessage(e, "Não foi possível otimizar o texto.")); }
   }
 
+  async function loadMemory() { try { await api.initializeProject(projectId); setMemory(await api.listProjectMemory(projectId)); } catch(e){setError(errorMessage(e,"Não foi possível carregar a memória."));} }
+  async function saveMemory(){ if(!memoryKey.trim()) return; try { await api.initializeProject(projectId); await api.setProjectMemory(projectId,memoryKey.trim(),memoryValue); setMemory(await api.listProjectMemory(projectId)); setMemoryKey(""); setMemoryValue(""); } catch(e){setError(errorMessage(e,"Não foi possível salvar a memória."));} }
+  async function loadHistory(){ try { await api.initializeProject(projectId); setHistory(await api.listOperations(projectId,50)); } catch(e){setError(errorMessage(e,"Não foi possível carregar o histórico."));} }
+
   async function loadFiles() {
     setLoadingFiles(true);
     setError("");
@@ -174,7 +181,11 @@ export default function App() {
           <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Método, modelo e limitações acompanham cada contagem.</span></article>
         </div>
 
-        {active === "Safe Optimizer" ? (
+        {active === "Project Memory" ? (
+          <section className="panel"><div className="panel-head"><div><h2>Project Memory</h2><p className="muted">Notas persistentes do projeto, armazenadas localmente.</p></div><button className="primary" onClick={() => void loadMemory()}>Atualizar</button></div><div className="project-row"><input value={projectId} onChange={e=>setProjectId(e.target.value)} placeholder="Projeto"/><input value={memoryKey} onChange={e=>setMemoryKey(e.target.value)} placeholder="chave"/><input value={memoryValue} onChange={e=>setMemoryValue(e.target.value)} placeholder="valor"/><button onClick={()=>void saveMemory()}>Salvar</button></div>{memory.map(m=><div className="file-row" key={m.key}><strong>{m.key}</strong><span>{m.value}</span></div>)}</section>
+        ) : active === "History" ? (
+          <section className="panel"><div className="panel-head"><div><h2>History</h2><p className="muted">Operações registradas pelo núcleo do projeto.</p></div><button className="primary" onClick={()=>void loadHistory()}>Atualizar</button></div>{history.length===0?<p className="muted">Nenhuma operação registrada.</p>:history.map(h=><div className="file-row" key={h.id}><strong>{h.kind}</strong><span>{h.status} · {h.progress}% · {h.created_at}</span></div>)}</section>
+        ) : active === "Safe Optimizer" ? (
           <section className="panel">
             <div className="panel-head"><div><h2>Safe Optimizer</h2><p className="muted">Normalização conservadora: remove espaços no fim das linhas e linhas vazias redundantes, sem reescrever o conteúdo.</p></div><button className="primary" onClick={() => void runOptimizer()} disabled={!optimizerInput}>Otimizar</button></div>
             <textarea value={optimizerInput} onChange={e=>setOptimizerInput(e.target.value)} rows={14} placeholder="Cole aqui o conteúdo que deseja otimizar..." />
