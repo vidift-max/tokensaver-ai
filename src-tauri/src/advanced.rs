@@ -97,7 +97,12 @@ pub fn get_claude_config(app:tauri::AppHandle,project_id:String)->AppResult<Clau
 }
 #[tauri::command]
 pub fn save_claude_config(app:tauri::AppHandle,project_id:String,enabled:bool,endpoint:String,model:String)->AppResult<ClaudeConfig>{
-    valid_text(&endpoint,2048)?; valid_text(&model,256)?; if !endpoint.is_empty() && !(endpoint.starts_with("https://")||endpoint.starts_with("http://localhost")||endpoint.starts_with("http://127.0.0.1")){return Err(AppError::new("INVALID_REQUEST","Endpoint deve usar HTTPS, ou localhost para desenvolvimento."));}
+    valid_text(&endpoint,2048)?; valid_text(&model,256)?;
+    if !endpoint.is_empty() {
+        let lower=endpoint.trim().to_ascii_lowercase();
+        let local_ok=lower.starts_with("http://localhost/") || lower.starts_with("http://localhost:") || lower.starts_with("http://127.0.0.1/") || lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://[::1]/") || lower.starts_with("http://[::1]:");
+        if !(lower.starts_with("https://") || local_ok) || lower.contains('@') { return Err(AppError::new("INVALID_REQUEST","Endpoint deve usar HTTPS, ou localhost para desenvolvimento.")); }
+    }
     let c=db::open(&project_root(&app,&project_id)?.join("db.sqlite"))?; c.execute("INSERT INTO claude_config(id,enabled,endpoint,model,updated_at) VALUES(1,?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,endpoint=excluded.endpoint,model=excluded.model,updated_at=excluded.updated_at",params![enabled as i64,endpoint.trim(),model.trim(),now()]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível salvar a configuração."))?;
     Ok(ClaudeConfig{enabled,endpoint:endpoint.trim().into(),model:model.trim().into()})
 }
