@@ -29,9 +29,14 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
         let meta=fs::metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
         if !meta.is_file()||meta.len()!=bytes.len() as u64{return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
         let mut f=File::open(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
-        let mut data=Vec::with_capacity(bytes.len());
-        f.read_to_end(&mut data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
-        if hash::sha256_bytes(&data)!=sha{return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido."));}
+        let mut hasher=Sha256::new();
+        let mut buffer=[0u8;64*1024];
+        loop {
+            let n=f.read(&mut buffer).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+            if n==0 { break; }
+            hasher.update(&buffer[..n]);
+        }
+        if format!("{:x}",hasher.finalize())!=sha{return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido."));}
         return Ok((blob_rel,false));
     }
     let tmp=root.join(format!(".blob-{}.tmp",Uuid::new_v4()));
@@ -41,10 +46,17 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
         Err(_)=>{
             let _=fs::remove_file(&tmp);
             if blob_abs.exists(){
+                let meta=fs::metadata(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+                if !meta.is_file()||meta.len()!=bytes.len() as u64{return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente."));}
                 let mut f=File::open(&blob_abs).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
-                let mut data=Vec::new();
-                f.read_to_end(&mut data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
-                if data.len()!=bytes.len()||hash::sha256_bytes(&data)!=sha{return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido."));}
+                let mut hasher=Sha256::new();
+                let mut buffer=[0u8;64*1024];
+                loop {
+                    let n=f.read(&mut buffer).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob."))?;
+                    if n==0 { break; }
+                    hasher.update(&buffer[..n]);
+                }
+                if format!("{:x}",hasher.finalize())!=sha{return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido."));}
                 Ok((blob_rel,false))
             }else{
                 Err(AppError::new("STORAGE_ERROR","Não foi possível finalizar o armazenamento do blob."))
