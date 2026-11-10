@@ -27,18 +27,6 @@ pub struct EditorialResult { pub title:String, pub body:String, pub word_count:u
 fn project_root(app:&tauri::AppHandle,id:&str)->AppResult<PathBuf>{
     if id.is_empty() || id.len()>64 || !id.chars().all(|c| c.is_ascii_alphanumeric()||c=='-'||c=='_') { return Err(AppError::new("INVALID_REQUEST","project_id inválido.")); }
     Ok(app.path().app_data_dir().map_err(|_|AppError::new("STORAGE_ERROR","Armazenamento indisponível."))?.join("storage/projects").join(id))
-
-    #[test]
-    fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
-        assert!(validate_logical_path("article..txt").is_ok());
-        assert!(validate_logical_path("articles/post.html").is_ok());
-        assert!(validate_logical_path("../outside.txt").is_err());
-        assert!(validate_logical_path("articles/../outside.txt").is_err());
-        assert!(validate_logical_path("articles//post.html").is_err());
-        assert!(validate_logical_path("/absolute.txt").is_err());
-        assert!(validate_logical_path(r"\\server\\share\\file.txt").is_err());
-    }
-
 }
 fn now()->String{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs().to_string()}
 fn valid_text(s:&str,max:usize)->AppResult<()> { if s.len()>max {return Err(AppError::with_details("INPUT_TOO_LARGE","Entrada excede o limite.",serde_json::json!({"max_bytes":max})));} Ok(()) }
@@ -147,4 +135,20 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
     tx.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,provider,model,limitation,created_at) VALUES(?1,?2,'local_estimate',?3,1,NULL,NULL,'Estimativa local por caracteres.',?4)",params![Uuid::new_v4().to_string(),vid,((content.chars().count() as f64)/4.0).ceil() as i64,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar tokens."))?;
     tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'oneshot_capture','completed',100,?2,?2,NULL)",params![Uuid::new_v4().to_string(),t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
     tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a captura."))?; Ok(sha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
+        assert!(validate_logical_path("article..txt").is_ok());
+        assert!(validate_logical_path("articles/post.html").is_ok());
+        assert!(validate_logical_path("../outside.txt").is_err());
+        assert!(validate_logical_path("articles/../outside.txt").is_err());
+        assert!(validate_logical_path("articles//post.html").is_err());
+        assert!(validate_logical_path("/absolute.txt").is_err());
+        assert!(validate_logical_path(r"\\server\\share\\file.txt").is_err());
+    }
 }
