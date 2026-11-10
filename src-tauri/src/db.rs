@@ -31,6 +31,17 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
             serde_json::json!({"supported_version": SCHEMA_VERSION, "found_version": current}),
         ));
     }
+    if current == 1 {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);")
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o esquema do banco."))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
+        tx.commit()
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
+        return Ok(());
+    }
     if current == 0 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
@@ -60,7 +71,8 @@ CREATE TABLE IF NOT EXISTS token_counts (
  approximate INTEGER NOT NULL CHECK(approximate IN (0,1)),
  provider TEXT, model TEXT, limitation TEXT, created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS operations (
+CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS operations (
  id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
  progress INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
  finished_at TEXT, error_code TEXT
