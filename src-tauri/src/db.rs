@@ -2,7 +2,7 @@ use crate::error::{AppError, AppResult};
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 pub fn open(path: &Path) -> AppResult<Connection> {
     if let Some(parent) = path.parent() {
@@ -41,6 +41,16 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
         tx.commit()
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
     }
+    if current == 2 {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
+        tx.execute_batch("ALTER TABLE operations ADD COLUMN project_id TEXT;")
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o histórico de operações."))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
+        tx.commit()
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
+    }
     if current == 0 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
@@ -72,7 +82,7 @@ CREATE TABLE IF NOT EXISTS token_counts (
 );
 CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operations (
- id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
+ id TEXT PRIMARY KEY, project_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL,
  progress INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
  finished_at TEXT, error_code TEXT
 );
