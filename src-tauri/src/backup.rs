@@ -15,14 +15,14 @@ pub struct BackupResult {
     pub backup_path: String,
 }
 
-#[derive(Serialize)]
-#[derive(Deserialize)]\nstruct BlobManifest {
+#[derive(Debug, Serialize, Deserialize)]
+struct BlobManifest {
     sha256: String,
     byte_len: u64,
     file_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct BackupManifest {
     format_version: u32,
     project_id: String,
