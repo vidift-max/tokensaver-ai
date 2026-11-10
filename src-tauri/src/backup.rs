@@ -1,7 +1,6 @@
 use crate::{db, error::{AppError, AppResult}, filesystem};
 use rusqlite::{backup::Backup, Connection};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use crate::limits;
 use std::{fs, io::{Read, Write}, path::{Component, Path, PathBuf}, time::Duration};
 use tauri::Manager;
@@ -51,19 +50,6 @@ fn validate_project_id(id: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn hash_file(path: &Path) -> AppResult<(String, u64)> {
-    let mut file = fs::File::open(path).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível ler um arquivo do backup."))?;
-    let mut hasher = Sha256::new();
-    let mut size = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buffer).map_err(|_| AppError::new("BACKUP_ERROR", "Falha ao calcular SHA-256 do backup."))?;
-        if n == 0 { break; }
-        size = size.saturating_add(n as u64);
-        hasher.update(&buffer[..n]);
-    }
-    Ok((format!("{:x}", hasher.finalize()), size))
-}
 
 fn safe_blob_source(root: &Path, relative: &str) -> AppResult<PathBuf> {
     let path = Path::new(relative);
@@ -173,8 +159,17 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
             let target = blob_dir.join(&file_name);
             let next_payload = payload_bytes.checked_add(expected_len as u64).ok_or_else(|| AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite."))?;
             if next_payload > MAX_BACKUP_PAYLOAD_BYTES { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite.")); }
-            fs::copy(&source, &target).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível copiar um blob."))?;
-            let (actual_sha, actual_len) = filesystem::sha256_file_limited(&target, limits::MAX_FILE_BYTES).map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido."))?;
+            let copied_len = filesystem::copy_file_limited(&source, &target, limits::MAX_FILE_BYTES)
+                .map_err(|err| if err.kind() == std::io::ErrorKind::FileTooLarge {
+                    AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido.")
+                } else {
+                    AppError::new("BACKUP_ERROR", "Não foi possível copiar um blob.")
+                })?;
+            let (actual_sha, actual_len) = filesystem::sha256_file_limited(&target, limits::MAX_FILE_BYTES)
+                .map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido."))?;
+            if copied_len != actual_len {
+                return Err(AppError::new("BACKUP_ERROR", "O tamanho do blob mudou durante a cópia."));
+            }
             if actual_sha != sha.to_ascii_lowercase() || actual_len != expected_len as u64 {
                 return Err(AppError::new("BACKUP_ERROR", "Um blob não passou na validação SHA-256 e tamanho."));
             }
@@ -202,8 +197,8 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
             .map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível finalizar o manifesto do backup."))?;
         manifest_file.sync_all().map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível sincronizar o manifesto do backup."))?;
 
-        fs::rename(&staging, &final_dir)
-            .map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível publicar o backup completo."))?;
+        filesystem::publish_noreplace(&staging, &final_dir)
+            .map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível publicar o backup completo sem substituir outro backup."))?;
         Ok(BackupResult {
             project_id, backup_id, blob_count: manifest.blobs.len(), database_bytes,
             backup_path: final_dir.to_string_lossy().into_owned(),
