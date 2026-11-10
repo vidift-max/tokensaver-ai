@@ -2,6 +2,7 @@ use crate::{db, error::{AppError, AppResult}, filesystem};
 use rusqlite::{backup::Backup, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use crate::limits;
 use std::{fs, io::{Read, Write}, path::{Component, Path, PathBuf}, time::Duration};
 use tauri::Manager;
 use uuid::Uuid;
@@ -31,6 +32,12 @@ struct BackupManifest {
     database_sha256: String,
     blobs: Vec<BlobManifest>,
 }
+
+
+const MAX_BACKUP_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BACKUP_BLOBS: usize = 10_000;
+const MAX_BACKUP_DATABASE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BACKUP_PAYLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn app_storage(app: &tauri::AppHandle) -> AppResult<PathBuf> {
     app.path().app_data_dir().map(|p| p.join("storage"))
@@ -151,7 +158,9 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
         let blob_dir = staging.join("blobs");
         fs::create_dir(&blob_dir).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível preparar os blobs do backup."))?;
         let mut manifest_blobs = Vec::new();
+        let mut payload_bytes = 0u64;
         for row in rows {
+            if manifest_blobs.len() >= MAX_BACKUP_BLOBS { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O backup excede o número máximo de blobs.")); }
             let (sha, expected_len, relative) = row.map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível ler um registro de blob."))?;
             if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) || expected_len < 0 {
                 return Err(AppError::new("BACKUP_ERROR", "O banco contém metadados de blob inválidos."));
@@ -159,17 +168,20 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
             let source = safe_blob_source(&project_root, &relative)?;
             let file_name = sha.to_ascii_lowercase();
             let target = blob_dir.join(&file_name);
+            let next_payload = payload_bytes.checked_add(expected_len as u64).ok_or_else(|| AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite."))?;
+            if next_payload > MAX_BACKUP_PAYLOAD_BYTES { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite.")); }
             fs::copy(&source, &target).map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível copiar um blob."))?;
-            let (actual_sha, actual_len) = hash_file(&target)?;
+            let (actual_sha, actual_len) = filesystem::sha256_file_limited(&target, limits::MAX_FILE_BYTES).map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido."))?;
             if actual_sha != sha.to_ascii_lowercase() || actual_len != expected_len as u64 {
                 return Err(AppError::new("BACKUP_ERROR", "Um blob não passou na validação SHA-256 e tamanho."));
             }
+            payload_bytes = next_payload;
             manifest_blobs.push(BlobManifest { sha256: actual_sha, byte_len: actual_len, file_name });
         }
         drop(stmt);
         drop(snapshot);
 
-        let (database_sha256, database_bytes) = hash_file(&staging.join("db.sqlite"))?;
+        let (database_sha256, database_bytes) = filesystem::sha256_file_limited(&staging.join("db.sqlite"), MAX_BACKUP_DATABASE_BYTES).map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco excede o limite de tamanho do backup."))?;
         let manifest = BackupManifest {
             format_version: 1,
             project_id: project_id.clone(),
@@ -180,6 +192,7 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível gerar o manifesto do backup."))?;
+        if manifest_bytes.len() as u64 > MAX_BACKUP_MANIFEST_BYTES { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O manifesto excede o limite permitido.")); }
         let mut manifest_file = fs::File::create(staging.join("manifest.json"))
             .map_err(|_| AppError::new("BACKUP_ERROR", "Não foi possível gravar o manifesto do backup."))?;
         manifest_file.write_all(&manifest_bytes)
@@ -272,9 +285,7 @@ pub fn restore_project_backup(
     if manifest_meta.file_type().is_symlink() || !manifest_meta.is_file() {
         return Err(AppError::new("BACKUP_INVALID", "Manifesto inválido."));
     }
-    let manifest: BackupManifest = serde_json::from_slice(
-        &fs::read(&manifest_path).map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível ler o manifesto."))?
-    ).map_err(|_| AppError::new("BACKUP_INVALID", "Manifesto do backup inválido."))?;
+    let manifest_bytes = { let mut f = fs::File::open(&manifest_path).map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível ler o manifesto."))?; let mut bytes = Vec::new(); f.take(MAX_BACKUP_MANIFEST_BYTES.saturating_add(1)).read_to_end(&mut bytes).map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível ler o manifesto."))?; if bytes.len() as u64 > MAX_BACKUP_MANIFEST_BYTES { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O manifesto excede o limite permitido.")); } bytes }; let manifest: BackupManifest = serde_json::from_slice(&manifest_bytes).map_err(|_| AppError::new("BACKUP_INVALID", "Manifesto do backup inválido."))?; if manifest.blobs.len() > MAX_BACKUP_BLOBS { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O backup excede o número máximo de blobs.")); }
     if manifest.format_version != 1 || manifest.project_id != source_project_id
         || manifest.schema_version != crate::db::SCHEMA_VERSION {
         return Err(AppError::new("BACKUP_INCOMPATIBLE", "O backup pertence a outro projeto ou usa um formato incompatível."));
@@ -286,7 +297,7 @@ pub fn restore_project_backup(
     if db_meta.file_type().is_symlink() || !db_meta.is_file() {
         return Err(AppError::new("BACKUP_INVALID", "Banco do backup inválido."));
     }
-    let (db_hash, db_bytes) = hash_file(&backup_db)?;
+    let (db_hash, db_bytes) = filesystem::sha256_file_limited(&backup_db, MAX_BACKUP_DATABASE_BYTES).map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco excede o limite de tamanho do backup."))?;
     if db_hash != manifest.database_sha256 {
         return Err(AppError::new("BACKUP_CORRUPT", "O banco do backup não passou na validação SHA-256."));
     }
@@ -330,6 +341,7 @@ pub fn restore_project_backup(
     }
 
     let mut manifest_blobs = std::collections::BTreeMap::new();
+    let mut restore_payload_bytes = 0u64;
     for blob in &manifest.blobs {
         if blob.sha256.len() != 64 || !blob.sha256.bytes().all(|b| b.is_ascii_hexdigit())
             || blob.file_name != blob.sha256.to_ascii_lowercase()
@@ -342,7 +354,9 @@ pub fn restore_project_backup(
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(AppError::new("BACKUP_INVALID", "Um blob do backup não é um arquivo regular."));
         }
-        let (hash, len) = hash_file(&path)?;
+        let (hash, len) = filesystem::sha256_file_limited(&path, limits::MAX_FILE_BYTES).map_err(|_| AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido."))?;
+        restore_payload_bytes = restore_payload_bytes.checked_add(len).ok_or_else(|| AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite."))?;
+        if restore_payload_bytes > MAX_BACKUP_PAYLOAD_BYTES { return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O payload do backup excede o limite.")); }
         if hash != blob.sha256 || len != blob.byte_len {
             return Err(AppError::new("BACKUP_CORRUPT", "Um blob do backup falhou na validação SHA-256."));
         }
