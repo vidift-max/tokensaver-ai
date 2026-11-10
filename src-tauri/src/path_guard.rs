@@ -279,6 +279,26 @@ mod tests {
     }
 
     #[test]
+    fn roots_json_rejects_relative_paths() {
+        assert!(parse_roots_json(br#"[{"path":"relative/folder"}]"#).is_err());
+    }
+
+    #[test]
+    fn roots_json_rejects_parent_components() {
+        #[cfg(unix)]
+        assert!(parse_roots_json(br#"[{"path":"/safe/../outside"}]"#).is_err());
+        #[cfg(windows)]
+        assert!(parse_roots_json(br#"[{"path":"C:\\safe\\..\\outside"}]"#).is_err());
+    }
+
+    #[test]
+    fn roots_json_rejects_overlong_path_values() {
+        let path = "a".repeat(MAX_IMPORT_ROOT_PATH_BYTES + 1);
+        let json = serde_json::to_vec(&vec![ImportRoot { path }]).unwrap();
+        assert!(parse_roots_json(&json).is_err());
+    }
+
+    #[test]
     fn normalize_absolute_rejects_relative_and_parent_components(){
         assert!(normalize_absolute(Path::new("relative/file.txt")).is_err());
         if cfg!(windows){assert!(normalize_absolute(Path::new(r"C:\root\..\file.txt")).is_err());}
