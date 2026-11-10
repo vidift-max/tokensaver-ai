@@ -116,7 +116,7 @@ fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,s
         if last>0{
             let same:Option<String>=tx.query_row("SELECT blob_sha256 FROM file_versions WHERE file_id=?1 AND version_no=?2",rusqlite::params![actual_file_id,last],|r|r.get(0)).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível verificar a versão atual."))?;
             if same.as_deref()==Some(sha.as_str()){
-                tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'import_text_file','completed',100,?2,?2,NULL)",rusqlite::params![Uuid::new_v4().to_string(),now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
+                tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'import_text_file','completed',100,?2,?2,NULL)",rusqlite::params![Uuid::new_v4().to_string(),project_id,now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
         tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a importação."))?;
                 return Ok(sha.clone());
             }
