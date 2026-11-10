@@ -1,5 +1,6 @@
-use crate::{db, error::{AppError, AppResult}, hash};
+use crate::{db, error::{AppError, AppResult}};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::{Component, Path, PathBuf}};
 use tauri::Manager;
 
@@ -53,9 +54,14 @@ fn verify_file(path: &Path, expected_sha: &str, expected_len: i64) -> AppResult<
     };
     let len = file.metadata().map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível verificar um blob."))?.len();
     if expected_len < 0 || len != expected_len as u64 { return Ok(false); }
-    let mut bytes = Vec::with_capacity(len as usize);
-    file.read_to_end(&mut bytes).map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível verificar um blob."))?;
-    Ok(hash::sha256_bytes(&bytes) == expected_sha)
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível verificar um blob."))?;
+        if read == 0 { break; }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()) == expected_sha)
 }
 
 #[tauri::command]
@@ -66,6 +72,8 @@ pub fn verify_project(app: tauri::AppHandle, project_id: String) -> AppResult<In
         .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível consultar os blobs."))?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
         .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível consultar os blobs."))?;
+    let canonical_root = root.canonicalize().map_err(|_| AppError::new("STORAGE_ERROR", "Diretório do projeto indisponível."))?;
+    let canonical_blobs = canonical_root.join("blobs").canonicalize().ok();
     let mut checked = 0usize;
     let mut missing = 0usize;
     let mut corrupt = 0usize;
@@ -73,8 +81,13 @@ pub fn verify_project(app: tauri::AppHandle, project_id: String) -> AppResult<In
         let (sha, len, relative) = row.map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível ler o índice de blobs."))?;
         let path = safe_blob_path(&root, &relative)?;
         checked += 1;
-        if !path.exists() { missing += 1; continue; }
-        if !verify_file(&path, &sha, len)? { corrupt += 1; }
+        let canonical_path = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => { missing += 1; continue; }
+        };
+        let confined = canonical_blobs.as_ref().is_some_and(|dir| canonical_path.parent() == Some(dir.as_path()) && canonical_path.starts_with(dir));
+        if !confined { corrupt += 1; continue; }
+        if !verify_file(&canonical_path, &sha, len)? { corrupt += 1; }
     }
     let broken_references: usize = conn.query_row(
         "SELECT COUNT(*) FROM file_versions v LEFT JOIN blobs b ON b.sha256=v.blob_sha256 WHERE b.sha256 IS NULL",
