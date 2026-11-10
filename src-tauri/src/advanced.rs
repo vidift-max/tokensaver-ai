@@ -151,7 +151,7 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
     let last:i64=tx.query_row("SELECT COALESCE(MAX(version_no),0) FROM file_versions WHERE file_id=?1",params![actual],|r|r.get(0)).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar versões."))?;
     let vid=Uuid::new_v4().to_string(); tx.execute("INSERT INTO file_versions(id,file_id,version_no,blob_sha256,byte_len,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![vid,actual,last+1,sha,bytes.len() as i64,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível criar a versão."))?;
     tx.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,provider,model,limitation,created_at) VALUES(?1,?2,'local_estimate',?3,1,NULL,NULL,'Estimativa local por caracteres.',?4)",params![Uuid::new_v4().to_string(),vid,((content.chars().count() as f64)/4.0).ceil() as i64,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar tokens."))?;
-    tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'oneshot_capture','completed',100,?2,?2,NULL)",params![Uuid::new_v4().to_string(),t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
+    tx.execute("INSERT INTO operations(id,project_id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,?2,'oneshot_capture','completed',100,?3,?3,NULL)",params![Uuid::new_v4().to_string(),project_id,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
     tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a captura."))?; Ok(sha)
 }
 
