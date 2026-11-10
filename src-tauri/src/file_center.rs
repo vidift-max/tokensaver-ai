@@ -33,7 +33,14 @@ pub fn read_file_version(app: tauri::AppHandle, project_id: String, file_id: Str
     let conn=db::open(&root.join("db.sqlite")).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível abrir o banco do projeto."))?;
     let (sha,byte_len):(String,i64)=conn.query_row("SELECT v.blob_sha256,v.byte_len FROM file_versions v JOIN files f ON f.id=v.file_id WHERE v.file_id=?1 AND v.version_no=?2 AND f.project_id=?3",params![file_id,version_no,project_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|AppError::new("FILE_NOT_FOUND","Versão do arquivo não encontrada."))?;
     if byte_len<0{return Err(AppError::new("STORAGE_ERROR","Tamanho do arquivo está inconsistente."));} let total=byte_len as usize;
-    let blob=root.join("blobs").join(&sha); let mut file=File::open(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
+    if sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()){return Err(AppError::new("STORAGE_ERROR","Identificador SHA-256 do blob está inválido."));}
+    let canonical_root=root.canonicalize().map_err(|_|AppError::new("STORAGE_ERROR","Diretório do projeto indisponível."))?;
+    let blobs_dir=canonical_root.join("blobs").canonicalize().map_err(|_|AppError::new("STORAGE_ERROR","Diretório de blobs indisponível."))?;
+    if !blobs_dir.starts_with(&canonical_root){return Err(AppError::new("STORAGE_ERROR","Diretório de blobs fora do projeto."));}
+    let blob=root.join("blobs").join(&sha);
+    let canonical_blob=blob.canonicalize().map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
+    if canonical_blob.parent()!=Some(blobs_dir.as_path()){return Err(AppError::new("STORAGE_ERROR","Referência de blob fora do armazenamento."));}
+    let mut file=File::open(&canonical_blob).map_err(|_|AppError::new("STORAGE_ERROR","Blob do arquivo não está disponível."))?;
     let actual_len=file.metadata().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o blob do arquivo."))?.len(); if actual_len!=total as u64{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
     verify_blob_integrity(&mut file, &sha, total)?;
     if offset>=total{return Ok(FileChunk{file_id,version_no,sha256:sha,byte_len,offset,next_offset:total,data:String::new(),eof:true});}
