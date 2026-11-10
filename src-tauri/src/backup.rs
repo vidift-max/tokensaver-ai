@@ -386,6 +386,12 @@ pub fn restore_project_backup(
         tx.execute("UPDATE files SET project_id=?1 WHERE project_id=?2",
             rusqlite::params![target_project_id, source_project_id])
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar os arquivos ao novo projeto."))?;
+        tx.execute("UPDATE project_memory SET project_id=?1 WHERE project_id=?2",
+            rusqlite::params![target_project_id, source_project_id])
+            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar a memória ao novo projeto."))?;
+        tx.execute("UPDATE operations SET project_id=?1 WHERE project_id=?2",
+            rusqlite::params![target_project_id, source_project_id])
+            .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível associar o histórico ao novo projeto."))?;
         tx.execute("DELETE FROM projects WHERE id=?1", [&source_project_id])
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível finalizar a identificação do projeto restaurado."))?;
         tx.commit().map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível confirmar a restauração."))?;
