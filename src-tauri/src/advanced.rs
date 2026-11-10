@@ -145,6 +145,7 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
     let actual=fs::read(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o conteúdo."))?;
     if actual.as_slice()!=bytes { return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido.")); }
 
+    let cleanup_sha = sha.clone();
     let result = (|| -> AppResult<String> {
         let mut c=db::open(&root.join("db.sqlite"))?; let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível iniciar a operação."))?; let t=now();
         tx.execute("INSERT OR IGNORE INTO projects(id,name,created_at) VALUES(?1,?1,?2)",params![project_id,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o projeto."))?;
@@ -164,14 +165,13 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
         tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a captura."))?; Ok(sha)
     })();
 
-    let output_sha = result.clone();
     if result.is_err() && created_blob {
         if let Ok(check) = db::open(&root.join("db.sqlite")) {
-            let referenced:i64=check.query_row("SELECT COUNT(*) FROM blobs WHERE sha256=?1 OR EXISTS (SELECT 1 FROM file_versions WHERE blob_sha256=?1)",params![sha],|r|r.get(0)).unwrap_or(1);
+            let referenced:i64=check.query_row("SELECT COUNT(*) FROM blobs WHERE sha256=?1 OR EXISTS (SELECT 1 FROM file_versions WHERE blob_sha256=?1)",params![cleanup_sha],|r|r.get(0)).unwrap_or(1);
             if referenced==0 { let _=fs::remove_file(&blob); }
         } else { let _=fs::remove_file(&blob); }
     }
-    output_sha
+    result
 }
 
 #[cfg(test)]
