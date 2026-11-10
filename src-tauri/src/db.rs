@@ -2,7 +2,7 @@ use crate::error::{AppError, AppResult};
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
 
 pub fn open(path: &Path) -> AppResult<Connection> {
     if let Some(parent) = path.parent() {
@@ -34,8 +34,31 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
     if current == 1 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL); ALTER TABLE operations ADD COLUMN project_id TEXT;")
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS project_memory (key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, project_id TEXT NOT NULL, PRIMARY KEY(project_id, key));
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, key); ALTER TABLE operations ADD COLUMN project_id TEXT;")
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o esquema do banco."))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
+        tx.commit()
+            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível concluir a migração."))?;
+    }
+    if current == 3 {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
+        tx.execute_batch(r#"
+CREATE TABLE project_memory_v4 (
+ key TEXT NOT NULL,
+ value TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ project_id TEXT NOT NULL,
+ PRIMARY KEY(project_id, key)
+);
+INSERT INTO project_memory_v4(key,value,updated_at,project_id)
+SELECT key,value,updated_at,'__legacy__' FROM project_memory;
+DROP TABLE project_memory;
+ALTER TABLE project_memory_v4 RENAME TO project_memory;
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, key);
+"#).map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar a memória por projeto."))?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
         tx.commit()
