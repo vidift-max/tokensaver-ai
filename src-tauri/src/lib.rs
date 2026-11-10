@@ -126,6 +126,7 @@ fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,s
         tx.execute("INSERT INTO file_versions(id,file_id,version_no,blob_sha256,byte_len,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![version_id,actual_file_id,next,sha,bytes.len() as i64,now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar a nova versão."))?;
         let token_count=((String::from_utf8_lossy(&bytes).chars().count() as f64)/4.0).ceil() as i64;
         tx.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,provider,model,limitation,created_at) VALUES(?1,?2,'local_estimate',?3,1,NULL,NULL,?4,?5)",rusqlite::params![Uuid::new_v4().to_string(),version_id,token_count,"Estimativa local por caracteres; não substitui a contagem do provedor.",now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar a contagem de tokens."))?;
+        tx.execute("INSERT INTO operations(id,project_id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,?2,'import_text_file','completed',100,?3,?3,NULL)",rusqlite::params![Uuid::new_v4().to_string(),project_id,now]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
         tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a importação."))?;
         Ok(sha.clone())
     })();
