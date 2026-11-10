@@ -85,7 +85,7 @@ pub fn verify_project(app: tauri::AppHandle, project_id: String) -> AppResult<In
             Ok(p) => p,
             Err(_) => { missing += 1; continue; }
         };
-        let confined = canonical_blobs.as_ref().is_some_and(|dir| canonical_path.parent() == Some(dir.as_path()) && canonical_path.starts_with(dir));
+        let confined = canonical_blobs.as_ref().is_some_and(|dir| dir.starts_with(&canonical_root) && canonical_path.parent() == Some(dir.as_path()) && canonical_path.starts_with(dir));
         if !confined { corrupt += 1; continue; }
         if !verify_file(&canonical_path, &sha, len)? { corrupt += 1; }
     }
