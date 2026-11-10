@@ -496,16 +496,13 @@ mod tests {
     }
 
     #[test]
-    fn source_database_budget_rejects_symlink_wal() {
+    fn source_database_budget_rejects_non_file_wal() {
         let root = std::env::temp_dir().join(format!("tokensaver-db-wal-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let database = root.join("db.sqlite");
         fs::write(&database, b"db").unwrap();
-        fs::write(root.join("outside"), b"wal").unwrap();
-        #[cfg(unix)] std::os::unix::fs::symlink(root.join("outside"), root.join("db.sqlite-wal")).unwrap();
-        #[cfg(windows)] std::os::windows::fs::symlink_file(root.join("outside"), root.join("db.sqlite-wal")).unwrap();
+        fs::create_dir(root.join("db.sqlite-wal")).unwrap();
         assert!(validate_source_database_budget(&database).is_err());
-        let _ = fs::remove_file(root.join("db.sqlite-wal"));
         let _ = fs::remove_dir_all(root);
     }
 
