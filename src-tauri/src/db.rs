@@ -131,7 +131,8 @@ CREATE TABLE IF NOT EXISTS token_counts (
  approximate INTEGER NOT NULL CHECK(approximate IN (0,1)),
  provider TEXT, model TEXT, limitation TEXT, created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS project_memory (key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, project_id TEXT NOT NULL, PRIMARY KEY(project_id, key));
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, key);
 CREATE TABLE IF NOT EXISTS operations (
  id TEXT PRIMARY KEY, project_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL,
  progress INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
