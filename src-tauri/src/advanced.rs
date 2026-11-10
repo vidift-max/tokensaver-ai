@@ -135,16 +135,14 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
     valid_text(&content,2_000_000)?; validate_logical_path(&logical_path)?;
     let root=project_root(&app,&project_id)?; fs::create_dir_all(root.join("blobs")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar o armazenamento."))?;
     let bytes=content.as_bytes(); let mut h=Sha256::new(); h.update(bytes); let sha=format!("{:x}",h.finalize()); let blob_rel=format!("blobs/{sha}"); let blob=root.join(&blob_rel);
-    let mut blob_created=false;
-    if blob.exists(){
-        let meta=fs::metadata(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o conteúdo."))?;
-        if !meta.is_file() || meta.len()!=bytes.len() as u64 { return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente.")); }
-        let actual=fs::read(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o conteúdo."))?;
-        if actual.as_slice()!=bytes { return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido.")); }
-    } else {
+    if !blob.exists(){
         let tmp=root.join(format!(".oneshot-{}.tmp",Uuid::new_v4())); fs::write(&tmp,bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar o conteúdo."))?;
-        match fs::rename(&tmp,&blob) { Ok(())=>blob_created=true, Err(_)=>{ let _=fs::remove_file(&tmp); if !blob.exists(){return Err(AppError::new("STORAGE_ERROR","Não foi possível finalizar o conteúdo."));} } }
+        if fs::rename(&tmp,&blob).is_err(){ let _=fs::remove_file(&tmp); }
     }
+    let meta=fs::metadata(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o conteúdo."))?;
+    if !meta.is_file() || meta.len()!=bytes.len() as u64 { return Err(AppError::new("STORAGE_ERROR","Blob existente está inconsistente.")); }
+    let actual=fs::read(&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o conteúdo."))?;
+    if actual.as_slice()!=bytes { return Err(AppError::new("STORAGE_ERROR","Blob existente está corrompido.")); }
     let mut c=db::open(&root.join("db.sqlite"))?; let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível iniciar a operação."))?; let t=now();
     tx.execute("INSERT OR IGNORE INTO projects(id,name,created_at) VALUES(?1,?1,?2)",params![project_id,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o projeto."))?;
     tx.execute("INSERT OR IGNORE INTO blobs(sha256,byte_len,relative_path,created_at) VALUES(?1,?2,?3,?4)",params![sha,bytes.len() as i64,blob_rel,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o blob."))?;
