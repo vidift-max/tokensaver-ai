@@ -4,7 +4,8 @@ mod db;
 mod error;
 mod file_center;
 mod hash;
-mod integrity;\nmod smart_context;
+mod integrity;
+mod smart_context;
 mod limits;
 mod path_guard;
 
