@@ -1,3 +1,4 @@
+use tauri::Manager;
 use crate::{db, error::{AppError, AppResult}};
 use serde::Serialize;
 
