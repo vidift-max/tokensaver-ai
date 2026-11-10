@@ -27,6 +27,18 @@ pub struct EditorialResult { pub title:String, pub body:String, pub word_count:u
 fn project_root(app:&tauri::AppHandle,id:&str)->AppResult<PathBuf>{
     if id.is_empty() || id.len()>64 || !id.chars().all(|c| c.is_ascii_alphanumeric()||c=='-'||c=='_') { return Err(AppError::new("INVALID_REQUEST","project_id inválido.")); }
     Ok(app.path().app_data_dir().map_err(|_|AppError::new("STORAGE_ERROR","Armazenamento indisponível."))?.join("storage/projects").join(id))
+
+    #[test]
+    fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
+        assert!(validate_logical_path("article..txt").is_ok());
+        assert!(validate_logical_path("articles/post.html").is_ok());
+        assert!(validate_logical_path("../outside.txt").is_err());
+        assert!(validate_logical_path("articles/../outside.txt").is_err());
+        assert!(validate_logical_path("articles//post.html").is_err());
+        assert!(validate_logical_path("/absolute.txt").is_err());
+        assert!(validate_logical_path(r"\\server\\share\\file.txt").is_err());
+    }
+
 }
 fn now()->String{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs().to_string()}
 fn valid_text(s:&str,max:usize)->AppResult<()> { if s.len()>max {return Err(AppError::with_details("INPUT_TOO_LARGE","Entrada excede o limite.",serde_json::json!({"max_bytes":max})));} Ok(()) }
@@ -102,20 +114,37 @@ pub fn save_claude_config(app:tauri::AppHandle,project_id:String,enabled:bool,en
     Ok(ClaudeConfig{enabled,endpoint:endpoint.trim().into(),model:model.trim().into()})
 }
 
+fn validate_logical_path(path: &str) -> AppResult<()> {
+    if path.is_empty() || path.len() > 512 || path.contains('\\0') || path.starts_with('/') || path.starts_with('\\') {
+        return Err(AppError::new("PATH_NOT_ALLOWED", "Caminho lógico inválido."));
+    }
+    let mut components = 0usize;
+    for part in path.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(AppError::new("PATH_NOT_ALLOWED", "Caminho lógico inválido."));
+        }
+        components += 1;
+        if components > 64 {
+            return Err(AppError::new("PATH_NOT_ALLOWED", "Caminho lógico excede o limite de componentes."));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:String,content:String)->AppResult<String>{
-    valid_text(&content,2_000_000)?; if logical_path.is_empty()||logical_path.len()>512||logical_path.contains("..")||logical_path.starts_with('/')||logical_path.starts_with('\\'){return Err(AppError::new("PATH_NOT_ALLOWED","Caminho lógico inválido."));}
+    valid_text(&content,2_000_000)?; validate_logical_path(&logical_path)?;
     let root=project_root(&app,&project_id)?; fs::create_dir_all(root.join("blobs")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar o armazenamento."))?;
     let bytes=content.as_bytes(); let mut h=Sha256::new(); h.update(bytes); let sha=format!("{:x}",h.finalize()); let blob_rel=format!("blobs/{sha}"); let blob=root.join(&blob_rel);
     if !blob.exists(){let tmp=root.join(format!(".oneshot-{}.tmp",Uuid::new_v4())); fs::write(&tmp,bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar o conteúdo."))?; fs::rename(&tmp,&blob).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível finalizar o conteúdo."))?;}
     let mut c=db::open(&root.join("db.sqlite"))?; let tx=c.transaction().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível iniciar a operação."))?; let t=now();
     tx.execute("INSERT OR IGNORE INTO projects(id,name,created_at) VALUES(?1,?1,?2)",params![project_id,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o projeto."))?;
     tx.execute("INSERT OR IGNORE INTO blobs(sha256,byte_len,relative_path,created_at) VALUES(?1,?2,?3,?4)",params![sha,bytes.len() as i64,blob_rel,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o blob."))?;
-    let fid=Uuid::new_v4().to_string(); tx.execute("INSERT OR IGNORE INTO files(id,project_id,logical_path,created_at) VALUES(?1,?2,?3,?4)",params![fid,project_id,logical_path,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o arquivo."))?;
+    tx.execute("INSERT OR IGNORE INTO files(id,project_id,logical_path,created_at) VALUES(?1,?2,?3,?4)",params![Uuid::new_v4().to_string(),project_id,logical_path,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o arquivo."))?;
     let actual:String=tx.query_row("SELECT id FROM files WHERE project_id=?1 AND logical_path=?2",params![project_id,logical_path],|r|r.get(0)).map_err(|_|AppError::new("DATABASE_ERROR","Arquivo não encontrado após gravação."))?;
     let last:i64=tx.query_row("SELECT COALESCE(MAX(version_no),0) FROM file_versions WHERE file_id=?1",params![actual],|r|r.get(0)).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar versões."))?;
     let vid=Uuid::new_v4().to_string(); tx.execute("INSERT INTO file_versions(id,file_id,version_no,blob_sha256,byte_len,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![vid,actual,last+1,sha,bytes.len() as i64,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível criar a versão."))?;
     tx.execute("INSERT INTO token_counts(id,file_version_id,method,count,approximate,provider,model,limitation,created_at) VALUES(?1,?2,'local_estimate',?3,1,NULL,NULL,'Estimativa local por caracteres.',?4)",params![Uuid::new_v4().to_string(),vid,((content.chars().count() as f64)/4.0).ceil() as i64,t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar tokens."))?;
-    tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'oneshot_capture','completed',100,?2,?2,NULL)",params![Uuid::new_v4().to_string(),t]).ok();
+    tx.execute("INSERT INTO operations(id,kind,status,progress,created_at,finished_at,error_code) VALUES(?1,'oneshot_capture','completed',100,?2,?2,NULL)",params![Uuid::new_v4().to_string(),t]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível registrar o histórico da operação."))?;
     tx.commit().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível confirmar a captura."))?; Ok(sha)
 }
