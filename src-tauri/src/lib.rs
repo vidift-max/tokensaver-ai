@@ -26,10 +26,10 @@ use uuid::Uuid;
 
 fn safe_project_id(id:&str)->AppResult<()> { if id.is_empty()||id.len()>64||!id.chars().all(|c|c.is_ascii_alphanumeric()||c=='-'||c=='_'){return Err(AppError::new("INVALID_REQUEST","project_id inválido."));} Ok(()) }
 fn safe_logical_path(path:&str)->AppResult<PathBuf>{
-    if path.is_empty()||path.len()>512||path.contains('\\0')||path.starts_with('/')||path.starts_with('\\\\'){return Err(AppError::new("INVALID_FILE","Caminho lógico inválido."));}
+    if path.is_empty()||path.len()>512||path.contains('\0')||path.starts_with('/')||path.starts_with('\\'){return Err(AppError::new("INVALID_FILE","Caminho lógico inválido."));}
     let mut out=PathBuf::new();
     let mut depth=0usize;
-    for part in path.split(['/', '\\\\']) {
+    for part in path.split(['/', '\\']) {
         if part.is_empty()||part=="."||part==".." {return Err(AppError::new("PATH_NOT_ALLOWED","Caminho lógico fora do projeto."));}
         let component=Path::new(part);
         if component.components().any(|c|!matches!(c,Component::Normal(_))) {return Err(AppError::new("PATH_NOT_ALLOWED","Caminho lógico fora do projeto."));}
