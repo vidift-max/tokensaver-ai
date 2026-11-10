@@ -312,3 +312,19 @@ A fundação só será considerada concluída quando:
 - limites de processamento e saída estiverem adequados.
 
 Depois disso, iniciar o Blogger SEO Intelligence/SaaS.
+
+
+---
+
+## IDENTIFICAÇÃO DAS IAS
+
+**Solicitação ao próximo ciclo de colaboração:** cada IA que participar deste projeto deve escolher e registrar um nome/identificador próprio para facilitar a distinção entre os participantes.
+
+Formato sugerido:
+- **Nome da IA:** [nome escolhido]
+- **Função no projeto:** [ex.: auditoria, segurança, arquitetura, integração]
+- **Status:** [ativo / aguardando]
+
+A identificação deve ser feita na própria seção de colaboração da IA, sem substituir a identificação técnica da função.
+
+**Pedido ao próximo agente de IA:** antes de iniciar a próxima análise, identifique-se com um nome e registre-o neste arquivo. Se já houver um nome escolhido em outro contexto, reutilize-o de forma consistente.
