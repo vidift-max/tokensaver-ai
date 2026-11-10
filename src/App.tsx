@@ -23,7 +23,9 @@ export default function App() {
   const [rootInput, setRootInput] = useState("");
   const [rootBusy, setRootBusy] = useState(false);
   const [integrity, setIntegrity] = useState<Awaited<ReturnType<typeof api.verifyProject>> | null>(null);
-  const [integrityBusy, setIntegrityBusy] = useState(false);\n  const [backupBusy, setBackupBusy] = useState(false);\n  const [backupResult, setBackupResult] = useState<Awaited<ReturnType<typeof api.createProjectBackup>> | null>(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupResult, setBackupResult] = useState<Awaited<ReturnType<typeof api.createProjectBackup>> | null>(null);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -86,7 +88,21 @@ export default function App() {
     }
   }
 
-  async function createBackup() {\n    setBackupBusy(true);\n    setError("");\n    setBackupResult(null);\n    try {\n      await api.initializeProject(projectId);\n      setBackupResult(await api.createProjectBackup(projectId));\n    } catch (e) {\n      setError(errorMessage(e, "Não foi possível criar um backup verificado."));\n    } finally {\n      setBackupBusy(false);\n    }\n  }\n\n  async function loadFiles() {
+  async function createBackup() {
+    setBackupBusy(true);
+    setError("");
+    setBackupResult(null);
+    try {
+      await api.initializeProject(projectId);
+      setBackupResult(await api.createProjectBackup(projectId));
+    } catch (e) {
+      setError(errorMessage(e, "Não foi possível criar um backup verificado."));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function loadFiles() {
     setLoadingFiles(true);
     setError("");
     try {
@@ -136,7 +152,20 @@ export default function App() {
               <article><b>Órfãos</b><strong>{integrity.orphan_blobs}</strong><span>blobs sem versão lógica referenciando-os.</span></article>
             </div>}
           </section>
-        ) : active === "Backup Center" ? (\n          <section className="panel">\n            <div className="panel-head"><div><h2>Backup verificado</h2><p className="muted">Cria uma cópia consistente do SQLite usando a API online de backup e valida SHA-256 de cada blob antes de publicar o backup.</p></div><button className="primary" onClick={() => void createBackup()} disabled={backupBusy}>{backupBusy ? "Criando backup..." : "Criar backup"}</button></div>\n            <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>\n            {error && <p className="error">{error}</p>}\n            {!backupResult ? <p className="muted">Nenhum backup criado nesta sessão.</p> : <div className="cards">\n              <article><b>Resultado</b><strong>Backup concluído</strong><span>ID: {backupResult.backup_id}</span></article>\n              <article><b>Blobs</b><strong>{backupResult.blob_count}</strong><span>Arquivos verificados por SHA-256.</span></article>\n              <article><b>Banco SQLite</b><strong>{backupResult.database_bytes} bytes</strong><span>Integridade SQLite validada.</span></article>\n              <article><b>Local</b><span style={{overflowWrap:"anywhere"}}>{backupResult.backup_path}</span></article>\n            </div>}\n            <p className="muted">A restauração ainda não está habilitada. Não apague nem substitua a pasta original com base apenas neste backup.</p>\n          </section>\n        ) : active === "Settings" ? (
+        ) : active === "Backup Center" ? (
+          <section className="panel">
+            <div className="panel-head"><div><h2>Backup verificado</h2><p className="muted">Cria uma cópia consistente do SQLite usando a API online de backup e valida SHA-256 de cada blob antes de publicar o backup.</p></div><button className="primary" onClick={() => void createBackup()} disabled={backupBusy}>{backupBusy ? "Criando backup..." : "Criar backup"}</button></div>
+            <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label></div>
+            {error && <p className="error">{error}</p>}
+            {!backupResult ? <p className="muted">Nenhum backup criado nesta sessão.</p> : <div className="cards">
+              <article><b>Resultado</b><strong>Backup concluído</strong><span>ID: {backupResult.backup_id}</span></article>
+              <article><b>Blobs</b><strong>{backupResult.blob_count}</strong><span>Arquivos verificados por SHA-256.</span></article>
+              <article><b>Banco SQLite</b><strong>{backupResult.database_bytes} bytes</strong><span>Integridade SQLite validada.</span></article>
+              <article><b>Local</b><span style={{overflowWrap:"anywhere"}}>{backupResult.backup_path}</span></article>
+            </div>}
+            <p className="muted">A restauração ainda não está habilitada. Não apague nem substitua a pasta original com base apenas neste backup.</p>
+          </section>
+        ) : active === "Settings" ? (
           <section className="panel">
             <div className="panel-head"><div><h2>Áreas de importação autorizadas</h2><p className="muted">Somente arquivos dentro destas pastas podem ser importados. Links, junctions, UNC e atalhos são rejeitados pelo backend.</p></div><button className="primary" onClick={loadImportRoots} disabled={rootBusy}>Atualizar</button></div>
             <div className="project-row">
