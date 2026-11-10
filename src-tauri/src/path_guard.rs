@@ -118,7 +118,7 @@ fn canonical_identity(path:&Path)->AppResult<FileIdentity> {
 const MAX_IMPORT_ROOTS_JSON_BYTES: u64 = 160 * 1024;
 const MAX_IMPORT_ROOT_PATH_BYTES: usize = 4096;
 
-struct RootsLock { file: File, path: PathBuf }
+struct RootsLock { file: File }
 impl Drop for RootsLock {
     fn drop(&mut self) {
         #[cfg(unix)] unsafe { let _ = libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.file), libc::LOCK_UN); }
@@ -150,7 +150,7 @@ fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
         let deadline=Instant::now()+Duration::from_secs(5);
         loop { let ok=LockFileEx(file.as_raw_handle(),0x00000002,0, u32::MAX,u32::MAX,&mut ov); if ok!=0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
     }
-    Ok(RootsLock{file,path})
+    Ok(RootsLock{file})
 }
 
 fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
@@ -183,7 +183,7 @@ fn save_roots_unlocked(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()>
     let tmp=path.with_file_name(format!(".import_roots.{}.tmp",Uuid::new_v4()));
     let data=serde_json::to_vec_pretty(roots).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível serializar as áreas de importação."))?;
     if data.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
-    { let mut file=File::create(&tmp).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
+    { let mut file=OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
       use std::io::Write;
       file.write_all(&data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
       file.sync_all().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível sincronizar as áreas de importação."))?;
