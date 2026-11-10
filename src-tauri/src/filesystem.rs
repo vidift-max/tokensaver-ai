@@ -1,4 +1,5 @@
-use std::{io, path::Path};
+use sha2::{Digest, Sha256};
+use std::{fs::File, io::{self, Read}, path::Path};
 
 /// Atomically publishes stage at target without replacing an existing target.
 /// Fails closed on platforms without a supported native primitive.
@@ -57,6 +58,28 @@ pub fn publish_noreplace(stage: &Path, target: &Path) -> io::Result<()> {
         let _ = (stage, target);
         Err(io::Error::new(io::ErrorKind::Unsupported, "atomic no-replace publication is not implemented on this platform"))
     }
+}
+
+
+
+/// Hashes a regular file while enforcing a hard byte budget.
+/// The byte count is based on bytes actually read, not filesystem metadata.
+pub fn sha256_file_limited(path: &Path, max_bytes: u64) -> io::Result<(String, u64)> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 { break; }
+        total = total.checked_add(n as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "byte count overflow"))?;
+        if total > max_bytes {
+            return Err(io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds configured byte budget"));
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok((format!("{:x}", hasher.finalize()), total))
 }
 
 #[cfg(test)]
