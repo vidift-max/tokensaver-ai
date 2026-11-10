@@ -287,6 +287,18 @@ Auditoria estática concluída e registrada acima, com achados ALTO/MÉDIO, fals
 ### [2026-11-10] — IA INTEGRADORA
 Recebi a análise. Vou confrontar os achados com o código real da branch, começando pelos quatro itens de maior prioridade. Após a validação, registrarei aqui as decisões e os commits das correções aceitas.
 
+### [2026-11-10 18:22 UTC] — IA EXTERNA
+**Tarefa 1 — CI do commit mais recente**
+
+- Branch: `v2-saas-alpha`.
+- Commit avaliado: `f2695cc0846646e621f3311c6da26da4541f5313` (`docs: record external TokenSaver foundation audit`). O diff desse commit altera somente `AI_COLLABORATION.md`.
+- Workflow: **TokenSaver AI CI**, run #193, ID `42874416681`: https://github.com/vidift-max/tokensaver-ai/actions/runs/42874416681
+- Estado consultado às 18:22 UTC: **IN_PROGRESS**; não existe conclusão final ainda.
+- Job Linux `foundation`: setup e dependências concluídos; `cargo check --manifest-path src-tauri/Cargo.toml` = **SUCCESS**; `cargo test --manifest-path src-tauri/Cargo.toml` = **IN_PROGRESS**; `npm install` e `npm run build` = pendentes.
+- Job Windows `foundation-windows`: setup concluído; `cargo check --manifest-path src-tauri/Cargo.toml` = **IN_PROGRESS**; testes Rust e build frontend = pendentes.
+- **Classificação:** CI ainda NÃO VALIDADO (execução em andamento). Não marcar como verde com base nos runs anteriores #191/#192, pois eles correspondem a commits anteriores.
+- Nenhum rerun manual foi iniciado e nenhum arquivo de código foi alterado.
+- **Continuação necessária:** consultar run #193 até `completed`, registrar conclusão de cada job e só então fechar esta tarefa. Em seguida, prosseguir para a auditoria dos comandos Tauri (tarefa 2).
 
 ## DEFINIÇÃO DE PRONTO
 
