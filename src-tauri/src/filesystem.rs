@@ -195,6 +195,60 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_publication_never_replaces_winner() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let stage_a = root.join("stage-a");
+        let stage_b = root.join("stage-b");
+        let target = root.join("target");
+        fs::create_dir(&stage_a).unwrap();
+        fs::create_dir(&stage_b).unwrap();
+        fs::write(stage_a.join("winner"), b"a").unwrap();
+        fs::write(stage_b.join("winner"), b"b").unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let a = {
+            let barrier = barrier.clone();
+            let stage = stage_a.clone();
+            let target = target.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_noreplace(&stage, &target)
+            })
+        };
+        let b = {
+            let barrier = barrier.clone();
+            let stage = stage_b.clone();
+            let target = target.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_noreplace(&stage, &target)
+            })
+        };
+        barrier.wait();
+        let results = [a.join().unwrap(), b.join().unwrap()];
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|r| r.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::AlreadyExists)).count(), 1);
+        let winner = fs::read(target.join("winner")).unwrap();
+        assert!(winner == b"a" || winner == b"b");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn limited_copy_does_not_replace_existing_target() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, b"new").unwrap();
+        fs::write(&target, b"original").unwrap();
+        let err = copy_file_limited(&source, &target, 1024).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn refuses_existing_target() {
         let root = temp_dir();
         fs::create_dir_all(&root).unwrap();
