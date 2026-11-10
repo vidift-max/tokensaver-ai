@@ -20,9 +20,15 @@ fn project_root(app: &tauri::AppHandle, project_id: &str) -> AppResult<PathBuf> 
 }
 fn terms(query:&str)->Vec<String>{ query.split_whitespace().map(|s| s.trim_matches(|c:char| !c.is_alphanumeric() && c!='_' && c!='-').to_lowercase()).filter(|s|s.len()>=2).take(12).collect() }
 fn excerpt(text:&str, needle:&str)->String {
-    let lower=text.to_lowercase(); let pos=lower.find(needle).unwrap_or(0); let start=pos.saturating_sub(100); let end=(pos+260).min(text.len());
-    let mut out=text.get(start..end).unwrap_or("").replace('\n', " ").replace('\r', " ");
-    if start>0 { out=format!("…{out}"); } if end<text.len(){out.push('…');} out
+    let lower=text.to_lowercase();
+    let pos=lower.find(needle);
+    let chars:Vec<char>=text.chars().collect();
+    let center=pos.map(|p| lower[..p].chars().count()).unwrap_or(0);
+    let start=center.saturating_sub(100);
+    let end=(center+260).min(chars.len());
+    let mut out: String=chars[start..end].iter().collect();
+    out=out.replace('\n', " ").replace('\r', " ");
+    if start>0 { out=format!("…{out}"); } if end<chars.len(){out.push('…');} out
 }
 #[tauri::command]
 pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, max_files: usize) -> AppResult<Vec<ContextHit>> {
