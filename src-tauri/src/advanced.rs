@@ -95,14 +95,20 @@ pub fn get_claude_config(app:tauri::AppHandle,project_id:String)->AppResult<Clau
     let row=c.query_row("SELECT enabled,endpoint,model FROM claude_config WHERE id=1",[],|r|Ok(ClaudeConfig{enabled:r.get::<_,i64>(0)?!=0,endpoint:r.get(1)?,model:r.get(2)?}));
     match row {Ok(x)=>Ok(x),Err(_)=>Ok(ClaudeConfig{enabled:false,endpoint:String::new(),model:String::new()})}
 }
+fn validate_claude_endpoint(endpoint:&str)->AppResult<()> {
+    if endpoint.is_empty() { return Ok(()); }
+    let lower=endpoint.trim().to_ascii_lowercase();
+    let local_ok=lower.starts_with("http://localhost/") || lower.starts_with("http://localhost:") || lower.starts_with("http://127.0.0.1/") || lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://[::1]/") || lower.starts_with("http://[::1]:");
+    if !(lower.starts_with("https://") || local_ok) || lower.contains('@') || lower.contains('\\') { return Err(AppError::new("INVALID_REQUEST","Endpoint deve usar HTTPS, ou localhost para desenvolvimento.")); }
+    let rest=if let Some(v)=lower.strip_prefix("https://"){v}else if let Some(v)=lower.strip_prefix("http://"){v}else{""};
+    let authority=rest.split('/').next().unwrap_or("");
+    if authority.is_empty() || authority.starts_with(':') { return Err(AppError::new("INVALID_REQUEST","Endpoint inválido.")); }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_claude_config(app:tauri::AppHandle,project_id:String,enabled:bool,endpoint:String,model:String)->AppResult<ClaudeConfig>{
-    valid_text(&endpoint,2048)?; valid_text(&model,256)?;
-    if !endpoint.is_empty() {
-        let lower=endpoint.trim().to_ascii_lowercase();
-        let local_ok=lower.starts_with("http://localhost/") || lower.starts_with("http://localhost:") || lower.starts_with("http://127.0.0.1/") || lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://[::1]/") || lower.starts_with("http://[::1]:");
-        if !(lower.starts_with("https://") || local_ok) || lower.contains('@') { return Err(AppError::new("INVALID_REQUEST","Endpoint deve usar HTTPS, ou localhost para desenvolvimento.")); }
-    }
+    valid_text(&endpoint,2048)?; valid_text(&model,256)?; validate_claude_endpoint(endpoint.trim())?;
     let c=db::open(&project_root(&app,&project_id)?.join("db.sqlite"))?; c.execute("INSERT INTO claude_config(id,enabled,endpoint,model,updated_at) VALUES(1,?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,endpoint=excluded.endpoint,model=excluded.model,updated_at=excluded.updated_at",params![enabled as i64,endpoint.trim(),model.trim(),now()]).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível salvar a configuração."))?;
     Ok(ClaudeConfig{enabled,endpoint:endpoint.trim().into(),model:model.trim().into()})
 }
@@ -145,6 +151,17 @@ pub fn oneshot_capture(app:tauri::AppHandle,project_id:String,logical_path:Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_endpoint_validation_rejects_insecure_or_malformed_hosts() {
+        assert!(validate_claude_endpoint("https://api.example.com/v1").is_ok());
+        assert!(validate_claude_endpoint("http://localhost:8080/v1").is_ok());
+        assert!(validate_claude_endpoint("http://127.0.0.1:8080/v1").is_ok());
+        assert!(validate_claude_endpoint("http://localhost.evil/v1").is_err());
+        assert!(validate_claude_endpoint("http://user@localhost:8080/v1").is_err());
+        assert!(validate_claude_endpoint("https://").is_err());
+        assert!(validate_claude_endpoint("http://example.com/v1").is_err());
+    }
 
     #[test]
     fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
