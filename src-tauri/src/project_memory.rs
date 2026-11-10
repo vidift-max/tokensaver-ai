@@ -62,3 +62,84 @@ fn set_project_memory_in_db(
     Ok(MemoryEntry { key: key.to_string(), value: value.to_string(), updated_at: now })
 }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+
+    fn test_db_path() -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "tokensaver-memory-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), dir.join("db.sqlite"))
+    }
+
+    #[test]
+    fn memory_cap_allows_update_at_capacity_and_is_project_scoped() {
+        let (dir, path) = test_db_path();
+        let mut conn = db::open(&path).unwrap();
+        for index in 0..MAX_PROJECT_MEMORY_ENTRIES {
+            conn.execute(
+                "INSERT INTO project_memory(key,value,updated_at,project_id) VALUES(?1,'v','1','project-a')",
+                rusqlite::params![format!("key-{index}")],
+            ).unwrap();
+        }
+
+        let updated = set_project_memory_in_db(&mut conn, "project-a", "key-0", "updated").unwrap();
+        assert_eq!(updated.value, "updated");
+        assert!(set_project_memory_in_db(&mut conn, "project-a", "new-key", "v").is_err());
+        assert!(set_project_memory_in_db(&mut conn, "project-b", "new-key", "v").is_ok());
+
+        drop(conn);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_writers_cannot_exceed_project_memory_cap() {
+        let (dir, path) = test_db_path();
+        let mut seed = db::open(&path).unwrap();
+        for index in 0..(MAX_PROJECT_MEMORY_ENTRIES - 1) {
+            seed.execute(
+                "INSERT INTO project_memory(key,value,updated_at,project_id) VALUES(?1,'v','1','project-a')",
+                rusqlite::params![format!("key-{index}")],
+            ).unwrap();
+        }
+        drop(seed);
+
+        let conn_a = db::open(&path).unwrap();
+        let conn_b = db::open(&path).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let a = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut conn = conn_a;
+                barrier.wait();
+                set_project_memory_in_db(&mut conn, "project-a", "parallel-a", "v").is_ok()
+            })
+        };
+        let b = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut conn = conn_b;
+                barrier.wait();
+                set_project_memory_in_db(&mut conn, "project-a", "parallel-b", "v").is_ok()
+            })
+        };
+        barrier.wait();
+        let successes = [a.join().unwrap(), b.join().unwrap()].iter().filter(|ok| **ok).count();
+        assert_eq!(successes, 1);
+
+        let verify = db::open(&path).unwrap();
+        let count: i64 = verify.query_row(
+            "SELECT count(*) FROM project_memory WHERE project_id='project-a'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, MAX_PROJECT_MEMORY_ENTRIES);
+        drop(verify);
+        let _ = fs::remove_dir_all(dir);
+    }
+}
