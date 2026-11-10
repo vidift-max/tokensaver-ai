@@ -43,6 +43,28 @@ fn app_storage(app: &tauri::AppHandle) -> AppResult<PathBuf> {
         .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível localizar o armazenamento."))
 }
 
+fn validate_source_database_budget(database_path: &Path) -> AppResult<()> {
+    let mut total = fs::symlink_metadata(database_path)
+        .map_err(|_| AppError::new("PROJECT_NOT_FOUND", "Banco de dados do projeto indisponível."))?
+        .len();
+    let wal_path = database_path.with_file_name("db.sqlite-wal");
+    match fs::symlink_metadata(&wal_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(AppError::new("STORAGE_ERROR", "O arquivo WAL do banco não é regular."));
+            }
+            total = total.checked_add(metadata.len())
+                .ok_or_else(|| AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco excede o limite de tamanho do backup."))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(AppError::new("STORAGE_ERROR", "Não foi possível verificar o arquivo WAL do banco.")),
+    }
+    if total > MAX_BACKUP_DATABASE_BYTES {
+        return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco e seu WAL excedem o limite de tamanho do backup."));
+    }
+    Ok(())
+}
+
 fn validate_project_id(id: &str) -> AppResult<()> {
     if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(AppError::new("INVALID_REQUEST", "project_id inválido."));
@@ -100,6 +122,8 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
         || canonical_source_db.parent() != Some(canonical_project_root.as_path()) {
         return Err(AppError::new("STORAGE_ERROR", "O projeto está fora do armazenamento autorizado."));
     }
+
+    validate_source_database_budget(&source_db)?;
 
     let backup_id = Uuid::new_v4().to_string();
     let backup_parent = storage.join("backups").join(&project_id);
@@ -459,6 +483,31 @@ pub fn restore_project_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_database_budget_counts_database_and_wal() {
+        let root = std::env::temp_dir().join(format!("tokensaver-db-budget-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("db.sqlite");
+        fs::write(&database, vec![0u8; 8]).unwrap();
+        fs::write(root.join("db.sqlite-wal"), vec![0u8; 8]).unwrap();
+        assert!(validate_source_database_budget(&database).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_database_budget_rejects_symlink_wal() {
+        let root = std::env::temp_dir().join(format!("tokensaver-db-wal-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("db.sqlite");
+        fs::write(&database, b"db").unwrap();
+        fs::write(root.join("outside"), b"wal").unwrap();
+        #[cfg(unix)] std::os::unix::fs::symlink(root.join("outside"), root.join("db.sqlite-wal")).unwrap();
+        #[cfg(windows)] std::os::windows::fs::symlink_file(root.join("outside"), root.join("db.sqlite-wal")).unwrap();
+        assert!(validate_source_database_budget(&database).is_err());
+        let _ = fs::remove_file(root.join("db.sqlite-wal"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn project_and_backup_ids_reject_path_components() {
