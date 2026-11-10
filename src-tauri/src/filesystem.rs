@@ -68,9 +68,11 @@ pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Re
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target already exists"));
     }
     let temp = target.with_file_name(format!(".{}.{}.tmp", target.file_name().and_then(|v| v.to_str()).unwrap_or("copy"), uuid::Uuid::new_v4()));
+    let mut temp_created = false;
     let result = (|| -> io::Result<u64> {
         let mut input = File::open(source)?;
         let mut output = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        temp_created = true;
         let mut total = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
@@ -88,7 +90,7 @@ pub fn copy_file_limited(source: &Path, target: &Path, max_bytes: u64) -> io::Re
         publish_noreplace(&temp, target)?;
         Ok(total)
     })();
-    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+    if result.is_err() && temp_created { let _ = std::fs::remove_file(&temp); }
     result
 }
 
