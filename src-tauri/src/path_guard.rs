@@ -2,6 +2,7 @@ use crate::{error::{AppError, AppResult}, limits};
 use serde::{Deserialize, Serialize};
 use std::{fs::{self, File, OpenOptions}, io::Read, path::{Component, Path, PathBuf}, time::{Duration, Instant}};
 use tauri::Manager;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRoot { pub path: String }
@@ -182,7 +183,11 @@ fn save_roots_unlocked(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()>
     let tmp=path.with_file_name(format!(".import_roots.{}.tmp",Uuid::new_v4()));
     let data=serde_json::to_vec_pretty(roots).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível serializar as áreas de importação."))?;
     if data.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
-    fs::write(&tmp,data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
+    { let mut file=File::create(&tmp).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
+      use std::io::Write;
+      file.write_all(&data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível salvar as áreas de importação."))?;
+      file.sync_all().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível sincronizar as áreas de importação."))?;
+    }
     #[cfg(windows)]
     { use std::os::windows::ffi::OsStrExt; use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH}; let from:Vec<u16>=tmp.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let to:Vec<u16>=path.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let ok=unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}; if ok==0{let _=fs::remove_file(&tmp);return Err(AppError::new("STORAGE_ERROR","Não foi possível substituir as áreas de importação."));} }
     #[cfg(not(windows))]
@@ -204,7 +209,6 @@ pub fn add_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>> {
     let canonical=canonical_without_redirect(&p)?;
     if !canonical.is_dir(){return Err(AppError::new("INVALID_FILE","A área de importação deve ser um diretório."));}
     let _lock=lock_roots(app)?;
-    let _lock=lock_roots(app)?;
     let mut roots=load_roots(app)?;
     let canonical_string=canonical.to_string_lossy().into_owned();
     if roots.len()>=limits::MAX_IMPORT_ROOTS && !roots.iter().any(|r|same_path(Path::new(&r.path),&canonical)){return Err(AppError::new("PATH_NOT_ALLOWED","Número máximo de áreas de importação atingido."));}
@@ -216,6 +220,7 @@ pub fn remove_root(app:&tauri::AppHandle,path:String)->AppResult<Vec<ImportRoot>
     let p=PathBuf::from(path);
     if !p.is_absolute(){return Err(AppError::new("PATH_NOT_ALLOWED","A área de importação deve usar caminho absoluto."));}
     if is_forbidden_link_name(&p){return Err(AppError::new("PATH_NOT_ALLOWED","Atalhos do Windows não podem ser áreas de importação."));}
+    let _lock=lock_roots(app)?;
     let mut roots=load_roots(app)?;
     roots.retain(|r|!same_path(Path::new(&r.path),&p));
     save_roots_unlocked(app,&roots)?;
