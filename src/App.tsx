@@ -6,7 +6,7 @@ const modules = [
   {name:"Smart Context",ready:false},{name:"Safe Optimizer",ready:false},{name:"Project Memory",ready:false},
   {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
   {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
-  {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:false},
+  {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:true},
   {name:"Settings",ready:true},{name:"History",ready:false}
 ];
 
