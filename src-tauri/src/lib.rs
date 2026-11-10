@@ -86,9 +86,6 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
     }
 }
 
-fn ensure_blob(root:&Path,sha:&str,bytes:&[u8])->AppResult<String>{
-    ensure_blob_with_status(root,sha,bytes).map(|(path,_)|path)
-}
 fn allowed_extension(path:&str)->bool{matches!(Path::new(path).extension().and_then(|e|e.to_str()).map(|s|s.to_ascii_lowercase()).as_deref(),Some("txt")|Some("md")|Some("json")|Some("html")|Some("css"))}
 fn read_source_safely(app:&tauri::AppHandle, source:&Path)->AppResult<Vec<u8>>{let f=path_guard::open_verified(app, source)?;let meta=f.metadata().map_err(|_|AppError::new("INVALID_FILE","Não foi possível verificar o arquivo."))?;if !meta.is_file(){return Err(AppError::new("INVALID_FILE","O caminho informado não é um arquivo regular."));}let mut bytes=Vec::new();f.take(limits::MAX_FILE_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("INVALID_FILE","Não foi possível ler o arquivo informado."))?;if bytes.len() as u64>limits::MAX_FILE_BYTES{return Err(AppError::with_details("FILE_TOO_LARGE","O arquivo excede o limite permitido.",serde_json::json!({"limit_bytes":limits::MAX_FILE_BYTES,"actual_bytes":bytes.len()})));}if std::str::from_utf8(&bytes).is_err(){return Err(AppError::new("ENCODING_INVALID","O arquivo não é UTF-8 válido."));}Ok(bytes)}
 #[tauri::command] fn health()->AppResult<AppHealth>{Ok(AppHealth{ok:true,version:"0.1.0"})}
