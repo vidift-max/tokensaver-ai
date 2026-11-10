@@ -93,8 +93,15 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
 fn allowed_extension(path:&str)->bool{matches!(Path::new(path).extension().and_then(|e|e.to_str()).map(|s|s.to_ascii_lowercase()).as_deref(),Some("txt")|Some("md")|Some("json")|Some("html")|Some("css"))}
 fn read_source_safely(app:&tauri::AppHandle, source:&Path)->AppResult<Vec<u8>>{let f=path_guard::open_verified(app, source)?;let meta=f.metadata().map_err(|_|AppError::new("INVALID_FILE","Não foi possível verificar o arquivo."))?;if !meta.is_file(){return Err(AppError::new("INVALID_FILE","O caminho informado não é um arquivo regular."));}let mut bytes=Vec::new();f.take(limits::MAX_FILE_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("INVALID_FILE","Não foi possível ler o arquivo informado."))?;if bytes.len() as u64>limits::MAX_FILE_BYTES{return Err(AppError::with_details("FILE_TOO_LARGE","O arquivo excede o limite permitido.",serde_json::json!({"limit_bytes":limits::MAX_FILE_BYTES,"actual_bytes":bytes.len()})));}if std::str::from_utf8(&bytes).is_err(){return Err(AppError::new("ENCODING_INVALID","O arquivo não é UTF-8 válido."));}Ok(bytes)}
 #[tauri::command] fn health()->AppResult<AppHealth>{Ok(AppHealth{ok:true,version:"0.1.0"})}
-#[tauri::command] fn sha256_text(input:String)->AppResult<String>{let mut h=Sha256::new();h.update(input.as_bytes());Ok(format!("{:x}",h.finalize()))}
-#[tauri::command] fn estimate_tokens(input:String)->AppResult<TokenEstimate>{let count=((input.chars().count() as f64)/4.0).ceil() as usize;Ok(TokenEstimate{method:"local_estimate",count,approximate:true,provider:None,model:None,limitation:Some("Estimativa local por caracteres; não substitui a contagem do provedor.".into())})}
+#[tauri::command] fn sha256_text(input:String)->AppResult<String>{
+    if input.len()>2_000_000 { return Err(AppError::new("INPUT_TOO_LARGE","Entrada excede o limite de 2 MB.")); }
+    let mut h=Sha256::new(); h.update(input.as_bytes()); Ok(format!("{:x}",h.finalize()))
+}
+#[tauri::command] fn estimate_tokens(input:String)->AppResult<TokenEstimate>{
+    if input.len()>2_000_000 { return Err(AppError::new("INPUT_TOO_LARGE","Entrada excede o limite de 2 MB.")); }
+    let count=((input.chars().count() as f64)/4.0).ceil() as usize;
+    Ok(TokenEstimate{method:"local_estimate",count,approximate:true,provider:None,model:None,limitation:Some("Estimativa local por caracteres; não substitui a contagem do provedor.".into())})
+}
 #[tauri::command] fn initialize_project(app:tauri::AppHandle,project_id:String)->AppResult<ProjectInfo>{let root=project_root(&app,&project_id)?;fs::create_dir_all(root.join("blobs")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar no armazenamento."))?;let db_path=root.join("db.sqlite");db::open(&db_path)?;Ok(ProjectInfo{id:project_id,path:root.to_string_lossy().into_owned()})}
 #[tauri::command]
 fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,source_path:String)->AppResult<String>{
