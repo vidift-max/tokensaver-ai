@@ -238,6 +238,7 @@ mod tests {
         assert_eq!(ranked[1].score, 10);
     }
 
+    #[test]
     fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
         assert!(validate_logical_path("article..txt").is_ok());
         assert!(validate_logical_path("articles/post.html").is_ok());
