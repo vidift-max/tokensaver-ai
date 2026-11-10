@@ -10,15 +10,15 @@ fn valid_key(k:&str)->bool { !k.is_empty() && k.len()<=128 && k.chars().all(|c| 
 #[tauri::command]
 pub fn list_project_memory(app: tauri::AppHandle, project_id: String) -> AppResult<Vec<MemoryEntry>> {
     if project_id.is_empty() || project_id.len()>64 || !project_id.chars().all(|c| c.is_ascii_alphanumeric()||c=='-'||c=='_') { return Err(AppError::new("INVALID_REQUEST","project_id inválido.")); }
-    if project_id.is_empty() || project_id.len()>64 || !project_id.chars().all(|c| c.is_ascii_alphanumeric()||c=='-'||c=='_') { return Err(AppError::new("INVALID_REQUEST","project_id inválido.")); }
     let root=app.path().app_data_dir().map_err(|_|AppError::new("STORAGE_ERROR","Armazenamento indisponível."))?.join("storage/projects").join(&project_id);
     let conn=db::open(&root.join("db.sqlite"))?;
     let mut st=conn.prepare("SELECT key,value,updated_at FROM project_memory WHERE project_id=?1 ORDER BY key").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar a memória."))?;
     let rows=st.query_map(rusqlite::params![project_id],|r|Ok(MemoryEntry{key:r.get(0)?,value:r.get(1)?,updated_at:r.get(2)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler a memória."))?;
-    Ok(rows.filter_map(Result::ok).collect())
+    rows.collect::<Result<Vec<_>,_>>().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler um registro da memória."))
 }
 #[tauri::command]
 pub fn set_project_memory(app: tauri::AppHandle, project_id:String, key:String, value:String)->AppResult<MemoryEntry>{
+    if project_id.is_empty() || project_id.len()>64 || !project_id.chars().all(|c| c.is_ascii_alphanumeric()||c=='-'||c=='_') { return Err(AppError::new("INVALID_REQUEST","project_id inválido.")); }
     if !valid_key(&key) { return Err(AppError::new("INVALID_REQUEST","Chave de memória inválida.")); }
     if value.len()>100_000 { return Err(AppError::new("INVALID_REQUEST","Valor de memória excede o limite.")); }
     let root=app.path().app_data_dir().map_err(|_|AppError::new("STORAGE_ERROR","Armazenamento indisponível."))?.join("storage/projects").join(&project_id);
