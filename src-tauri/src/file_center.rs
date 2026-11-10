@@ -1,4 +1,5 @@
 use crate::{db, error::{AppError, AppResult}, hash, limits};
+use sha2::{Digest, Sha256};
 use rusqlite::params;
 use serde::Serialize;
 use std::{fs::File, io::{Read, Seek, SeekFrom}, path::PathBuf};
@@ -67,10 +68,18 @@ pub(crate) fn read_utf8_chunk(file:&mut File,offset:usize,total:usize,limit:usiz
 
 pub(crate) fn verify_blob_integrity(file:&mut File, expected_sha:&str, expected_len:usize)->AppResult<()> {
     file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível posicionar a verificação do blob."))?;
-    let mut data=Vec::with_capacity(expected_len);
-    file.take(expected_len as u64 + 1).read_to_end(&mut data).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar a integridade do blob."))?;
-    if data.len()!=expected_len{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
-    if hash::sha256_bytes(&data)!=expected_sha{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está corrompido."));}
+    let mut limited=(&mut *file).take(expected_len as u64 + 1);
+    let mut hasher=Sha256::new();
+    let mut buffer=[0u8;64*1024];
+    let mut total=0usize;
+    loop{
+        let n=limited.read(&mut buffer).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar a integridade do blob."))?;
+        if n==0{break;}
+        total=total.saturating_add(n);
+        hasher.update(&buffer[..n]);
+    }
+    if total!=expected_len{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está inconsistente."));}
+    if format!("{:x}",hasher.finalize())!=expected_sha{return Err(AppError::new("STORAGE_ERROR","Blob do arquivo está corrompido."));}
     file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível reposicionar o blob."))?;
     Ok(())
 }
