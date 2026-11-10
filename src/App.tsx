@@ -3,7 +3,7 @@ import { api } from "./api";
 
 const modules = [
   {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
-  {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:false},{name:"Project Memory",ready:false},
+  {name:"Smart Context",ready:true},{name:"Safe Optimizer",ready:true},{name:"Project Memory",ready:false},
   {name:"Claude Connection",ready:false},{name:"Template Master",ready:false},{name:"Editorial Engine",ready:false},
   {name:"Article Library",ready:false},{name:"Internal Links",ready:false},{name:"Final Page Builder",ready:false},
   {name:"OneShot Capture",ready:false},{name:"Cost Simulator",ready:false},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
@@ -33,6 +33,8 @@ export default function App() {
   const [contextQuery, setContextQuery] = useState("");
   const [contextHits, setContextHits] = useState<Awaited<ReturnType<typeof api.smartContext>>>([]);
   const [contextBusy, setContextBusy] = useState(false);
+  const [optimizerInput, setOptimizerInput] = useState("");
+  const [optimizerResult, setOptimizerResult] = useState<Awaited<ReturnType<typeof api.optimizeText>> | null>(null);
 
   function errorMessage(error: unknown, fallback: string) {
     const normalized = api.normalizeError(error);
@@ -135,6 +137,11 @@ export default function App() {
     finally { setContextBusy(false); }
   }
 
+  async function runOptimizer() {
+    setError("");
+    try { setOptimizerResult(await api.optimizeText(optimizerInput)); } catch (e) { setError(errorMessage(e, "Não foi possível otimizar o texto.")); }
+  }
+
   async function loadFiles() {
     setLoadingFiles(true);
     setError("");
@@ -167,7 +174,15 @@ export default function App() {
           <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Método, modelo e limitações acompanham cada contagem.</span></article>
         </div>
 
-        {active === "Smart Context" ? (
+        {active === "Safe Optimizer" ? (
+          <section className="panel">
+            <div className="panel-head"><div><h2>Safe Optimizer</h2><p className="muted">Normalização conservadora: remove espaços no fim das linhas e linhas vazias redundantes, sem reescrever o conteúdo.</p></div><button className="primary" onClick={() => void runOptimizer()} disabled={!optimizerInput}>Otimizar</button></div>
+            <textarea value={optimizerInput} onChange={e=>setOptimizerInput(e.target.value)} rows={14} placeholder="Cole aqui o conteúdo que deseja otimizar..." />
+            {error && <p className="error">{error}</p>}
+            {optimizerResult && <div className="cards"><article><b>Antes</b><strong>~{optimizerResult.estimated_tokens_before} tokens</strong><span>{optimizerResult.original_chars} caracteres</span></article><article><b>Depois</b><strong>~{optimizerResult.estimated_tokens_after} tokens</strong><span>{optimizerResult.optimized_chars} caracteres</span></article><article><b>Economia</b><strong>{optimizerResult.saved_chars} caracteres</strong><span>{optimizerResult.changed ? "Conteúdo normalizado" : "Nenhuma alteração"}</span></article></div>}
+            {optimizerResult && <textarea value={optimizerResult.content} readOnly rows={14} />}
+          </section>
+        ) : active === "Smart Context" ? (
           <section className="panel">
             <div className="panel-head"><div><h2>Smart Context</h2><p className="muted">Busca local e determinística nos arquivos importados. O conteúdo não é enviado para APIs externas.</p></div><button className="primary" onClick={() => void runSmartContext()} disabled={contextBusy || !contextQuery.trim()}>{contextBusy ? "Montando..." : "Montar contexto"}</button></div>
             <div className="project-row"><label>Projeto <input value={projectId} onChange={e=>setProjectId(e.target.value)} maxLength={64}/></label><label style={{flex:1}}>Consulta <input value={contextQuery} onChange={e=>setContextQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") void runSmartContext();}} placeholder="ex.: title, schema, produto" /></label></div>
