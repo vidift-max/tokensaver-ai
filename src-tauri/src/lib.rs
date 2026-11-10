@@ -133,7 +133,7 @@ fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,s
     if result.is_err() && blob_created{
         let blob_abs=root.join(&blob_rel);
         let referenced=db::open(&root.join("db.sqlite")).ok().and_then(|c|{
-            c.query_row("SELECT 1 FROM blobs WHERE sha256=?1 LIMIT 1",rusqlite::params![sha],|r|r.get::<_,i64>(0)).ok()
+            c.query_row("SELECT 1 FROM file_versions WHERE blob_sha256=?1 LIMIT 1",rusqlite::params![sha],|r|r.get::<_,i64>(0)).ok()
         }).is_some();
         if !referenced { let _=fs::remove_file(blob_abs); }
     }
