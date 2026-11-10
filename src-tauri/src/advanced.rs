@@ -227,14 +227,15 @@ mod tests {
         };
         let rows = vec![
             article("low", "articles/a-rust.md"),
+            article("tie", "articles/b-tauri.md"),
             article("high", "articles/z-rust-tauri.md"),
-            article("tie", "articles/b-tauri-rust.md"),
         ];
         let ranked = rank_internal_link_candidates(rows, "rust tauri", 2);
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].file_id, "high");
         assert_eq!(ranked[0].score, 20);
         assert_eq!(ranked[1].file_id, "tie");
+        assert_eq!(ranked[1].score, 10);
     }
 
     fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
