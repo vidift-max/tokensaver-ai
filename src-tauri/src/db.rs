@@ -67,8 +67,21 @@ CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_
     if current == 2 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível iniciar a migração."))?;
-        tx.execute_batch("ALTER TABLE operations ADD COLUMN project_id TEXT;")
-            .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o histórico de operações."))?;
+        tx.execute_batch(r#"
+ALTER TABLE operations ADD COLUMN project_id TEXT;
+CREATE TABLE project_memory_v4 (
+ key TEXT NOT NULL,
+ value TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ project_id TEXT NOT NULL,
+ PRIMARY KEY(project_id, key)
+);
+INSERT INTO project_memory_v4(key,value,updated_at,project_id)
+SELECT key,value,updated_at,'__legacy__' FROM project_memory;
+DROP TABLE project_memory;
+ALTER TABLE project_memory_v4 RENAME TO project_memory;
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, key);
+"#).map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível atualizar o histórico e a memória por projeto."))?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|_| AppError::new("MIGRATION_ERROR", "Não foi possível registrar a versão do banco."))?;
         tx.commit()
@@ -138,7 +151,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    #[test]
     fn v3_migration_scopes_project_memory() {
         let path = std::env::temp_dir().join(format!(
             "tokensaver-db-v3-{}.sqlite",
@@ -157,6 +169,7 @@ mod tests {
         let _=std::fs::remove_file(path);
     }
 
+    #[test]
     fn v1_migration_creates_v2_extensions() {
         let path = std::env::temp_dir().join(format!(
             "tokensaver-db-migration-{}.sqlite",
