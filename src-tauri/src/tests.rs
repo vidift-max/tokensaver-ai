@@ -9,6 +9,15 @@ fn logical_path_rejects_traversal_and_absolute_paths() {
 }
 
 #[test]
+fn logical_path_rejects_empty_components_current_dir_and_nul() {
+    assert!(safe_logical_path("docs//article.md").is_err());
+    assert!(safe_logical_path("docs/./article.md").is_err());
+    assert!(safe_logical_path("docs/article.md/").is_err());
+    assert!(safe_logical_path("docs/..\\\\article.md").is_err());
+    assert!(safe_logical_path("docs/\\0article.md").is_err());
+}
+
+#[test]
 fn logical_path_enforces_depth() {
     let deep = (0..(limits::MAX_PATH_DEPTH + 1))
         .map(|_| "x")
