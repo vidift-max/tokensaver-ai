@@ -165,6 +165,9 @@ pub fn create_project_backup(app: tauri::AppHandle, project_id: String) -> AppRe
             if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) || expected_len < 0 {
                 return Err(AppError::new("BACKUP_ERROR", "O banco contém metadados de blob inválidos."));
             }
+            if expected_len as u64 > limits::MAX_FILE_BYTES {
+                return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "Um blob excede o limite de tamanho permitido."));
+            }
             let source = safe_blob_source(&project_root, &relative)?;
             let file_name = sha.to_ascii_lowercase();
             let target = blob_dir.join(&file_name);
