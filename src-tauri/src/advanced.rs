@@ -76,10 +76,28 @@ pub fn list_articles(app:tauri::AppHandle,project_id:String,query:String)->AppRe
     rows.collect::<Result<Vec<_>,_>>().map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler um artigo."))
 }
 
+fn rank_internal_link_candidates(rows: Vec<ArticleRow>, query: &str, max_results: usize) -> Vec<LinkCandidate> {
+    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut ranked: Vec<(ArticleRow, i64)> = rows.into_iter().filter_map(|article| {
+        let path = article.logical_path.to_lowercase();
+        let score = terms.iter().filter(|term| path.contains(term.as_str())).count() as i64 * 10;
+        (score > 0).then_some((article, score))
+    }).collect();
+    ranked.sort_by(|(a, score_a), (b, score_b)| {
+        score_b.cmp(score_a).then_with(|| a.logical_path.cmp(&b.logical_path))
+    });
+    ranked.into_iter().take(max_results.clamp(1, 50)).map(|(article, score)| LinkCandidate {
+        file_id: article.file_id,
+        logical_path: article.logical_path,
+        score,
+    }).collect()
+}
+
 #[tauri::command]
 pub fn find_internal_links(app:tauri::AppHandle,project_id:String,query:String,max_results:usize)->AppResult<Vec<LinkCandidate>>{
-    valid_text(&query,512)?; let max=max_results.clamp(1,50); let q=query.to_lowercase(); let rows=list_articles(app,project_id,"".into())?;
-    Ok(rows.into_iter().map(|a|{let p=a.logical_path.to_lowercase(); let mut score=0; for term in q.split_whitespace(){if p.contains(term){score+=10}} (a,score)}).filter(|(_,s)|*s>0).take(max).map(|(a,s)|LinkCandidate{file_id:a.file_id,logical_path:a.logical_path,score:s}).collect())
+    valid_text(&query,512)?;
+    let rows = list_articles(app, project_id, "".into())?;
+    Ok(rank_internal_link_candidates(rows, &query.to_lowercase(), max_results))
 }
 
 #[tauri::command]
@@ -196,6 +214,27 @@ mod tests {
         let q = r"100%_literal\path";
         let escaped = escape_like_query(q);
         assert_eq!(escaped, r"100\%\_literal\\path");
+    }
+
+    #[test]
+    fn internal_link_candidates_are_ranked_before_limiting_results() {
+        let article = |file_id: &str, logical_path: &str| ArticleRow {
+            file_id: file_id.into(),
+            logical_path: logical_path.into(),
+            version_no: 1,
+            byte_len: 10,
+            sha256: "a".repeat(64),
+        };
+        let rows = vec![
+            article("low", "articles/a-rust.md"),
+            article("high", "articles/z-rust-tauri.md"),
+            article("tie", "articles/b-tauri-rust.md"),
+        ];
+        let ranked = rank_internal_link_candidates(rows, "rust tauri", 2);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].file_id, "high");
+        assert_eq!(ranked[0].score, 20);
+        assert_eq!(ranked[1].file_id, "tie");
     }
 
     fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
