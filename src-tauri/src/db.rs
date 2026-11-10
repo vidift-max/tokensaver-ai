@@ -167,6 +167,31 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn fresh_database_scopes_project_memory() {
+        let path = std::env::temp_dir().join(format!(
+            "tokensaver-db-fresh-{}.sqlite",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let conn = open(&path).expect("fresh database");
+        conn.execute(
+            "INSERT INTO project_memory(key,value,updated_at,project_id) VALUES('same','one','1','project-a')",
+            [],
+        ).expect("insert first project memory");
+        conn.execute(
+            "INSERT INTO project_memory(key,value,updated_at,project_id) VALUES('same','two','1','project-b')",
+            [],
+        ).expect("insert second project memory");
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM project_memory WHERE key='same'",
+            [],
+            |row| row.get(0),
+        ).expect("count project memory");
+        assert_eq!(count, 2);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn v3_migration_scopes_project_memory() {
         let path = std::env::temp_dir().join(format!(
             "tokensaver-db-v3-{}.sqlite",
