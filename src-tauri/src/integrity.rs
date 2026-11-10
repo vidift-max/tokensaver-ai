@@ -100,7 +100,7 @@ pub fn verify_project(app: tauri::AppHandle, project_id: String) -> AppResult<In
     Ok(IntegrityReport {
         project_id, checked_blobs: checked, missing_blobs: missing, corrupt_blobs: corrupt,
         orphan_blobs, broken_references,
-        healthy: missing == 0 && corrupt == 0 && broken_references == 0,
+        healthy: missing == 0 && corrupt == 0 && orphan_blobs == 0 && broken_references == 0,
     })
 }
 
