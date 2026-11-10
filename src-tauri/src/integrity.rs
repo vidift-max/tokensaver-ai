@@ -117,4 +117,19 @@ mod tests {
         assert!(safe_blob_path(root, "blobs/../outside").is_err());
         assert!(safe_blob_path(root, "/blobs/abc").is_err());
     }
+
+    #[test]
+    fn integrity_verification_detects_corruption_and_length_mismatch() {
+        let dir = std::env::temp_dir().join(format!("tokensaver-guardian-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("blob");
+        let original = b"guardian integrity payload";
+        std::fs::write(&path, original).expect("write blob");
+        let sha = format!("{:x}", Sha256::digest(original));
+        assert!(verify_file(&path, &sha, original.len() as i64).expect("valid verification"));
+        assert!(!verify_file(&path, &sha, (original.len() + 1) as i64).expect("length check"));
+        std::fs::write(&path, b"guardian integrity changed").expect("mutate blob");
+        assert!(!verify_file(&path, &sha, original.len() as i64).expect("corruption check"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
