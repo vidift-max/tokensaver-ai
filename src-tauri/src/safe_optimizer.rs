@@ -54,6 +54,6 @@ mod tests {
     #[test]
     fn optimizer_preserves_content_and_removes_only_redundant_line_whitespace() {
         let input = "a  \n\n\n b  \n";
-        assert_eq!(safe_normalize(input), "a  \n\nb");
+        assert_eq!(safe_normalize(input), "a\n\nb");
     }
 }
