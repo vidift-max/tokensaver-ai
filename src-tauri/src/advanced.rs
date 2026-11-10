@@ -191,6 +191,13 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn article_query_treats_like_wildcards_as_literals() {
+        let q = r"100%_literal\\path";
+        let escaped = q.trim().replace('\\\\','\\\\\\\\').replace('%','\\\\%').replace('_','\\\\_');
+        assert_eq!(escaped, r"100\\%\\_literal\\\\path");
+    }
+
     fn logical_path_validation_allows_safe_names_and_rejects_traversal() {
         assert!(validate_logical_path("article..txt").is_ok());
         assert!(validate_logical_path("articles/post.html").is_ok());
