@@ -210,7 +210,7 @@ mod tests {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         let mut conn = Connection::open(&path).expect("open");
-        conn.execute_batch("PRAGMA user_version=1;").expect("set v1");
+        conn.execute_batch("CREATE TABLE project_memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL); INSERT INTO project_memory VALUES ('legacy','value','1'); CREATE TABLE operations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, created_at TEXT NOT NULL, finished_at TEXT, error_code TEXT); PRAGMA user_version=1;").expect("prepare v1");
         migrate(&mut conn).expect("migrate");
         let version:i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
