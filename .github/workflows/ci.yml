@@ -21,6 +21,15 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run build
+      - name: Package source ZIP
+        run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
+      - name: Upload source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokensaver-ai-v2-saas-alpha-source
+          path: tokensaver-ai-v2-saas-alpha.zip
+          if-no-files-found: error
+          retention-days: 14
 
   foundation-windows:
     runs-on: windows-latest
