@@ -17,12 +17,16 @@ fn project_root(app: &tauri::AppHandle, project_id: &str) -> AppResult<PathBuf> 
     app.path().app_data_dir().map(|p| p.join("storage").join("projects").join(project_id)).map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível localizar o armazenamento."))
 }
 
+fn checked_sqlite_offset(offset: usize) -> AppResult<i64> {
+    i64::try_from(offset).map_err(|_| AppError::new("INVALID_REQUEST", "O deslocamento solicitado excede o limite suportado."))
+}
+
 #[tauri::command]
 pub fn list_project_files(app: tauri::AppHandle, project_id: String, offset: usize, limit: usize) -> AppResult<Page<FileSummary>> {
-    let limit=limit.clamp(1,100); let root=project_root(&app,&project_id)?;
+    let limit=limit.clamp(1,100); let offset_sql=checked_sqlite_offset(offset)?; let root=project_root(&app,&project_id)?;
     let conn=db::open(&root.join("db.sqlite"))?;
     let mut stmt=conn.prepare("SELECT f.id,f.logical_path,COALESCE(v.version_no,0),COALESCE(v.byte_len,0),COALESCE(v.blob_sha256,'') FROM files f LEFT JOIN file_versions v ON v.file_id=f.id AND v.version_no=(SELECT MAX(v2.version_no) FROM file_versions v2 WHERE v2.file_id=f.id) WHERE f.project_id=?1 ORDER BY f.logical_path LIMIT ?2 OFFSET ?3").map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar os arquivos."))?;
-    let rows=stmt.query_map(params![project_id,limit as i64+1,offset as i64],|r|Ok(FileSummary{id:r.get(0)?,logical_path:r.get(1)?,latest_version:r.get(2)?,byte_len:r.get(3)?,sha256:r.get(4)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar os arquivos."))?;
+    let rows=stmt.query_map(params![project_id,limit as i64+1,offset_sql],|r|Ok(FileSummary{id:r.get(0)?,logical_path:r.get(1)?,latest_version:r.get(2)?,byte_len:r.get(3)?,sha256:r.get(4)?})).map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível consultar os arquivos."))?;
     let mut items=Vec::new(); for row in rows.take(limit+1){items.push(row.map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler o índice de arquivos."))?);} let has_more=items.len()>limit; if has_more{items.truncate(limit);} Ok(Page{items,offset,limit,has_more})
 }
 
@@ -90,4 +94,18 @@ pub(crate) fn verify_blob_integrity(file:&mut File, expected_sha:&str, expected_
     drop(limited);
     file.seek(SeekFrom::Start(0)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível reposicionar o blob."))?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_pagination_offset_rejects_values_that_cannot_fit_sqlite_integer() {
+        assert_eq!(checked_sqlite_offset(42).unwrap(), 42);
+        if usize::BITS > 63 {
+            assert!(checked_sqlite_offset(usize::MAX).is_err());
+        }
+    }
 }
