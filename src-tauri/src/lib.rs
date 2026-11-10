@@ -41,6 +41,10 @@ fn safe_logical_path(path:&str)->AppResult<PathBuf>{
 }
 fn project_root(app:&tauri::AppHandle,project_id:&str)->AppResult<PathBuf>{safe_project_id(project_id)?; app.path().app_data_dir().map(|p|p.join("storage").join("projects").join(project_id)).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível localizar o armazenamento."))}
 fn timestamp()->String{format!("{}",std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())}
+fn ensure_blob(root:&Path,sha:&str,bytes:&[u8])->AppResult<String>{
+    ensure_blob_with_status(root,sha,bytes).map(|(path,_)|path)
+}
+
 fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,bool)>{
     let blob_rel=format!("blobs/{sha}");
     let blob_abs=root.join(&blob_rel);
