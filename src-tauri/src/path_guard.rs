@@ -160,7 +160,7 @@ fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
 fn load_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
     let path=config_path(app)?;
     if !path.exists(){return Ok(Vec::new());}
-    let mut file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    let file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     let mut bytes=Vec::new(); file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     if bytes.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
     let text=String::from_utf8(bytes).map_err(|_|AppError::new("STORAGE_ERROR","As áreas de importação estão inválidas."))?;
@@ -189,7 +189,7 @@ fn save_roots_unlocked(app:&tauri::AppHandle,roots:&[ImportRoot])->AppResult<()>
       file.sync_all().map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível sincronizar as áreas de importação."))?;
     }
     #[cfg(windows)]
-    { use std::os::windows::ffi::OsStrExt; use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH}; let from:Vec<u16>=tmp.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let to:Vec<u16>=path.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let ok=unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}; if ok==0{let _=fs::remove_file(&tmp);return Err(AppError::new("STORAGE_ERROR","Não foi possível substituir as áreas de importação."));} }
+    { use std::os::windows::ffi::OsStrExt; use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH}; let from:Vec<u16>=tmp.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let to:Vec<u16>=path.as_os_str().encode_wide().chain(std::iter::once(0)).collect(); let ok=unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}; if ok==0{let _=fs::remove_file(&tmp);return Err(AppError::new("STORAGE_ERROR","Não foi possível substituir as áreas de importação."));} Ok(()) }
     #[cfg(not(windows))]
     fs::rename(&tmp,&path).map_err(|_|{let _=fs::remove_file(&tmp);AppError::new("STORAGE_ERROR","Não foi possível finalizar as áreas de importação.")})
 }
