@@ -117,9 +117,9 @@ async fn heartbeat(
         "UPDATE workload_executions SET heartbeat_at=NOW() WHERE execution_id=$1 AND session_id=$2 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW() RETURNING heartbeat_at"
     ).bind(identity.execution_id).bind(identity.session_id).fetch_optional(&mut *tx).await
       .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::UNAUTHORIZED)?;
-    sqlx::query("UPDATE room_memberships SET last_seen_at=$1 WHERE room_id=$2 AND principal_id=$3 AND session_id=$4 AND status='ACTIVE'")
+    let presence_state:String=sqlx::query_scalar("UPDATE room_memberships SET last_seen_at=$1 WHERE room_id=$2 AND principal_id=$3 AND session_id=$4 AND status='ACTIVE' RETURNING presence_state")
         .bind(last_seen_at).bind(identity.room_id).bind(identity.principal_id).bind(identity.session_id)
-        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::FORBIDDEN)?;
     sqlx::query("UPDATE workload_identities SET last_seen_at=$1 WHERE principal_id=$2 AND status='ACTIVE'")
         .bind(last_seen_at).bind(identity.principal_id).execute(&mut *tx).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -127,7 +127,7 @@ async fn heartbeat(
     // Only /lease/renew may extend a task lease, and it must present its fence.
     sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'PRESENCE_CHANGED',$4)")
         .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id)
-        .bind(serde_json::json!({"room_id":identity.room_id,"principal_id":identity.principal_id,"participant_id":identity.participant_id,"state":"ONLINE","last_seen_at":last_seen_at}))
+        .bind(serde_json::json!({"room_id":identity.room_id,"principal_id":identity.principal_id,"participant_id":identity.participant_id,"state":presence_state,"last_seen_at":last_seen_at}))
         .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(HeartbeatResponse { session_id:identity.session_id, execution_id:identity.execution_id, last_seen_at }))
