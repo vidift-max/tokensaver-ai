@@ -23,6 +23,12 @@ const server=createServer(async(req,res)=>{
   if(!task){task={task_id:crypto.randomUUID(),mission_id:body.mission_id,status:"UNOWNED",owner_principal_id:null,owner_participant_id:null,owner_session_id:null,owner_execution_id:null,fencing_token:0,lease_expires_at:null,checkpoint:body.checkpoint||{},checkpoint_version:0};tasks.set(body.mission_id,task);}
   return send(201,task);
  }
+ const forced=url.pathname.match(/^\/test\/takeover\/([^/]+)$/);
+ if(req.method==="POST" && forced){
+  const task=[...tasks.values()].find(t=>t.task_id===forced[1]);if(!task)return send(404,{});
+  task.status="REASSIGNED";task.fencing_token++;task.owner_principal_id=identity.principal_id;task.owner_participant_id=identity.participant_id;task.owner_session_id=identity.session_id;task.owner_execution_id=identity.execution_id;task.lease_expires_at=new Date(Date.now()+600000).toISOString();
+  return send(200,task);
+ }
  const lookup=url.pathname.match(/^\/team-room\/tasks\/by-mission\/([^/]+)$/);
  if(req.method==="GET" && lookup){const task=tasks.get(lookup[1]);return task?send(200,task):send(404,{});}
  const taskRoute=url.pathname.match(/^\/team-room\/tasks\/([^/]+)\/(lease\/acquire|lease\/renew|lease\/release|checkpoint|complete)$/);
@@ -295,4 +301,32 @@ test("start persists only the remote task and fencing reference; presence does n
  assert.equal(run(c,"release").status,0);
  m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-202"];
  assert.equal(m.execution.ownership_state,"RELEASED");
+});
+
+
+test("stale fencing is rejected remotely for renew, checkpoint and complete after takeover", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-203","203","Fencing takeover");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); assert.equal(run(c,"start").status,0);
+ const statePath=path.join(c.dir,"STATE.json");
+ const original=JSON.parse(fs.readFileSync(statePath,"utf8"));
+ const mission=original.missions["M-203"];
+ const token1=mission.execution.fencing_token;
+ const takeover=spawnSync(process.execPath,["-e",`fetch(${JSON.stringify(apiUrl+"/test/takeover/"+mission.execution.task_id)},{method:"POST",headers:{authorization:"Bearer test-session-token"}}).then(r=>process.exit(r.ok?0:1))`],{encoding:"utf8",env:c.env});
+ assert.equal(takeover.status,0);
+ const renew=run(c,"renew");
+ assert.equal(renew.status,2);
+ let afterRenew=JSON.parse(fs.readFileSync(statePath,"utf8"));
+ assert.equal(afterRenew.missions["M-203"].execution.ownership_state,"LOSS_OF_OWNERSHIP");
+ for(const command of ["checkpoint","complete"]){
+  const isolated=env();t.after(()=>fs.rmSync(isolated.dir,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(isolated.dir,"STATE.json"),JSON.stringify(original));
+  const result=run(isolated,command,...(command==="checkpoint"?["stale checkpoint"]:["stale completion"]));
+  assert.equal(result.status,2);
+  assert.match(result.stderr,/HTTP 412/);
+ }
+ const current=JSON.parse(fs.readFileSync(statePath,"utf8")).missions["M-203"].execution;
+ current.fencing_token=token1+1;current.ownership_state="OWNED";
+ fs.writeFileSync(statePath,JSON.stringify(original));
+ assert.equal(run(c,"complete","new owner completion").status,0);
 });
