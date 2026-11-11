@@ -115,6 +115,7 @@ test("rejects nonexistent mission selection and duplicate execution", t => {
  assert.equal(run(c,"switch","M-999").status,2);
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
  assert.equal(run(c,"start").status,2);
+ assert.equal(run(c,"resume").status,2);
  const state=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
  assert.equal(state.current_mission_id,"M-130");
  assert.equal(state.missions["M-130"].status,"IN_PROGRESS");
