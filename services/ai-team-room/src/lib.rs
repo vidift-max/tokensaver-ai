@@ -253,7 +253,7 @@ pub async fn leave_participant(
     .ok_or(RoomServiceError::RoomUnavailable)?;
 
     let membership = sqlx::query_as::<_, MembershipRow>(
-        "SELECT membership_id, session_id FROM room_memberships WHERE room_id = $1 AND principal_id = $2 AND status = 'ACTIVE' FOR UPDATE",
+        "SELECT membership_id, session_id, status FROM room_memberships WHERE room_id = $1 AND principal_id = $2 AND status = 'ACTIVE' FOR UPDATE",
     )
     .bind(room_id)
     .bind(principal_id)
