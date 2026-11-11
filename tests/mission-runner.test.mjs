@@ -46,13 +46,17 @@ test("prompt is stored but not marked delivered without delivery evidence", t =>
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-122","122","Prompt");
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start"); run(c,"complete","finished");
- run(c,"prompt-ready","M-123","Continue the next task");
  let m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-122"];
+ assert.equal(m.checkpoint.status,"DONE");
+ assert.equal(m.checkpoint.description,"final completion checkpoint");
+ run(c,"prompt-ready","M-123","Continue the next task");
+ m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-122"];
  assert.equal(m.prompt.status,"PROMPT_PENDING_DELIVERY");
  assert.equal(run(c,"prompt-delivered").status,2);
- assert.equal(run(c,"prompt-delivered","external-message-id-123").status,0);
+ assert.equal(run(c,"prompt-delivered","fake-message-id").status,2);
  m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-122"];
- assert.equal(m.prompt.status,"PROMPT_DELIVERED");
+ assert.equal(m.prompt.status,"PROMPT_PENDING_DELIVERY");
+ assert.equal(m.prompt.delivery_evidence,null);
 });
 
 test("refuses duplicate initialization and corrupt state", t => {
