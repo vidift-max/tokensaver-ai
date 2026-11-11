@@ -1431,3 +1431,76 @@ Para o SHA exato `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`:
 A atualização deste relatório foi commitada em `7c3fbd17a5f225c24a3b7081e374d9bf53a24c57`. Esse commit é o HEAD observado imediatamente antes deste addendum. A consulta de status combinado para esse SHA retornou zero checks; a consulta de workflow runs disponível retornou lista vazia (com a limitação descrita acima). Logo, o SHA de código/relatório final desta auditoria **não foi testado nem validado por CI**. O commit deste addendum será o novo HEAD documental e também não será considerado validado por CI sem check/run vinculado exatamente ao seu SHA.
 
 **Regra de integridade:** nenhum SHA desta missão deve ser rotulado como TESTADO/VALIDADO por execução, build ou CI sem evidência de saída de teste ou check associado ao mesmo SHA. A decisão permanece **NO-GO**.
+
+
+## Addendum — Laboratório distribuído real no GitHub Actions (2026-11-11)
+
+Este addendum **substitui as conclusões anteriores deste relatório que classificavam a prova PostgreSQL/A-B como não executada**. As limitações históricas continuam registradas acima para rastreabilidade, mas foram superadas pelas execuções abaixo.
+
+### SHA e CI comprovados
+
+- SHA de código testado: `0f7a9c5e8181e333ee26830e0dc1d52025254faf`.
+- Branch: `v2-saas-alpha`.
+- Workflow de laboratório: **Distributed Runner PostgreSQL Lab**.
+- Run: [#43081541777](https://github.com/vidift-max/tokensaver-ai/actions/runs/43081541777) — run number 12 — **success**.
+- Job: `PostgreSQL lease, expiry, takeover and fencing` — **success**.
+- Artifact: `distributed-runner-postgres-evidence-43081541777`, artifact ID `13884202725`.
+- SHA-256 do artifact: `a50a069f4dd23a843dae075cac5c4ba212d94f0e50de964ba6cad2b67579e426`.
+- CI geral: [TokenSaver AI CI #43081542037](https://github.com/vidift-max/tokensaver-ai/actions/runs/43081542037) — run number 489 — mesmo SHA — **success**.
+- Jobs da CI geral: `foundation`, `foundation-windows`, `ai-team-room-service` e `keycloak-oidc-smoke` — todos **success**. Foram executados cargo check/test, npm test/build, Windows BAT smoke, testes PostgreSQL do Team Room e o smoke de autenticação Keycloak.
+
+### Implementado nesta missão
+
+- `.github/workflows/distributed-runner-lab.yml`: laboratório dedicado com PostgreSQL 16, health checks, build e execução do serviço real, evidências e artifact.
+- `scripts/distributed-runner-process-e2e.mjs`: provisiona identidades/sessões de fixture no PostgreSQL, inicia dois processos independentes do Mission Runner em paralelo, verifica task canônica e disputa de lease, espera expiração real e executa o cenário A/B.
+- `scripts/team-room-recovery-worker.mjs`: worker one-shot autenticado que chama recovery e candidate discovery no Team Room. Não impersona o candidato; o Runner B adquire sua própria lease.
+- `scripts/team-room-client.mjs`: configuração de lease via `TEAM_ROOM_LEASE_SECONDS`, validada entre 15 e 300 segundos; padrão permanece 60 segundos. O laboratório usa 15 segundos para verificar expiração pelo relógio real do PostgreSQL.
+- `services/ai-team-room/src/tasks.rs`: o teste PostgreSQL também verifica rejeição de renew, checkpoint, complete e release com fencing obsoleto e emite evidência estruturada.
+- `tests/team-room-http-fixture.mjs` e `tests/mission-runner.test.mjs`: a fixture HTTP unitária foi movida para Worker Thread, evitando que os testes síncronos bloqueiem o event loop que atende as requisições; o heartbeat usa o session_id autenticado real da fixture.
+
+### Evidência do teste entre processos
+
+Missão: `TEST-MISSION-DISTRIBUTED-001`.
+
+- mission_id: `dbf45cd0-14a1-5b26-92df-aeaf640e5513`.
+- task_id: `84e3229a-8ae1-4986-9314-5470d4fd3a56`.
+- PostgreSQL 16 compartilhado; migrations aplicadas; serviço Team Room iniciado e `/health/live` e `/health/ready` aprovados.
+- Runner A inicial: PID `6566`; principal `5dde6684-1511-439c-9f79-390856413a20`; session `02e4690d-f6ba-4cd9-91c3-37ee23ab0414`; execution `f60b02d4-f796-4d5c-ab20-5928c04b8fd7`.
+- Runner B sucessor: PID `6567`; principal `00947e63-eb1e-426e-a65a-ece947527171`; session `10aecea6-a2f6-4c17-a398-61c7d7e1a69f`; execution `673307be-caf2-4755-8a56-e6d7d064584f`.
+- Os PIDs e sessions de A/B são distintos. Os dois processos iniciaram em paralelo para a mesma missão; apenas um adquiriu a lease inicial. O segundo recebeu HTTP 409 enquanto a lease estava válida.
+- O processo do owner inicial terminou. O laboratório esperou 16 segundos e confirmou no banco que `lease_expires_at <= NOW()`; não alterou manualmente o timestamp da lease.
+- Dois Recovery Workers independentes e com sessions próprias executaram em paralelo: PIDs `6654` e `6655`. Ambos selecionaram o principal do Runner B; o PostgreSQL serializou as chamadas e o contador de transições de recovery foi exatamente `1`.
+- Fencing do owner inicial: `1`. Fencing do sucessor: `2`.
+- Renew A: **REJECTED**. Checkpoint A: **REJECTED**. Complete A: **REJECTED**. Release A: **REJECTED**.
+- Complete B: **ACCEPTED**. Estado final da task: `COMPLETED`.
+- A evidência estruturada integral, incluindo os IDs de sessão/execution, PIDs, resultados e fencing, está no artifact do run 12. Não contém bearer tokens ou senhas.
+
+O teste de serviço PostgreSQL separado no mesmo workflow também executou concorrência entre dez identidades, criação idempotente, um único vencedor de acquire, expiração/takeover e rejeição das quatro operações protegidas com fencing antigo. Esse teste usa chamadas diretas às funções do serviço; a prova entre processos acima é o teste HTTP/Runner separado.
+
+### Classificação atualizada das 10 rodadas
+
+| Rodada | IMPLEMENTADO | TESTADO | VALIDADO | Situação |
+|---|---|---|---|---|
+| 1 Auditoria | Workflows, Runner, Team Room, auth e migrations auditados | — | HEAD e branch identificados | **CONCLUÍDA** |
+| 2 PostgreSQL real | PostgreSQL 16 e migrations no workflow | Teste de integração PostgreSQL | Run 12 | **VALIDADA** |
+| 3 Team Room real | Serviço compilado e iniciado | live/ready e requests autenticados | Run 12 | **VALIDADA** |
+| 4 Dois Runners | Dois processos, sessões, principals e executions distintos | start simultâneo e HTTP 409 do segundo | Artifact run 12 | **VALIDADA** |
+| 5 Task + lease | Identidade canônica e acquire transacional | Uma task/um owner; concorrência de acquire | Artifact run 12 | **VALIDADA** |
+| 6 Takeover/fencing | Lease configurável para fixture e fencing no banco | Expiração real, fence 1→2; quatro operações antigas rejeitadas | Artifact run 12 | **VALIDADA** |
+| 7 Recovery Worker | Worker autenticado e candidate discovery | Seleção de B e aquisição pelo próprio Runner B | Artifact run 12 | **VALIDADA no fluxo one-shot** |
+| 8 Concorrência | Recovery transacional no Team Room | Dois Runners e dois recovery workers; uma transição de recovery; stale owner rejeitado | Artifact run 12 | **VALIDADA nos cenários executados** |
+| 9 Evidência | JSON e logs sanitizados | Artifact enviado e inspecionado | Artifact ID e digest registrados | **VALIDADA** |
+| 10 Fechamento | Relatório e workflows | CI geral, Linux, Windows, Team Room, Keycloak e laboratório | Runs 12 e 489 no SHA de código indicado | **VALIDADA** |
+
+### Limitações que permanecem
+
+1. O Recovery Worker implementado é um processo **one-shot**. A execução provou recuperação real e concorrente, mas não instalou um scheduler/daemon de produção para invocação periódica automática. Essa integração operacional permanece pendente.
+2. As duas sessões Runner do teste são fixtures locais semeadas no PostgreSQL com hashes de tokens opacos; as chamadas passam pela autenticação de sessão e autorização reais do Team Room. O fluxo OIDC/Keycloak é validado separadamente no job `keycloak-oidc-smoke`, mas o teste A/B não executa dois token exchanges OIDC independentes.
+3. O teste valida takeover/fencing; não implementa a máquina de handoff staged `OFFERED/ACCEPTED/REJECTED`. O takeover atual continua sendo acquire transacional com fencing.
+4. O processo Mission Runner é CLI de curta duração: o processo que obteve a lease encerra, e o teste confirma a expiração real após 15 segundos. Não é uma prova de um daemon Runner persistente de longa duração.
+
+### Decisão
+
+**GO CONDITIONED para a camada de Runner distribuído comprovada pelo laboratório.** PostgreSQL compartilhado, dois processos Runner, duas sessões distintas, lease real, fencing, takeover, dois recovery workers concorrentes, rejeição do owner obsoleto, conclusão por B, artifact e CI geral estão comprovados no SHA indicado.
+
+**Não declarar produção irrestrita ainda:** a invocação periódica do Recovery Worker precisa ser integrada ao scheduler/serviço operacional; handoff staged continua fora do escopo comprovado desta camada. O próximo avanço deve tratar essa camada operacional, sem reabrir a prova A/B já validada.
