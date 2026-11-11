@@ -168,9 +168,13 @@ fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::LockFileEx;
         use windows_sys::Win32::System::IO::OVERLAPPED;
+        // LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY:
+        // non-blocking acquisition is required for the five-second deadline below.
+        const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x00000001;
+        const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x00000002;
         let mut ov: OVERLAPPED = std::mem::zeroed();
         let deadline=Instant::now()+Duration::from_secs(5);
-        loop { let ok=LockFileEx(file.as_raw_handle(),0x00000002,0, u32::MAX,u32::MAX,&mut ov); if ok!=0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
+        loop { let ok=LockFileEx(file.as_raw_handle(),LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0, u32::MAX,u32::MAX,&mut ov); if ok!=0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
     }
     Ok(RootsLock{file})
 }
