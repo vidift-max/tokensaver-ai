@@ -12,6 +12,8 @@ Independent Rust service boundary for the future shared AI Team Communication Ro
 - Each accepted assertion's `jti` is consumed once in PostgreSQL. Replays cannot mint another local session.
 - The service returns a random 256-bit opaque bearer token once; only its SHA-256 digest is stored. Local sessions are room-scoped and expire no later than 15 minutes or the upstream assertion expiry.
 - `GET /auth/me` returns authenticated identity metadata; `POST /auth/logout` closes the local session and linked workload execution.
+- `POST /team-room/heartbeat` requires a valid local bearer session and refreshes `workload_executions.heartbeat_at`, `room_memberships.last_seen_at`, and the registered workload identity `last_seen_at` in one PostgreSQL transaction.
+- `GET /team-room/{room_id}/presence` requires the `room.read` permission and classifies active room memberships as `ACTIVE`, `IDLE`, `SUSPECTED_DISCONNECTED`, or `DISCONNECTED` from their last authenticated heartbeat. The default timeout is 90 seconds; `TEAM_ROOM_HEARTBEAT_TIMEOUT_SECONDS` can override it (minimum 10 seconds). Presence is computed on read; no background scheduler or automatic task recovery is implemented in the service.
 - `GET /team-room/me` requires `room.read`; `POST /team-room/{room_id}/join` requires `room.join` and calls the existing transactional admission primitive. The path room must equal the room bound to the session.
 - Permissions are separate from authentication and are provisioned in `principal_permissions`; default is deny.
 - Participant, principal, session, and workload execution IDs remain distinct and are bound by database constraints.
