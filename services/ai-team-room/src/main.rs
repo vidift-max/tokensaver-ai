@@ -511,8 +511,8 @@ mod http_security_tests {
         ).await.unwrap();
         assert_eq!(joined.status(), StatusCode::OK);
 
-        sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.read')")
-            .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.read'),($5,$2,$3,$4,'presence.update')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
         let heartbeat = app.clone().oneshot(
             axum::http::Request::builder().method("POST").uri("/team-room/heartbeat")
                 .header("authorization", format!("Bearer {raw_token}"))
@@ -534,6 +534,26 @@ mod http_security_tests {
         let presence_json: serde_json::Value = serde_json::from_slice(&presence_body).unwrap();
         assert_eq!(presence_json[0]["state"], "ONLINE");
 
+        let away=app.clone().oneshot(
+            axum::http::Request::builder().method("PUT").uri(format!("/team-room/{room}/presence"))
+                .header("authorization",format!("Bearer {raw_token}"))
+                .header("content-type","application/json")
+                .body(Body::from(r#"{"state":"AWAY"}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(away.status(),StatusCode::NO_CONTENT);
+        let heartbeat_again=app.clone().oneshot(
+            axum::http::Request::builder().method("POST").uri("/team-room/heartbeat")
+                .header("authorization",format!("Bearer {raw_token}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(heartbeat_again.status(),StatusCode::OK);
+        let away_presence=app.clone().oneshot(
+            axum::http::Request::builder().uri(format!("/team-room/{room}/presence"))
+                .header("authorization",format!("Bearer {raw_token}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let away_body=axum::body::to_bytes(away_presence.into_body(),4096).await.unwrap();
+        let away_json:serde_json::Value=serde_json::from_slice(&away_body).unwrap();
+        assert_eq!(away_json[0]["state"],"AWAY","heartbeat must not overwrite explicit presence");
+
         sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '2 minutes' WHERE execution_id=$1")
             .bind(execution).execute(&pool).await.unwrap();
         let suspected_presence = app.clone().oneshot(
@@ -543,7 +563,7 @@ mod http_security_tests {
         ).await.unwrap();
         let suspected_body = axum::body::to_bytes(suspected_presence.into_body(), 4096).await.unwrap();
         let suspected_json: serde_json::Value = serde_json::from_slice(&suspected_body).unwrap();
-        assert_eq!(suspected_json[0]["state"], "SUSPECTED_DISCONNECTED");
+        assert_eq!(suspected_json[0]["state"], "DISCONNECTED");
 
         sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '5 minutes' WHERE execution_id=$1")
             .bind(execution).execute(&pool).await.unwrap();
