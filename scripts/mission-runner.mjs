@@ -23,7 +23,22 @@ function readState() {
   if (!fs.existsSync(STATE_FILE)) throw new Error("mission state not found; run init first");
   let s;
   try { s = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch { throw new Error("STATE.json is corrupt or invalid JSON"); }
-  if (s.version !== 1 || !s.missions || typeof s.missions !== "object") throw new Error("unsupported or invalid mission state schema");
+  if (!s || typeof s !== "object" || Array.isArray(s) || s.version !== 1 ||
+      !s.missions || typeof s.missions !== "object" || Array.isArray(s.missions) ||
+      !safeId(s.current_mission_id) || !Object.hasOwn(s.missions, s.current_mission_id)) {
+    throw new Error("unsupported or invalid mission state schema");
+  }
+  for (const [id, mission] of Object.entries(s.missions)) {
+    if (!safeId(id) || !mission || typeof mission !== "object" || Array.isArray(mission) ||
+        mission.mission_id !== id || !Number.isSafeInteger(mission.mission_number) ||
+        typeof mission.title !== "string" || !STATUSES.has(mission.status) ||
+        !Array.isArray(mission.files_changed) || !Array.isArray(mission.commits) ||
+        !Array.isArray(mission.tests) || !Array.isArray(mission.evidence) ||
+        !Array.isArray(mission.blockers) || !mission.handoff || typeof mission.handoff !== "object" ||
+        !mission.prompt || typeof mission.prompt !== "object") {
+      throw new Error("invalid mission record in STATE.json: " + id);
+    }
+  }
   return s;
 }
 function writeState(s, event, details = {}) {
@@ -98,6 +113,10 @@ function main(args) {
       if (!["IN_PROGRESS","DISCONNECTED","BLOCKED"].includes(m.status)) throw new Error("mission is not resumable from current status");
       if (m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before resume");
       if (!m.checkpoint && m.status!=="DISCONNECTED") throw new Error("no checkpoint available");
+      if (m.status === "DISCONNECTED") {
+        const disconnect = [...m.blockers].reverse().find(item => item.kind === "DISCONNECT" && item.status === "RECORDED");
+        if (disconnect) { disconnect.status = "RESUMED"; disconnect.resumed_at = now(); }
+      }
       transition(m,"IN_PROGRESS"); m.last_action="resumed"; m.next_action=m.checkpoint?.description || "continue assigned task"; writeState(s,"MISSION_RESUMED"); console.log("RESUMED " + m.mission_id); return;
     }
     if (cmd === "resolve-blockers") {
@@ -118,9 +137,12 @@ function main(args) {
     }
     if (cmd === "block" || cmd === "disconnect") {
       if (!a.length) throw new Error("a reason is required");
-      m.blockers.push({reason:a.join(" "),at:now(),status:"OPEN"}); transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED"); m.next_action="resolve blocker and resume"; writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
+      if (cmd === "block") m.blockers.push({kind:"BLOCKER",reason:a.join(" "),at:now(),status:"OPEN"});
+      else m.blockers.push({kind:"DISCONNECT",reason:a.join(" "),at:now(),status:"RECORDED",resumed_at:null});
+      transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED"); m.next_action=cmd==="block"?"resolve blocker and resume":"resume from saved checkpoint"; writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
     }
     if (cmd === "handoff-create") {
+      if (!["IN_PROGRESS","DISCONNECTED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected or review-pending mission");
       if (!a[0] || !a[0].trim()) throw new Error("target AI required");
       m.handoff={status:"HANDOFF_CREATED",target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null}; m.next_action="await explicit handoff acceptance"; writeState(s,"HANDOFF_CREATED"); return;
     }
@@ -151,7 +173,8 @@ function main(args) {
       m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); writeState(s,"MISSION_COMPLETED"); return;
     }
     if (cmd === "prompt-ready") {
-      if (a.length<2 || !safeId(a[0])) throw new Error("usage: prompt-ready <next_mission_id> <prompt text>");
+      if (m.status !== "DONE") throw new Error("current mission must be DONE before preparing its successor prompt");
+      if (a.length<2 || !safeId(a[0]) || a[0] === m.mission_id) throw new Error("usage: prompt-ready <next_mission_id> <prompt text>");
       const dir=path.join(ROOT,"prompts"); fs.mkdirSync(dir,{recursive:true});
       const promptPath=path.join(dir,a[0]+".md"); fs.writeFileSync(promptPath,a.slice(1).join(" ")+"\n",{flag:"wx",mode:0o600});
       m.prompt={status:"PROMPT_PENDING_DELIVERY",next_mission_id:a[0],path:path.relative(process.cwd(),promptPath),delivery_evidence:null};

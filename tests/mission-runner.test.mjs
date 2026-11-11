@@ -26,6 +26,7 @@ test("persists mission, checkpoint and resume across separate processes", t => {
  const m=s.missions["M-120"];
  assert.equal(m.status,"IN_PROGRESS"); assert.equal(m.checkpoint.description,"after audit");
  assert.equal(m.responsible_ai,"GPT-6"); assert.equal(m.blockers.length,1);
+ assert.equal(m.blockers[0].kind,"DISCONNECT"); assert.equal(m.blockers[0].status,"RESUMED");
 });
 
 test("handoff requires explicit acceptance and records lifecycle", t => {
@@ -43,6 +44,7 @@ test("handoff requires explicit acceptance and records lifecycle", t => {
 test("prompt is stored but not marked delivered without delivery evidence", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-122","122","Prompt");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start"); run(c,"complete","finished");
  run(c,"prompt-ready","M-123","Continue the next task");
  let m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-122"];
  assert.equal(m.prompt.status,"PROMPT_PENDING_DELIVERY");
@@ -103,4 +105,42 @@ test("review gate keeps mission out of DONE until explicit approval", t => {
  assert.equal(run(c,"approve").status,0);
  m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-129"];
  assert.equal(m.status,"DONE"); assert.ok(m.completed_at);
+});
+
+test("rejects nonexistent mission selection and duplicate execution", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ assert.equal(run(c,"status").status,2);
+ run(c,"init","M-130","130","Missing mission");
+ assert.equal(run(c,"switch","M-999").status,2);
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
+ assert.equal(run(c,"start").status,2);
+ const state=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(state.current_mission_id,"M-130");
+ assert.equal(state.missions["M-130"].status,"IN_PROGRESS");
+});
+
+test("rejects a held state lock without modifying persistent state", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-131","131","Lock contention");
+ const before=fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8");
+ fs.writeFileSync(path.join(c.dir,".state.lock"),JSON.stringify({pid:999999,at:new Date().toISOString()}));
+ const result=run(c,"assign","AI-A","p-a");
+ assert.equal(result.status,2);
+ assert.match(result.stderr,/state lock exists/);
+ assert.equal(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"),before);
+});
+
+test("rejects structurally invalid state schema", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-132","132","Schema");
+ fs.writeFileSync(path.join(c.dir,"STATE.json"),JSON.stringify({version:1,current_mission_id:"M-132",missions:[]}));
+ const result=run(c,"status");
+ assert.equal(result.status,2);
+ assert.match(result.stderr,/invalid mission state schema/);
+});
+
+test("requires a completed mission before preparing a successor prompt", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-133","133","Prompt gate");
+ assert.equal(run(c,"prompt-ready","M-134","Do next mission").status,2);
 });
