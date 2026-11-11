@@ -815,3 +815,11 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - Corrected both bindings in commits `897237dd4925961ea7a94712a3030957cc8e2dd3` and `60cb89231b214a0a7068b5fca86742cceffce988`.
 - The corrected source now keeps the renewal validation result intentionally unused and binds the checkpoint validation result consistently. CI run `43051381527` is queued for the current tree.
 - Neither failed run is counted as a passing test. PostgreSQL execution and the 10-way concurrency test remain unvalidated until this run completes.
+
+
+### Second PostgreSQL SQL correction
+
+- CI run `43051426578` compiled the Team Room service and ran the PostgreSQL suite; five existing service tests passed, while the new distributed test failed during task creation. PostgreSQL reported SQLSTATE `42601` at an extra closing parenthesis in the `SELECT EXISTS` actor-validation query.
+- Corrected the task-creation predicate (one closing parenthesis for EXISTS) and ensured the lease-validation predicate closes both its outer boolean expression and inner EXISTS.
+- Commits: `aca0f6a2120c8949ceb2c24e294232572c280d4b` and `2acbad0351eab14c0d39d5c32c4841fc29ba35ba`.
+- The previous run is a failure, not a validation. A fresh CI on the final report HEAD must prove the new PostgreSQL test passes.
