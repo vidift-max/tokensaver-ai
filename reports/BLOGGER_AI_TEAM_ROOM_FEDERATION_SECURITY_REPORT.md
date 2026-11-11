@@ -591,3 +591,89 @@ Antes de reavaliar o GO:
 6. Manter federação real de IA e attestation como **PENDENTE**.
 
 **Recomendação:** não iniciar a Missão 111. Continuar exclusivamente o fechamento dos itens acima dentro do escopo da Missão 110.1. Preservar o limite transacional de 15 participantes.
+
+
+## AC. MISSÃO 110.2 — PROVA END-TO-END DE IDENTIDADE (2026-11-11)
+
+Esta seção registra a prova real executada no GitHub Actions. Ela prevalece para o resultado E2E, sem apagar ou reescrever os registros históricos de runs anteriores.
+
+### 1. Resultado executivo
+
+**INTEGRAÇÃO KEYCLOAK END-TO-END — VALIDADA no commit `ac49251f950a97d8592f3b0c38a627bbf20d7ab4`, workflow run [43040086676](https://github.com/vidift-max/tokensaver-ai/actions/runs/43040086676).**
+
+O job `keycloak-oidc-smoke` iniciou Keycloak 26.3.5 real, criou realm e client temporários, obteve token por client credentials e enviou esse token ao endpoint real `POST /auth/exchange` do AI Team Room. O serviço validou o token e emitiu uma sessão opaca; essa mesma sessão foi usada no endpoint de admissão, sem uma segunda autenticação sintética.
+
+### 2. Evidência do fluxo real
+
+| Etapa | Resultado | Evidência executada |
+|---|---|---|
+| Keycloak 26.3.5 real | PASS | Container iniciado no runner; readiness verificada; realm `team-room-ci` e client confidencial temporário criados |
+| Token real | PASS | Client credentials obtido do endpoint de token Keycloak; audience `team-room-api`; scope inclui `team_room:connect` |
+| OIDC / assinatura | PASS | Discovery e JWKS do Keycloak real; assinatura RS256 validada; JWT real enviado ao serviço |
+| Endpoint do serviço | PASS | `POST http://127.0.0.1:8081/auth/exchange` retornou HTTP 200 |
+| Identidade | PASS | Resposta comparada com issuer e subject reais do token, além de principal_id, participant_id e room_id registrados |
+| Workload | PASS | `workload_identities` ACTIVE; workload_id conferido no banco; `last_seen_at` atualizado |
+| Sessão | PASS | `/auth/me` retornou a mesma session_id, issuer e subject; sessão ACTIVE e não expirada no PostgreSQL |
+| Digest | PASS | SHA-256 do bearer local calculado no runner e comparado com `sessions.token_hash`; correspondência exata |
+| Autorização | PASS | Sem grant `room.read`, endpoint protegido respondeu HTTP 403; evento `authorization.denied` confirmado no banco |
+| Admissão | PASS | A mesma sessão foi enviada a `POST /team-room/{room_id}/join`; HTTP 200; session_id/principal_id conferidos; membership ACTIVE e evento `participant.admitted` persistidos |
+| Replay | PASS | Reenvio do mesmo JWT real ao exchange retornou HTTP 401; evento `auth.exchange.denied` com `assertion_replay` confirmado |
+| Redaction | PASS, escopo limitado | Script procurou access token, sessão bearer, client secret, admin token e JWT compacto nos logs do serviço; nenhuma ocorrência. Client secret apareceu mascarado no contexto do job |
+
+Saídas explícitas do job:
+- `PASS: live Keycloak JWT -> /auth/exchange -> registered workload -> opaque session digest -> permission check -> PostgreSQL room admission`
+- `PASS: real issuer/subject/session/workload binding, expiry, denied room.read, admission audit, and replay rejection`
+
+Nenhum token ou segredo foi incluído neste relatório.
+
+### 3. Testes de serviço, PostgreSQL e capacidade 15
+
+Job `ai-team-room-service` no mesmo run: PASS.
+- JWT/OIDC unit tests: 6/6 PASS.
+- HTTP security tests: 5/5 PASS.
+- PostgreSQL admission tests: 3/3 PASS.
+- PostgreSQL auth/session tests: 4/4 PASS.
+- Doc-tests: 0 falhas.
+- `sixteen_simultaneous_admissions_never_exceed_fifteen`: PASS — 16 simultâneas, exatamente 15 aceitas.
+- `admission_enforces_15_exit_reentry_reconnect_and_duplicate_session`: PASS — saída, reentrada, reconexão e duplicidade cobertas.
+
+A prova E2E usou uma identidade real e confirmou uma admissão real. O teste de concorrência 15/16 é uma prova PostgreSQL separada na mesma execução CI; não foi apresentado como se 16 tokens Keycloak tivessem sido emitidos no teste E2E.
+
+### 4. CI completa
+
+Workflow run [43040086676](https://github.com/vidift-max/tokensaver-ai/actions/runs/43040086676) — **4/4 jobs SUCCESS**:
+- `keycloak-oidc-smoke`: PASS.
+- `ai-team-room-service`: PASS.
+- `foundation` Linux: PASS — cargo check, cargo test, npm install, npm run build, package ZIP e upload.
+- `foundation-windows`: PASS — cargo check, cargo test, npm install e npm run build.
+
+O job Linux teve um ajuste de runner/dependências após falhas anteriores de mirror/DNS. No run 43040086676, a instalação terminou e todos os passos subsequentes passaram.
+
+### 5. Matriz residual e controles não ampliados
+
+A prova E2E não fecha automaticamente todos os controles descritos na Missão 110.1:
+- **JWKS:** assinatura e JWKS reais validados. Cache expiry/refresh por TTL, oversized JWKS, RSA fraca, kid duplicado, timeout e JSON malformado continuam PENDENTES onde já constavam como não cobertos por teste específico.
+- **JWT:** matriz de claims do serviço passou (6 testes unitários OIDC/JWT no run), incluindo algoritmo, issuer, audience, expiração, nbf, iat, jti, sub e scope; replay PostgreSQL também passou.
+- **Rate limiting:** permanece por processo; concorrência e múltiplas conexões não foram validadas de forma suficiente. **RATE LIMITING DISTRIBUÍDO — PENDENTE.**
+- **Auditoria:** E2E confirmou sessão criada, autorização negada, admissão e replay; não equivale à matriz integral de todos os eventos nem a um scan global de todos os logs históricos.
+- **Isolamento:** ingresso cruzado é coberto pela suíte existente. Chat, mensagens, privado, tarefas, áudio, WebRTC, convites e endpoints administrativos de recursos: **NÃO IMPLEMENTADO — NÃO TESTÁVEL NESTA FASE.**
+- **Federação real de IA:** PENDENTE. Nenhum Claude, Kimi ou GPT-6 conectado.
+- **Runtime attestation:** PENDENTE.
+
+### 6. Incidente histórico de segredo e redaction
+
+O primeiro run `42998969403` teve exposição temporária do client secret efêmero no log de CI, conforme registrado na seção da Missão 110.1. O evento histórico não foi apagado, editado ou artificialmente redigido. A correção de masking permaneceu aplicada. No run 43040086676, o contexto do client secret foi exibido como `***`; o script de segurança não encontrou bearer tokens, client secret, admin token nem JWT compacto nos logs do processo AI Team Room. Essa verificação não altera o log histórico do primeiro run.
+
+### 7. Mudança concorrente do branch após a prova
+
+A prova acima foi executada no commit `ac49251f950a97d8592f3b0c38a627bbf20d7ab4`. Depois de sua conclusão, o branch `v2-saas-alpha` avançou para `ef90e295dca0602b33c7ae69d257c3268fa09d38` com commits adicionais relacionados a task leases, heartbeat/release e fencing, fora do escopo explícito da Missão 110.2. Os workflows disparados para esses commits foram cancelados durante a sequência de pushes; portanto, **o HEAD posterior não está validado pelo run 43040086676**. Nenhum desses commits foi revertido nesta atualização. Não atribuir a eles o PASS da prova E2E.
+
+### 8. Decisão
+
+**NO-GO PARA MISSÃO 111.**
+
+A sequência Keycloak real → JWT real → `/auth/exchange` → identidade/workload → sessão opaca → autorização → PostgreSQL → admissão foi VALIDADA. A capacidade 15/16 e a regressão de saída/reentrada/reconexão/duplicidade também passaram no mesmo workflow.
+
+O NO-GO permanece por lacunas residuais de segurança (JWKS edge cases, rate limit concorrente/multirréplica, auditoria/redaction integral), recursos futuros inexistentes e, principalmente, porque o branch avançou após o commit validado com alterações fora do escopo e sem CI verde para o HEAD posterior.
+
+**Recomendação:** preservar a evidência E2E, interromper novas implementações de escopo da Missão 111, reconciliar os commits concorrentes no branch e executar CI completa no HEAD aprovado antes de qualquer reavaliação. Não afirmar federação Claude/Kimi/GPT-6 nem runtime attestation.
