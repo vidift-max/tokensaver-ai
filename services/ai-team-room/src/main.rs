@@ -126,6 +126,19 @@ async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
+        .route("/auth/exchange", post(exchange).route_layer(middleware::from_fn(rate_limit_exchange)))
+        .route("/auth/me", get(auth_me))
+        .route("/auth/logout", post(logout))
+        .route("/team-room/me", get(team_room_me))
+        .route("/team-room/{room_id}/join", post(join_room))
+        .layer(axum::extract::DefaultBodyLimit::max(20_000))
+        .with_state(state)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -145,18 +158,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let state = AppState { pool, oidc };
 
-    let app = Router::new()
-        .route("/health/live", get(live))
-        .route("/health/ready", get(ready))
-        .route("/auth/exchange", post(exchange).route_layer(middleware::from_fn(rate_limit_exchange)))
-        .route("/auth/me", get(auth_me))
-        .route("/auth/logout", post(logout))
-        .route("/team-room/me", get(team_room_me))
-        .route("/team-room/{room_id}/join", post(join_room))
-        .with_state(state);
+    let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "AI Team Room service listening");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod http_security_tests {
+    use super::*;
+    use axum::body::Body;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    fn test_app() -> Router {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://test:test@127.0.0.1/test")
+            .expect("lazy pool configuration");
+        build_router(AppState { pool, oidc: None })
+    }
+
+    #[tokio::test]
+    async fn public_liveness_endpoint_is_available_without_authentication() {
+        let response = test_app().oneshot(
+            axum::http::Request::builder().uri("/health/live").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn identity_and_room_routes_reject_missing_bearer_credentials_over_http() {
+        for path in ["/auth/me", "/team-room/me"] {
+            let response = test_app().oneshot(
+                axum::http::Request::builder().uri(path).body(Body::empty()).unwrap()
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn token_exchange_is_disabled_without_trusted_oidc_configuration() {
+        let response = test_app().oneshot(
+            axum::http::Request::builder().method("POST").uri("/auth/exchange")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"synthetic"}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }
