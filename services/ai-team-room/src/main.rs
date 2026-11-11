@@ -1,3 +1,5 @@
+mod tasks;
+
 use ai_team_room_service::{
     admit_authenticated_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
     connect_pool, migrate, readiness,
@@ -188,6 +190,82 @@ async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+
+#[derive(Deserialize)]
+struct TaskCompleteRequest { fencing_token: i64, #[serde(default)] checkpoint: serde_json::Value }
+
+fn task_status(error: tasks::TaskError) -> StatusCode {
+    match error {
+        tasks::TaskError::NotFound => StatusCode::NOT_FOUND,
+        tasks::TaskError::Terminal | tasks::TaskError::LeaseHeld => StatusCode::CONFLICT,
+        tasks::TaskError::Fenced => StatusCode::PRECONDITION_FAILED,
+        tasks::TaskError::InvalidLease => StatusCode::BAD_REQUEST,
+        tasks::TaskError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<tasks::CreateTask>,
+) -> Result<(StatusCode, Json<tasks::TaskLease>), StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.write").await.map_err(auth_status)?;
+    tasks::create_task(&state.pool,&identity,request).await
+        .map(|task|(StatusCode::CREATED,Json(task))).map_err(task_status)
+}
+
+async fn acquire_task_lease(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
+) -> Result<Json<tasks::LeaseGrant>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    let seconds=request.lease_seconds.unwrap_or(60);
+    tasks::acquire_lease(&state.pool,&identity,task_id,seconds).await.map(Json).map_err(task_status)
+}
+
+async fn renew_task_lease(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
+) -> Result<Json<tasks::TaskLease>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    let token=request.fencing_token.ok_or(StatusCode::BAD_REQUEST)?;
+    tasks::renew_lease(&state.pool,&identity,task_id,token,request.lease_seconds.unwrap_or(60)).await.map(Json).map_err(task_status)
+}
+
+async fn checkpoint_task(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
+) -> Result<Json<tasks::TaskLease>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    let token=request.fencing_token.ok_or(StatusCode::BAD_REQUEST)?;
+    let checkpoint=request.checkpoint.ok_or(StatusCode::BAD_REQUEST)?;
+    tasks::write_checkpoint(&state.pool,&identity,task_id,token,checkpoint).await.map(Json).map_err(task_status)
+}
+
+async fn complete_task(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<TaskCompleteRequest>,
+) -> Result<Json<tasks::TaskLease>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    tasks::complete_task(&state.pool,&identity,task_id,request.fencing_token,request.checkpoint).await.map(Json).map_err(task_status)
+}
+
+async fn recover_room_tasks(
+    State(state): State<AppState>, Path(room_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    if identity.room_id!=room_id { return Err(StatusCode::FORBIDDEN); }
+    require_permission(&state.pool,&identity,"task.assign").await.map_err(auth_status)?;
+    let recovered=tasks::recover_expired(&state.pool,room_id).await.map_err(task_status)?;
+    Ok(Json(serde_json::json!({"recovery_required":recovered})))
+}
+
 fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health/live", get(live))
@@ -199,6 +277,12 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/{room_id}/presence", get(room_presence))
         .route("/team-room/me", get(team_room_me))
         .route("/team-room/{room_id}/join", post(join_room))
+        .route("/team-room/tasks", post(create_task))
+        .route("/team-room/tasks/{task_id}/lease/acquire", post(acquire_task_lease))
+        .route("/team-room/tasks/{task_id}/lease/renew", post(renew_task_lease))
+        .route("/team-room/tasks/{task_id}/checkpoint", post(checkpoint_task))
+        .route("/team-room/tasks/{task_id}/complete", post(complete_task))
+        .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(state)
 }
