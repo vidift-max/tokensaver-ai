@@ -165,7 +165,7 @@ function main(args) {
       if (m.handoff.status==="HANDOFF_ACCEPTED" && (a[0]!==m.responsible_ai || a[1]!==m.participant_id)) throw new Error("TASK_REASSIGNED: only the accepted responsible AI may resume");
       if (m.handoff.status==="HANDOFF_CREATED") throw new Error("pending handoff must be accepted before resume");
       if (!["IN_PROGRESS","DISCONNECTED","BLOCKED","RECOVERY_REQUIRED","RESUMING"].includes(m.status)) throw new Error("mission is not resumable from current status");
-      if (m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before resume");
+      if (m.status==="BLOCKED" && m.blockers.some(blocker=>blocker.status==="OPEN")) throw new Error("resolve blockers before resume");
       if (!m.checkpoint && m.status!=="DISCONNECTED") throw new Error("no checkpoint available");
       if (m.status === "DISCONNECTED") {
         const disconnect = [...m.blockers].reverse().find(item => item.kind === "DISCONNECT" && item.status === "RECORDED");
