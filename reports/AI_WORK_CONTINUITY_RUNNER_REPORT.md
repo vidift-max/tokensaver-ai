@@ -1041,3 +1041,34 @@ The code HEAD CI above is green. This report update is documentation-only; its o
 **NO-GO** para declarar Runner distribuído, recuperação autônoma, handoff autenticado completo ou autonomia multi-IA. Um executor desaparecido ainda não é substituído por worker automático e o Runner ainda pode iniciar com autoridade local simulada.
 
 **Missão de implementação: PARCIAL.** As dez áreas foram auditadas, mas não há evidência de dez rodadas de implementação concluídas. Integração do Runner, worker de recovery e protocolo explícito de handoff permanecem pendentes.
+
+---
+
+## Correção da auditoria — reconciliação de commits e CI final do código
+
+Uma consulta posterior do histórico retornou dois commits documentais que não haviam aparecido na primeira página da busca anterior:
+
+- e88e52336ef6ea719b3537167efa9b174bb8ea51 — adicionou a auditoria de reconciliação do branch e a evidência do CI completo.
+- ba15771330491198e88e75cbbfafab65610a6da7 — corrigiu a contagem de caminhos alterados no relatório de reconciliação.
+
+Ambos modificam somente relatórios; foram preservados. Portanto, a afirmação anterior de que o único commit posterior a 44a4151 era a360a3e deve ser lida como 'único commit de código identificado nesta sequência', não como histórico completo: e88e523 e ba1577 são commits documentais intermediários.
+
+### CI completo do código HEAD
+
+O relatório de reconciliação existente registra o run 43053560701 como 4/4 SUCCESS no código HEAD a360a3ea751c6dc5b32cb865201a81b4b2845ece. A inspeção dos quatro jobs confirmou:
+
+- foundation: SUCCESS — cargo check, cargo test, npm install, npm run test:missions, npm run build e package source ZIP.
+- foundation-windows: SUCCESS — smoke real do CONTINUE_MISSION.bat, cargo check, cargo test, npm install, npm run test:missions e npm run build.
+- keycloak-oidc-smoke: SUCCESS — discovery OIDC, token client-credentials, assinatura JWKS, exchange, sessão, autorização e admissão PostgreSQL.
+- ai-team-room-service: SUCCESS — check independente e testes unitários/PostgreSQL.
+
+**Classificação corrigida:** CI do código HEAD a360a3e = VALIDADO (run 43053560701, 4/4 jobs SUCCESS). Isso inclui migration 0006 e asserts de renovações/checkpoints repetidos. Esse CI não valida o Runner como cliente Team Room, worker de recovery ou protocolo staged de handoff, porque esses componentes não estão implementados.
+
+### HEAD documental final e limite da validação
+
+- O relatório foi atualizado em commit documental 9b03f67888578f7117b284f3bef995bbfae30628.
+- A consulta de status checks para esse commit retornou lista vazia; não há evidência de um workflow executado especificamente no HEAD documental.
+- Como o único arquivo desse commit é este relatório, o código permanece idêntico ao código HEAD a360a3e validado pelo run 43053560701. Ainda assim, conforme a regra estrita desta missão, o HEAD completo 9b03f678 não deve ser rotulado como CI-validado até haver execução associada ao SHA exato.
+- Não foi possível disparar nem listar um workflow para esse commit com as ações GitHub disponíveis nesta sessão. Não inventar run ID ou conclusão.
+
+**Decisão permanece:** GO CONDICIONADO para desenvolvimento; NO-GO para autonomia distribuída. O CI do serviço e do código-base está verde, mas os requisitos de Runner integrado, recovery daemon, handoff explícito e seleção automática continuam pendentes.
