@@ -106,6 +106,12 @@ async fn signed_identity_to_session_authorization_admission_replay_and_revocatio
     assert_eq!(identity.session_id, exchanged.identity.session_id);
     require_permission(&pool, &identity, "room.join").await.unwrap();
     require_permission(&pool, &identity, "room.read").await.unwrap();
+    for permission in ["admin", "task.write", "private_chat", "audio.publish"] {
+        assert!(matches!(
+            require_permission(&pool, &identity, permission).await,
+            Err(AuthError::Forbidden)
+        ), "unexpected implicit grant for {permission}");
+    }
 
     let admission = admit_authenticated_participant(&pool, room, identity.participant_id, identity.principal_id, identity.session_id).await.unwrap();
     assert_eq!(admission.active_ai_count, 1);
@@ -157,8 +163,19 @@ async fn simultaneous_replay_exchange_has_exactly_one_winner_and_permission_is_s
 
     // Disabled identity is rejected even when the external token is cryptographically valid.
     sqlx::query("UPDATE principals SET enabled = FALSE WHERE principal_id = $1").bind(principal).execute(&pool).await.unwrap();
-    let disabled = token(&subject, &Uuid::new_v4().to_string(), 300);
-    assert!(matches!(exchange_workload_token(&pool, &config, room, &disabled).await, Err(AuthError::IdentityUnavailable)));
+    let disabled_principal = token(&subject, &Uuid::new_v4().to_string(), 300);
+    assert!(matches!(exchange_workload_token(&pool, &config, room, &disabled_principal).await, Err(AuthError::IdentityUnavailable)));
+
+    sqlx::query("UPDATE principals SET enabled = TRUE WHERE principal_id = $1").bind(principal).execute(&pool).await.unwrap();
+    for status in ["DISABLED", "REVOKED", "EXPIRED"] {
+        sqlx::query("UPDATE workload_identities SET status = $1, revoked_at = CASE WHEN $1 = 'REVOKED' THEN NOW() ELSE NULL END WHERE principal_id = $2")
+            .bind(status).bind(principal).execute(&pool).await.unwrap();
+        let assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
+        assert!(matches!(
+            exchange_workload_token(&pool, &config, room, &assertion).await,
+            Err(AuthError::IdentityUnavailable)
+        ), "workload state {status} must not exchange");
+    }
 
     sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
     server.abort();
