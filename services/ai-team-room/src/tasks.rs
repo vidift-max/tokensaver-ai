@@ -174,7 +174,7 @@ pub async fn renew_lease(
 ) -> Result<TaskLease, TaskError> {
     if !(15..=300).contains(&lease_seconds) { return Err(TaskError::InvalidLease); }
     let mut tx=pool.begin().await?;
-    let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
+    let _task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
       "UPDATE team_tasks SET lease_renewed_at=NOW(),lease_expires_at=NOW()+($3 * INTERVAL '1 second'),updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(lease_seconds).fetch_one(&mut *tx).await?;
@@ -197,7 +197,6 @@ pub async fn write_checkpoint(
     ).bind(task_id).bind(fencing_token).bind(checkpoint).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"CHECKPOINTED",serde_json::json!({"checkpoint_version":updated.checkpoint_version})).await?;
     tx.commit().await?;
-    let _=task;
     Ok(updated)
 }
 
