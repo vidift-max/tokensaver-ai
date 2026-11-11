@@ -44,4 +44,4 @@ const server=createServer(async(req,res)=>{
  return send(404,{});
 });
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
-parentPort.postMessage({port:server.address().port});
+parentPort.postMessage({port:server.address().port,identity});

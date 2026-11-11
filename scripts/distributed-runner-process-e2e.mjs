@@ -16,7 +16,7 @@ assert.ok(databaseUrl,"DATABASE_URL required");
 const missionLabel="TEST-MISSION-DISTRIBUTED-001";
 const roomId=crypto.randomUUID();
 const tenantId=crypto.randomUUID();
-const roles=["runner-a","runner-b","recovery-worker"];
+const roles=["runner-a","runner-b","recovery-worker-a","recovery-worker-b"];
 const identities=roles.map(role=>({
   role,
   principalId:crypto.randomUUID(),
@@ -26,7 +26,7 @@ const identities=roles.map(role=>({
   workloadId:crypto.randomUUID(),
   token:crypto.randomBytes(32).toString("hex")
 }));
-const runnerA=identities[0],runnerB=identities[1],recoveryWorker=identities[2];
+const runnerA=identities[0],runnerB=identities[1],recoveryWorkerA=identities[2],recoveryWorkerB=identities[3];
 for(const identity of identities) process.stdout.write("::add-mask::"+identity.token+"\n");
 
 function psql(sql){
@@ -84,6 +84,19 @@ function runAsync(identity,stateDir,...args){
 function stateFor(stateDir){
   return JSON.parse(fs.readFileSync(path.join(stateDir,"STATE.json"),"utf8")).missions[missionLabel];
 }
+function runRecoveryAsync(identity,...args){
+  return new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,[recoveryScript,...args],{
+      env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token},
+      stdio:["ignore","pipe","pipe"]
+    });
+    let stdout="",stderr="";
+    child.stdout.on("data",chunk=>stdout+=chunk);
+    child.stderr.on("data",chunk=>stderr+=chunk);
+    child.once("error",reject);
+    child.once("close",status=>resolve({status,stdout,stderr,pid:child.pid}));
+  });
+}
 function mustRun(identity,stateDir,...args){
   const result=runSync(identity,stateDir,...args);
   assert.equal(result.status,0,`Runner command failed: ${args.join(" ")}\n${result.stderr}\n${result.stdout}`);
@@ -120,20 +133,25 @@ try{
   assert.ok(taskId,"initial owner must persist the PostgreSQL task reference");
   assert.equal(fencingA,1);
   assert.equal(replacementStart.status,2,"second Runner must be denied while first lease is live");
+  assert.match(replacementStart.stderr,/HTTP 409/,"second Runner must be rejected by the live PostgreSQL lease");
   const initialTask=await (await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+owner.token}})).json();
   assert.equal(initialTask.task_id,taskId);
   assert.equal(initialTask.owner_principal_id,owner.principalId);
 
   sqlOk(`UPDATE team_tasks SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE task_id=${quote(taskId)} AND fencing_token=1`);
-  const recoveryResult=spawnSync(process.execPath,[recoveryScript,roomId,taskId,owner.principalId],{
-    encoding:"utf8",
-    env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:recoveryWorker.token},
-    timeout:20000,maxBuffer:1024*1024
-  });
-  assert.equal(recoveryResult.status,0,"recovery worker must mark expiry and select a different eligible candidate: "+recoveryResult.stderr);
-  const recoveryEvidence=JSON.parse(recoveryResult.stdout.trim().split("\n").at(-1));
-  assert.equal(recoveryEvidence.result,"CANDIDATE_SELECTED");
-  assert.equal(recoveryEvidence.selected_candidate_principal_id,replacement.principalId);
+  const [recoveryResultA,recoveryResultB]=await Promise.all([
+    runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId),
+    runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId)
+  ]);
+  assert.equal(recoveryResultA.status,0,"recovery worker A failed: "+recoveryResultA.stderr);
+  assert.equal(recoveryResultB.status,0,"recovery worker B failed: "+recoveryResultB.stderr);
+  const recoveryEvidenceA=JSON.parse(recoveryResultA.stdout.trim().split("\n").at(-1));
+  const recoveryEvidenceB=JSON.parse(recoveryResultB.stdout.trim().split("\n").at(-1));
+  assert.equal(recoveryEvidenceA.result,"CANDIDATE_SELECTED");
+  assert.equal(recoveryEvidenceB.result,"CANDIDATE_SELECTED");
+  assert.equal(recoveryEvidenceA.selected_candidate_principal_id,replacement.principalId);
+  assert.equal(recoveryEvidenceB.selected_candidate_principal_id,replacement.principalId);
+  assert.equal(recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,1,"two recovery workers must serialize to one recovery transition");
 
   const takeover=mustRun(replacement,replacementDir,"start");
   const replacementState=stateFor(replacementDir);
@@ -175,8 +193,15 @@ try{
     runner_b_principal_id:replacement.principalId,
     runner_b_session_id:replacement.sessionId,
     runner_b_execution_id:replacement.executionId,
-    recovery_worker_principal_id:recoveryWorker.principalId,
-    recovery_worker_selected_b:recoveryEvidence.selected_candidate_principal_id,
+    recovery_worker_a_principal_id:recoveryWorkerA.principalId,
+    recovery_worker_a_session_id:recoveryWorkerA.sessionId,
+    recovery_worker_b_principal_id:recoveryWorkerB.principalId,
+    recovery_worker_b_session_id:recoveryWorkerB.sessionId,
+    recovery_worker_a_pid:recoveryResultA.pid,
+    recovery_worker_b_pid:recoveryResultB.pid,
+    concurrent_recovery_workers:2,
+    recovery_transition_count:recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,
+    recovery_worker_selected_b:recoveryEvidenceA.selected_candidate_principal_id,
     fencing_a:fencingA,
     fencing_b:fencingB,
     initial_acquire:"ACCEPTED",

@@ -11,7 +11,7 @@ const script = path.resolve("scripts/mission-runner.mjs");
 const roomId="10000000-0000-4000-8000-000000000001";
 const identity={tenant_id:"10000000-0000-4000-8000-000000000002",participant_id:"10000000-0000-4000-8000-000000000003",principal_id:"10000000-0000-4000-8000-000000000004",session_id:"10000000-0000-4000-8000-000000000005",execution_id:"10000000-0000-4000-8000-000000000006",room_id:roomId};
 const serverWorker=new Worker(new URL("./team-room-http-fixture.mjs",import.meta.url));
-const {port}=await new Promise((resolve,reject)=>{
+const {port,identity:fixtureIdentity}=await new Promise((resolve,reject)=>{
  serverWorker.once("message",resolve);
  serverWorker.once("error",reject);
 });
@@ -167,7 +167,7 @@ test("heartbeat presence timeout requires missed heartbeats, not a long-running 
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-134","134","Heartbeat");
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
- assert.equal(run(c,"heartbeat","session-a").status,0);
+ assert.equal(run(c,"heartbeat",fixtureIdentity.session_id).status,0);
  let s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
  assert.equal(s.missions["M-134"].presence.state,"ACTIVE");
  s.missions["M-134"].presence.last_seen=new Date(Date.now()-500).toISOString();
