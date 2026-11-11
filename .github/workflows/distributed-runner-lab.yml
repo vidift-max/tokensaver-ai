@@ -61,30 +61,31 @@ jobs:
           set -e
           echo "exit_code=$result" >> distributed-runner-evidence/test.log
           echo "exit_code=$result" >> "$GITHUB_OUTPUT"
-          cat > distributed-runner-evidence/distributed-runner-evidence.json <<EOF
-          {
-            "commit_sha": "$GITHUB_SHA",
-            "workflow": "Distributed Runner PostgreSQL Lab",
-            "test": "ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection",
-            "database": "PostgreSQL 16 service container",
-            "database_shared": true,
-            "migrations_applied_by_test_fixture": true,
-            "identity_count": 10,
-            "concurrent_task_creation": "asserted",
-            "single_acquire_winner": "asserted",
-            "lease_expiry_and_reassignment": "asserted",
-            "fencing_generation_1_to_2": "asserted",
-            "stale_checkpoint_rejection": "asserted",
-            "stale_complete_rejection": "asserted",
-            "stale_renew_rejection": "not_asserted_by_this_test",
-            "stale_release_rejection": "not_asserted_by_this_test",
-            "independent_mission_runner_processes": "not_tested",
-            "http_team_room_authentication": "not_tested",
-            "recovery_worker": "not_implemented",
-            "exit_code": $result,
-            "result": "$([ "$result" -eq 0 ] && echo PASS || echo FAIL)"
-          }
-          EOF
+          evidence_line="$(grep '^DISTRIBUTED_EVIDENCE_JSON=' distributed-runner-evidence/test.log | tail -n 1 | cut -d= -f2- || true)"
+          if [ -n "$evidence_line" ]; then
+            test_evidence="$evidence_line"
+          else
+            test_evidence="null"
+          fi
+          jq -n \
+            --arg sha "$GITHUB_SHA" \
+            --argjson exit_code "$result" \
+            --argjson test_evidence "$test_evidence" \
+            '{
+              commit_sha:$sha,
+              workflow:"Distributed Runner PostgreSQL Lab",
+              test:"ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection",
+              database:"PostgreSQL 16 service container",
+              database_shared:true,
+              migrations_applied_by_test_fixture:true,
+              identity_count:10,
+              independent_mission_runner_processes:"not_tested",
+              http_team_room_authentication:"not_tested",
+              recovery_worker:"not_implemented",
+              exit_code:$exit_code,
+              result:(if $exit_code == 0 then "PASS" else "FAIL" end),
+              test_evidence:$test_evidence
+            }' > distributed-runner-evidence/distributed-runner-evidence.json
           exit "$result"
       - name: Upload PostgreSQL lab evidence
         if: always()
