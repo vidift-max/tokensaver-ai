@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { TeamRoomClient } from "./team-room-client.mjs";
 
 const ROOT = path.resolve(process.env.MISSION_STATE_DIR || ".mission");
 const STATE_FILE = path.join(ROOT, "STATE.json");
@@ -117,23 +118,60 @@ function main(args) {
       if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("pending handoff prevents the previous executor from starting");
       if (!["ACKNOWLEDGED","DISCONNECTED","BLOCKED","RESUMING"].includes(m.status)) throw new Error("mission must be ACKNOWLEDGED, DISCONNECTED, RESUMING or unblocked BLOCKED");
       if(m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before start");
+      // Local state is metadata only. PostgreSQL must grant ownership before IN_PROGRESS.
+      const remote = await new TeamRoomClient().start(m);
       transition(m,"IN_PROGRESS"); m.started_at=m.started_at||now(); m.presence.state="ACTIVE"; m.presence.connected_at=m.presence.connected_at||now(); m.presence.last_seen=now();
-      m.execution={lease_id:crypto.randomUUID(),owner_ai:m.responsible_ai,participant_id:m.participant_id,lease_expires_at:new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString()};
-      m.next_action="execute current_task and heartbeat/checkpoint"; writeState(s,"MISSION_STARTED"); return;
+      m.presence.session_id=remote.identity.session_id;
+      m.execution={task_id:remote.task.task_id,fencing_token:remote.fencing_token,owner_principal_id:remote.identity.principal_id,owner_participant_id:remote.identity.participant_id,owner_session_id:remote.identity.session_id,owner_execution_id:remote.identity.execution_id,lease_expires_at:remote.task.lease_expires_at,ownership_state:"OWNED"};
+      m.current_task_id=remote.task.task_id;
+      m.next_action="execute only while Team Room lease is valid; renew/checkpoint remotely"; writeState(s,"MISSION_STARTED_REMOTE",{task_id:remote.task.task_id,fencing_token:remote.fencing_token}); return;
     }
     if (cmd === "checkpoint") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: checkpoint <description>; mission must be IN_PROGRESS");
-      const cp=createCheckpoint(m,a.join(" ")); m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest checkpoint"; writeState(s,"CHECKPOINT_CREATED",{checkpoint_id:cp.checkpoint_id}); return;
+      const cp=createCheckpoint(m,a.join(" "));
+      const lease=m.execution;
+      if (!lease?.task_id || !Number.isSafeInteger(lease.fencing_token) || lease.ownership_state==="LOSS_OF_OWNERSHIP") throw new Error("valid remote lease reference required; checkpoint denied");
+      try {
+        await new TeamRoomClient().checkpoint(lease,{mission_id:m.mission_id,task_id:lease.task_id,session_id:lease.owner_session_id,workload_execution_id:lease.owner_execution_id,fencing_token:lease.fencing_token,checkpoint:cp,context:{title:m.title,current_task:m.current_task,progress:m.progress},timestamp:now()});
+      } catch (error) { lease.ownership_state="LOSS_OF_OWNERSHIP"; writeState(s,"REMOTE_CHECKPOINT_REJECTED",{code:error.code||"REMOTE_ERROR"}); throw error; }
+      m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest remote checkpoint"; writeState(s,"CHECKPOINT_CREATED_REMOTE",{checkpoint_id:cp.checkpoint_id,fencing_token:lease.fencing_token}); return;
     }
     if (cmd === "heartbeat") {
-      if (!a[0] || !a[0].trim()) throw new Error("usage: heartbeat <session_id>");
       if (!["IN_PROGRESS","ACKNOWLEDGED","DISCONNECTED","RECOVERY_REQUIRED","RESUMING"].includes(m.status)) throw new Error("mission is not accepting a heartbeat in its current state");
+      const client=new TeamRoomClient();
+      const identity=await client.authenticate();
+      if (a[0] && a[0]!==identity.session_id) throw new Error("provided session_id does not match authenticated Team Room session");
+      await client.presence();
       const wasDisconnected=["DISCONNECTED","SUSPECTED_DISCONNECTED"].includes(m.presence.state);
-      m.presence.session_id=a[0]; m.presence.last_seen=now(); m.presence.state=wasDisconnected?"RECONNECTED":"ACTIVE";
+      m.presence.session_id=identity.session_id; m.presence.last_seen=now(); m.presence.state=wasDisconnected?"RECONNECTED":"ACTIVE";
       if (!m.presence.connected_at || wasDisconnected) m.presence.connected_at=now();
       if (wasDisconnected) m.presence.reconnected_at=now();
-      if (m.execution.lease_id && m.execution.owner_ai===m.responsible_ai) m.execution.lease_expires_at=new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString();
-      m.last_action="heartbeat"; writeState(s,"PRESENCE_HEARTBEAT",{presence:m.presence.state}); return;
+      // Presence heartbeat never renews or fabricates the task lease.
+      m.last_action="presence_heartbeat"; writeState(s,"PRESENCE_HEARTBEAT_REMOTE",{presence:m.presence.state}); return;
+    }
+    if (cmd === "renew") {
+      if (m.status!=="IN_PROGRESS" || !m.execution?.task_id || !Number.isSafeInteger(m.execution?.fencing_token) || m.execution.ownership_state==="LOSS_OF_OWNERSHIP") throw new Error("active remote lease required");
+      try {
+        const task=await new TeamRoomClient().renew(m.execution);
+        m.execution.lease_expires_at=task.lease_expires_at; m.execution.ownership_state="OWNED";
+        writeState(s,"TASK_LEASE_RENEWED_REMOTE",{task_id:m.execution.task_id,fencing_token:m.execution.fencing_token,lease_expires_at:task.lease_expires_at}); return;
+      } catch(error) {
+        m.execution.ownership_state="LOSS_OF_OWNERSHIP";
+        writeState(s,"TASK_LEASE_RENEW_REJECTED",{code:error.code||"REMOTE_ERROR"});
+        throw error;
+      }
+    }
+    if (cmd === "release") {
+      if (!m.execution?.task_id || !Number.isSafeInteger(m.execution?.fencing_token)) throw new Error("remote lease reference required");
+      try {
+        const task=await new TeamRoomClient().release(m.execution);
+        m.execution.ownership_state="RELEASED"; m.execution.lease_expires_at=null;
+        writeState(s,"TASK_LEASE_RELEASED_REMOTE",{task_id:task.task_id,fencing_token:task.fencing_token}); return;
+      } catch(error) {
+        m.execution.ownership_state="LOSS_OF_OWNERSHIP";
+        writeState(s,"TASK_LEASE_RELEASE_REJECTED",{code:error.code||"REMOTE_ERROR"});
+        throw error;
+      }
     }
     if (cmd === "presence") {
       if (a[0] && (!/^\d+$/.test(a[0]) || Number(a[0])<1000)) throw new Error("timeout_ms must be an integer >= 1000");
@@ -178,9 +216,12 @@ function main(args) {
         const disconnect = [...m.blockers].reverse().find(item => item.kind === "DISCONNECT" && item.status === "RECORDED");
         if (disconnect) { disconnect.status = "RESUMED"; disconnect.resumed_at = now(); }
       }
-      transition(m,"IN_PROGRESS"); m.presence.state="RECONNECTED"; m.presence.reconnected_at=now(); m.presence.last_seen=now();
-      m.execution={lease_id:crypto.randomUUID(),owner_ai:m.responsible_ai,participant_id:m.participant_id,lease_expires_at:new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString()};
-      m.last_action="resumed"; m.next_action=m.checkpoint?.description || "continue assigned task"; writeState(s,"MISSION_RESUMED"); console.log("RESUMED " + m.mission_id); return;
+      // A local checkpoint is context only; the server decides whether this executor owns the task.
+      const remote=await new TeamRoomClient().resume(m,m.execution);
+      transition(m,"IN_PROGRESS"); m.presence.state="RECONNECTED"; m.presence.reconnected_at=now(); m.presence.last_seen=now(); m.presence.session_id=remote.identity.session_id;
+      m.execution={task_id:remote.task.task_id,fencing_token:remote.fencing_token,owner_principal_id:remote.identity.principal_id,owner_participant_id:remote.identity.participant_id,owner_session_id:remote.identity.session_id,owner_execution_id:remote.identity.execution_id,lease_expires_at:remote.task.lease_expires_at,ownership_state:"OWNED"};
+      m.current_task_id=remote.task.task_id;
+      m.last_action="resumed_remote"; m.next_action=m.checkpoint?.description || "continue from PostgreSQL checkpoint"; writeState(s,"MISSION_RESUMED_REMOTE",{task_id:remote.task.task_id,fencing_token:remote.fencing_token}); console.log("RESUMED " + m.mission_id); return;
     }
     if (cmd === "resolve-blockers") {
       if (m.status!=="BLOCKED" || !m.blockers.some(b=>b.status==="OPEN")) throw new Error("no open blocker on a BLOCKED mission");
@@ -245,7 +286,12 @@ function main(args) {
     }
     if (cmd === "complete") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: complete <result>; mission must be IN_PROGRESS");
-      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_COMPLETED"); return;
+      const lease=m.execution;
+      if (!lease?.task_id || !Number.isSafeInteger(lease.fencing_token) || lease.ownership_state==="LOSS_OF_OWNERSHIP") throw new Error("valid remote lease reference required; completion denied");
+      const finalCheckpoint={mission_id:m.mission_id,task_id:lease.task_id,result:a.join(" "),progress:100,context:{title:m.title,current_task:m.current_task,files_changed:m.files_changed,commits:m.commits,tests:m.tests},timestamp:now()};
+      try { await new TeamRoomClient().complete(lease,finalCheckpoint); }
+      catch (error) { lease.ownership_state="LOSS_OF_OWNERSHIP"; writeState(s,"REMOTE_COMPLETE_REJECTED",{code:error.code||"REMOTE_ERROR"}); throw error; }
+      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_COMPLETED_REMOTE",{task_id:lease.task_id,fencing_token:lease.fencing_token}); return;
     }
     if (cmd === "prompt-ready") {
       if (m.status !== "DONE") throw new Error("current mission must be DONE before preparing its successor prompt");
