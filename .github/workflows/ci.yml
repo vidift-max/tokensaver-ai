@@ -85,6 +85,7 @@ jobs:
           docker run --detach --name keycloak-ci -p 8080:8080 \
             -e KC_BOOTSTRAP_ADMIN_USERNAME=ci-admin \
             -e KC_BOOTSTRAP_ADMIN_PASSWORD=ci-only-bootstrap-password \
+            -e KC_HEALTH_ENABLED=true \
             quay.io/keycloak/keycloak:26.3.5 start-dev --http-enabled=true --hostname-strict=false
       - name: Wait for Keycloak readiness
         run: |
