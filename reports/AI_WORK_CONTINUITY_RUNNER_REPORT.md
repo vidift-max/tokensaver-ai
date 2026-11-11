@@ -791,3 +791,12 @@ Implement and deploy a durable recovery scheduler/outbox worker, explicit staged
 - **Code HEAD after this hardening:** `76ee61345f97e17dd2e8dfe9d3b7a38284d707da`.
 - **Additional commit:** `76ee61345f97e17dd2e8dfe9d3b7a38284d707da` — composite owner/workload execution FK.
 - The CI run for this code HEAD is pending; do not treat any earlier or cancelled run as proof for this final tree.
+
+
+### Final authorization revalidation hardening
+
+Lease acquire, renew, checkpoint, release and completion now re-check the active session, active workload execution, active room membership, enabled principal and active registered workload identity inside the PostgreSQL transaction. This closes the authentication-to-mutation time-of-check/time-of-use gap for revoked membership or disabled identity.
+
+- Code hardening commit: `4a05c18509bd96d8580bb5eea4a2eadd1ef8a0c8`.
+- Report HEAD will be the documentation commit immediately following this entry.
+- CI for the final report HEAD remains the required acceptance evidence.
