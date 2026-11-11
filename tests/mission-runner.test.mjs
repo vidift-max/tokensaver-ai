@@ -12,9 +12,13 @@ function run(ctx,...args) { return spawnSync(process.execPath,[script,...args],{
 test("persists mission, checkpoint and resume across separate processes", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  assert.equal(run(c,"init","M-120","120","Continuity test").status,0);
+ let initial=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(initial.missions["M-120"].started_at,null);
  assert.equal(run(c,"assign","GPT-6","participant-test").status,0);
  assert.equal(run(c,"acknowledge").status,0);
  assert.equal(run(c,"start").status,0);
+ let started=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.ok(started.missions["M-120"].started_at);
  assert.equal(run(c,"checkpoint","after audit").status,0);
  assert.equal(run(c,"disconnect","session ended").status,0);
  assert.equal(run(c,"resume").status,0);

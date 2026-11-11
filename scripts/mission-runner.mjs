@@ -57,7 +57,7 @@ function main(args) {
       if (a.length < 3 || !safeId(a[0]) || !/^\d+$/.test(a[1])) throw new Error("usage: init <safe-id> <number> <title>");
       if (fs.existsSync(STATE_FILE)) throw new Error("state already exists; refusing to overwrite");
       const stamp = now(), id = a[0];
-      const mission = { mission_id:id, mission_number:Number(a[1]), title:a.slice(2).join(" "), responsible_ai:null, participant_id:null, current_task:null, subtasks:[], status:"CREATED", progress:0, last_action:"initialized", last_result:null, files_changed:[], commits:[], tests:[], evidence:[], blockers:[], next_action:"assign responsible AI", checkpoint:null, started_at:stamp, updated_at:stamp, completed_at:null, handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null}, prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null} };
+      const mission = { mission_id:id, mission_number:Number(a[1]), title:a.slice(2).join(" "), responsible_ai:null, participant_id:null, current_task:null, subtasks:[], status:"CREATED", progress:0, last_action:"initialized", last_result:null, files_changed:[], commits:[], tests:[], evidence:[], blockers:[], next_action:"assign responsible AI", checkpoint:null, started_at:null, updated_at:stamp, completed_at:null, handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null}, prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null} };
       const s = { version:1, current_mission_id:id, missions:{[id]:mission}, updated_at:stamp };
       writeState(s,"MISSION_CREATED",{mission_number:mission.mission_number}); console.log("CREATED " + id); return;
     }
