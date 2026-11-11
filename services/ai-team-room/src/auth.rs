@@ -90,8 +90,8 @@ async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<St
         return Err(AuthError::ProviderUnavailable);
     }
     let algorithms = metadata.get("id_token_signing_alg_values_supported")
-        .and_then(Value::as_array);
-    if algorithms.is_some_and(|values| !values.iter().any(|v| v.as_str() == Some("RS256"))) {
+        .and_then(Value::as_array).ok_or(AuthError::ProviderUnavailable)?;
+    if !algorithms.iter().any(|v| v.as_str() == Some("RS256")) {
         return Err(AuthError::ProviderUnavailable);
     }
     let jwks_url = metadata.get("jwks_uri").and_then(Value::as_str)
@@ -217,7 +217,13 @@ async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaim
     let claims = decode::<OidcClaims>(token, &key, &validation)
         .map_err(|_| AuthError::Unauthorized)?.claims;
     let now = Utc::now().timestamp() as usize;
-    if claims.iss != config.issuer || claims.sub.trim().is_empty() || claims.sub.len() > 512
+    let exact_audience = match &claims.aud {
+        Value::String(value) => value == &config.audience,
+        Value::Array(values) => values.len() == 1 && values[0].as_str() == Some(config.audience.as_str()),
+        _ => false,
+    };
+    if claims.iss != config.issuer || !exact_audience
+        || claims.sub.trim().is_empty() || claims.sub.len() > 512
         || claims.jti.trim().is_empty() || claims.jti.len() > 256
         || claims.iat > now.saturating_add(60) || claims.iat >= claims.exp
         || !claims.scope.split_ascii_whitespace().any(|s| s == "team_room:connect") {
@@ -232,7 +238,19 @@ pub async fn exchange_workload_token(
     room_id: Uuid,
     external_token: &str,
 ) -> Result<ExchangeResponse, AuthError> {
-    let claims = verify_oidc_token(config, external_token).await?;
+    let claims = match verify_oidc_token(config, external_token).await {
+        Ok(claims) => claims,
+        Err(error) => {
+            let reason = if matches!(error, AuthError::ProviderUnavailable) {
+                "issuer_metadata_or_jwks_unavailable"
+            } else {
+                "credential_rejected"
+            };
+            let _ = sqlx::query("INSERT INTO security_audit_events (security_event_id, room_id, action, outcome, reason_code) VALUES ($1,$2,'auth.exchange.denied','DENIED',$3)")
+                .bind(Uuid::new_v4()).bind(room_id).bind(reason).execute(pool).await;
+            return Err(error);
+        }
+    };
     let now = Utc::now();
     let expires_at = std::cmp::min(
         chrono::DateTime::<Utc>::from_timestamp(claims.exp as i64, 0).ok_or(AuthError::Unauthorized)?,
@@ -249,7 +267,12 @@ pub async fn exchange_workload_token(
         "INSERT INTO auth_token_replays (issuer, token_jti, expires_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"
     ).bind(&claims.iss).bind(&claims.jti).bind(expires_at)
         .execute(&mut *tx).await?;
-    if replay.rows_affected() != 1 { return Err(AuthError::Unauthorized); }
+    if replay.rows_affected() != 1 {
+        sqlx::query("INSERT INTO security_audit_events (security_event_id, room_id, action, outcome, reason_code) VALUES ($1,$2,'auth.exchange.denied','DENIED','assertion_replay')")
+            .bind(Uuid::new_v4()).bind(room_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Err(AuthError::Unauthorized);
+    }
 
     let registered = sqlx::query_as::<_, RegisteredIdentity>(
         r#"SELECT pr.tenant_id, pr.principal_id, p.participant_id, wi.workload_id
@@ -262,7 +285,16 @@ pub async fn exchange_workload_token(
              AND pr.principal_kind = 'AI' AND pr.enabled = TRUE AND p.enabled = TRUE
            ORDER BY p.created_at ASC LIMIT 1 FOR UPDATE OF pr, p, wi"#
     ).bind(&claims.iss).bind(&claims.sub).bind(room_id)
-        .fetch_optional(&mut *tx).await?.ok_or(AuthError::IdentityUnavailable)?;
+        .fetch_optional(&mut *tx).await?;
+    let registered = match registered {
+        Some(identity) => identity,
+        None => {
+            sqlx::query("INSERT INTO security_audit_events (security_event_id, room_id, action, outcome, reason_code) VALUES ($1,$2,'auth.identity.denied','DENIED','identity_not_registered_or_disabled')")
+                .bind(Uuid::new_v4()).bind(room_id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Err(AuthError::IdentityUnavailable);
+        }
+    };
 
     let previous: Option<Uuid> = sqlx::query_scalar(
         "SELECT session_id FROM sessions WHERE room_id = $1 AND principal_id = $2 AND status = 'ACTIVE' AND revoked_at IS NULL FOR UPDATE"
