@@ -8,10 +8,10 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgListener, FromRow, PgPool};
+use sqlx::{postgres::PgListener, FromRow, PgPool, Row};
 use uuid::Uuid;
 
-use crate::ai_team_room_service::{auth::{authenticate_session, require_permission, AuthenticatedIdentity}, tasks};
+use ai_team_room_service::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
 
 #[derive(Debug, Serialize, FromRow)]
 struct MessageRow {
@@ -194,14 +194,21 @@ async fn persist_message(pool:&PgPool,who:&AuthenticatedIdentity,room_id:Uuid,ch
         if !same{return Err(StatusCode::BAD_REQUEST);}
     }
     let message_id=Uuid::new_v4();
-    let row=sqlx::query_as::<_,MessageRow>(
-        "INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,parent_message_id,body) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(channel_id,sender_principal_id,client_message_id) DO UPDATE SET client_message_id=EXCLUDED.client_message_id RETURNING message_id,room_id,channel_id,sender_principal_id,parent_message_id,body,created_at,edited_at,deleted_at"
+    let inserted=sqlx::query_as::<_,MessageRow>(
+        "INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,parent_message_id,body) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(channel_id,sender_principal_id,client_message_id) DO NOTHING RETURNING message_id,room_id,channel_id,sender_principal_id,parent_message_id,body,created_at,edited_at,deleted_at"
     ).bind(message_id).bind(who.tenant_id).bind(room_id).bind(channel).bind(who.principal_id).bind(input.client_message_id).bind(input.parent_message_id).bind(input.body.trim())
-        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    let payload=serde_json::json!({"room_id":room_id,"channel_id":channel,"channel_type":channel_type,"message":row});
-    sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'MESSAGE_CREATED',$4)")
-        .bind(Uuid::new_v4()).bind(who.tenant_id).bind(channel).bind(payload)
-        .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (row,created)=if let Some(row)=inserted{(row,true)}else{
+        let row=sqlx::query_as::<_,MessageRow>("SELECT message_id,room_id,channel_id,sender_principal_id,parent_message_id,body,created_at,edited_at,deleted_at FROM team_room_messages WHERE channel_id=$1 AND sender_principal_id=$2 AND client_message_id=$3")
+            .bind(channel).bind(who.principal_id).bind(input.client_message_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        (row,false)
+    };
+    if created{
+        let payload=serde_json::json!({"room_id":room_id,"channel_id":channel,"channel_type":channel_type,"message":row});
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'MESSAGE_CREATED',$4)")
+            .bind(Uuid::new_v4()).bind(who.tenant_id).bind(channel).bind(payload)
+            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED,Json(row)))
 }
