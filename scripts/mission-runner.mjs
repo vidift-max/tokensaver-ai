@@ -252,9 +252,14 @@ function main(args) {
       if (!["IN_PROGRESS","DISCONNECTED","RECOVERY_REQUIRED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected, recovery-required or review-pending mission");
       if (!a[0] || !a[0].trim()) throw new Error("target AI required");
       if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("a handoff is already pending; duplicate handoff rejected");
-      m.handoff={status:"HANDOFF_CREATED",from_ai:m.responsible_ai,target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null,checkpoint_id:m.checkpoint?.checkpoint_id||null,context:{mission_id:m.mission_id,task_id:m.current_task,checkpoint:m.checkpoint,files_changed:[...m.files_changed],commits:[...m.commits],tests:[...m.tests],last_result:m.last_result,next_action:m.next_action,blockers:JSON.parse(JSON.stringify(m.blockers))}};
+      if (m.execution?.task_id && Number.isSafeInteger(m.execution?.fencing_token)) {
+        await new TeamRoomClient().release(m.execution);
+      } else {
+        throw new Error("authenticated remote lease required before handoff");
+      }
+      m.handoff={status:"HANDOFF_CREATED",from_ai:m.responsible_ai,target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null,checkpoint_id:m.checkpoint?.checkpoint_id||null,context:{mission_id:m.mission_id,task_id:m.current_task_id||m.current_task,checkpoint:m.checkpoint,files_changed:[...m.files_changed],commits:[...m.commits],tests:[...m.tests],last_result:m.last_result,next_action:m.next_action,blockers:JSON.parse(JSON.stringify(m.blockers))}};
       if (m.status!=="WAITING_REVIEW") transition(m,"WAITING_HANDOFF");
-      m.execution={lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null};
+      m.execution={task_id:m.execution.task_id,fencing_token:m.execution.fencing_token,ownership_state:"RELEASED",lease_expires_at:null};
       m.next_action="await explicit handoff acceptance"; writeState(s,"HANDOFF_CREATED"); return;
     }
     if (cmd === "handoff-accept") {
@@ -276,7 +281,12 @@ function main(args) {
     }
     if (cmd === "approve") {
       if (m.status!=="WAITING_REVIEW") throw new Error("mission must be WAITING_REVIEW");
-      m.last_action="review_approved"; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_REVIEW_APPROVED"); return;
+      const lease=m.execution;
+      if (!lease?.task_id || !Number.isSafeInteger(lease.fencing_token)) throw new Error("remote lease reference required for approval");
+      const finalCheckpoint={mission_id:m.mission_id,task_id:lease.task_id,result:m.last_result||"review approved",progress:100,context:{title:m.title,current_task:m.current_task},timestamp:now()};
+      try { await new TeamRoomClient().complete(lease,finalCheckpoint); }
+      catch(error) { lease.ownership_state="LOSS_OF_OWNERSHIP"; writeState(s,"REMOTE_APPROVAL_REJECTED",{code:error.code||"REMOTE_ERROR"}); throw error; }
+      m.last_action="review_approved"; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_REVIEW_APPROVED_REMOTE",{task_id:lease.task_id,fencing_token:lease.fencing_token}); return;
     }
     if (cmd === "reject" || cmd === "cancel") {
       if (!a.length) throw new Error("reason required");
