@@ -570,6 +570,17 @@ mod tests {
         ).expect_err("uppercase SHA must not leave a non-canonical restored path");
         assert_eq!(error.code, "BACKUP_INVALID");
         assert!(blobs.is_empty());
+
+        let canonical_sha = "b".repeat(64);
+        let uppercase_path = format!("blobs/{}", canonical_sha.to_ascii_uppercase());
+        let path_error = insert_restore_db_blob(
+            &mut blobs,
+            canonical_sha,
+            1,
+            uppercase_path,
+        ).expect_err("relative blob path must also be canonical lowercase");
+        assert_eq!(path_error.code, "BACKUP_INVALID");
+        assert!(blobs.is_empty());
     }
 
     #[test]
