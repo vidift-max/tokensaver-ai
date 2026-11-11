@@ -60,3 +60,7 @@ CREATE INDEX security_audit_events_time_idx
     ON security_audit_events(created_at DESC);
 CREATE INDEX security_audit_events_room_time_idx
     ON security_audit_events(room_id, created_at DESC);
+
+ALTER TABLE principal_permissions
+    ADD CONSTRAINT principal_permissions_permission_catalog_fk
+    FOREIGN KEY (permission) REFERENCES permission_catalog(permission);
