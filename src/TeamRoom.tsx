@@ -13,6 +13,7 @@ export default function TeamRoom() {
   const [connected,setConnected]=useState(false);
   const [connection,setConnection]=useState("DISCONNECTED");
   const [messages,setMessages]=useState<Message[]>([]);
+  const [unreadCount,setUnreadCount]=useState(0);
   const [participants,setParticipants]=useState<Presence[]>([]);
   const [tasks,setTasks]=useState<Task[]>([]);
   const [decisions,setDecisions]=useState<Decision[]>([]);
@@ -50,7 +51,7 @@ export default function TeamRoom() {
       request("/team-room/"+roomId+"/decisions"),
       request("/team-room/"+roomId+"/attachments")
     ]);
-    setMessages(history.items||[]);setChannelId(history.channel_id||"");
+    setMessages(history.items||[]);setUnreadCount(history.unread_count||0);setChannelId(history.channel_id||"");
     setParticipants(presence||[]);setTasks(taskRows||[]);setDecisions(decisionRows||[]);setAttachments(attachmentRows||[]);
   },[request,roomId,token,privateMode,privatePrincipal]);
 
@@ -120,7 +121,7 @@ export default function TeamRoom() {
       <label>Room ID<input value={roomId} onChange={e=>setRoomId(e.target.value)} placeholder="UUID da sala" /></label>
       <label>Session token<input type="password" value={token} onChange={e=>setToken(e.target.value)} placeholder="Bearer token (memória da tela)" /></label>
       <button className="primary" disabled={busy||!roomId||!token} onClick={()=>void connect()}>{busy?"Conectando...":"Entrar na sala"}</button>
-      <span className="status">{connection}</span>
+      <span className="status">{connection}</span>{connected&&<button onClick={()=>{setConnected(false);setConnection("DISCONNECTED");}}>Sair da sala</button>}
     </div>
     {error&&<p className="error">{error}</p>}
     <div className="team-room-layout">
@@ -129,7 +130,7 @@ export default function TeamRoom() {
         <label>Meu status<select value={presenceState} onChange={e=>void changePresence(e.target.value)}><option>ONLINE</option><option>AWAY</option><option>BUSY</option><option>WAITING</option><option>BLOCKED</option></select></label>
       </aside>
       <div className="team-room-main">
-        <section className="panel" id="room-chat"><div className="panel-head"><div><h2>Chat</h2><p className="muted">Histórico persistente · eventos via PostgreSQL outbox + WebSocket autenticado</p></div><button onClick={()=>void refresh()}>Atualizar</button></div>
+        <section className="panel" id="room-chat"><div className="panel-head"><div><h2>Chat {unreadCount>0?"· "+unreadCount+" não lidas":""}</h2><p className="muted">Histórico persistente · eventos via PostgreSQL outbox + WebSocket autenticado</p></div><button onClick={()=>void refresh()}>Atualizar</button></div>
           <div className="team-room-messages">{messages.map(m=><article key={m.message_id}><small>{m.sender_principal_id.slice(0,8)} · {new Date(m.created_at).toLocaleString()}</small><p>{m.body}</p><button onClick={()=>setReplyTo(m.message_id)}>Responder nesta thread</button></article>)}</div>\n          {replyTo&&<p className="muted">Respondendo à mensagem {replyTo.slice(0,8)} <button onClick={()=>setReplyTo(null)}>Cancelar</button></p>}
           <textarea value={draft} onChange={e=>setDraft(e.target.value)} rows={3} placeholder="Escreva uma mensagem..."/>
           <button className="primary" onClick={()=>void sendMessage()} disabled={!connected||!draft.trim()}>Enviar mensagem</button>
