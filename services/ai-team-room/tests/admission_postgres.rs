@@ -151,3 +151,39 @@ async fn sixteen_simultaneous_admissions_never_exceed_fifteen() {
 
     cleanup(&f).await;
 }
+
+
+#[tokio::test]
+async fn admission_rejects_unbound_expired_and_disabled_identity_sessions() {
+    let f = fixture(1).await;
+    let (participant_id, principal_id, session_id) = f.participants[0];
+
+    // A session ID that is not bound to this principal/room is rejected.
+    assert!(matches!(
+        admit_authenticated_participant(&f.pool, f.room_id, participant_id, principal_id, Uuid::new_v4()).await,
+        Err(RoomServiceError::InvalidSession)
+    ));
+
+    // Expired session is rejected and creates no membership.
+    sqlx::query("UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_id = $1")
+        .bind(session_id).execute(&f.pool).await.unwrap();
+    assert!(matches!(
+        admit_authenticated_participant(&f.pool, f.room_id, participant_id, principal_id, session_id).await,
+        Err(RoomServiceError::InvalidSession)
+    ));
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_memberships WHERE room_id = $1")
+        .bind(f.room_id).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(count, 0);
+
+    // Re-enable a fresh session but disable the participant: identity still fails.
+    let fresh_session = Uuid::new_v4();
+    insert_session(&f.pool, f.tenant_id, f.room_id, principal_id, fresh_session).await;
+    sqlx::query("UPDATE participants SET enabled = FALSE WHERE participant_id = $1")
+        .bind(participant_id).execute(&f.pool).await.unwrap();
+    assert!(matches!(
+        admit_authenticated_participant(&f.pool, f.room_id, participant_id, principal_id, fresh_session).await,
+        Err(RoomServiceError::InvalidSession)
+    ));
+
+    cleanup(&f).await;
+}
