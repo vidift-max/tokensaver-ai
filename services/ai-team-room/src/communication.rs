@@ -445,7 +445,7 @@ mod postgres_tests {
         sqlx::query("INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES($1,$2,$3,$4,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE',$5)").bind(session).bind(tenant).bind(room).bind(principal).bind(digest).execute(pool).await.unwrap();
         sqlx::query("INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES($1,$2,$3,$4,$5,$6,$7,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')").bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).bind(format!("{issuer}|{subject}")).execute(pool).await.unwrap();
         for permission in permissions{
-            sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)").bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(permission).execute(pool).await.unwrap();
+            sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)").bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(*permission).execute(pool).await.unwrap();
         }
         admit_authenticated_participant(pool,room,participant,principal,session).await.unwrap();
         Actor{principal,participant,session,token}
