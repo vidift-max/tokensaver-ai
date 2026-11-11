@@ -203,6 +203,28 @@ mod http_security_tests {
     }
 
     #[tokio::test]
+    async fn exchange_rate_limit_and_body_limit_are_enforced_at_http_boundary() {
+        let app = test_app();
+        let mut last_status = StatusCode::OK;
+        for _ in 0..11 {
+            let response = app.clone().oneshot(
+                axum::http::Request::builder().method("POST").uri("/auth/exchange")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"x"}"#)).unwrap()
+            ).await.unwrap();
+            last_status = response.status();
+        }
+        assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
+
+        let oversized = app.oneshot(
+            axum::http::Request::builder().method("POST").uri("/auth/exchange")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"{}"}}"#, "x".repeat(25_000)))).unwrap()
+        ).await.unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn authenticated_http_routes_enforce_room_scope_permissions_and_revocation() {
         use sha2::{Digest, Sha256};
         use uuid::Uuid;
