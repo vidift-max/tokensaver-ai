@@ -127,7 +127,7 @@ try{
   const fencingA=ownerState.execution.fencing_token;
   assert.ok(taskId,"Runner A must persist the PostgreSQL task reference");
   assert.equal(fencingA,1);
-  assert.equal(sqlOk(`SELECT COUNT(*) FROM team_tasks WHERE tenant_id=${quote(tenantId)} AND room_id=${quote(roomId)} AND mission_id=${quote(missionUuid)}`),"1","simultaneous/idempotent Runner starts must resolve to one canonical PostgreSQL task");
+  assert.equal(sqlOk(`SELECT COUNT(*) FROM team_tasks WHERE tenant_id=${quote(tenantId)} AND room_id=${quote(roomId)} AND mission_id=${quote(missionUuid)}`),"1","Runner A and B must resolve to one canonical PostgreSQL task");
   const initialTask=await (await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+owner.token}})).json();
   assert.equal(initialTask.task_id,taskId);
   assert.equal(initialTask.owner_principal_id,owner.principalId);
