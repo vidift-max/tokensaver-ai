@@ -84,7 +84,7 @@ async fn setup() -> (PgPool, OidcConfig, Uuid, Uuid, Uuid, String, tokio::task::
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-    let config = OidcConfig { issuer: ISSUER.into(), audience: AUDIENCE.into(), jwks_url: format!("http://{address}/jwks") };
+    let config = OidcConfig { issuer: ISSUER.into(), audience: AUDIENCE.into(), jwks_url: format!("http://{address}/jwks"), require_discovery: false, expected_jwks_url: None };
     (pool, config, tenant, room, principal, subject, server)
 }
 
