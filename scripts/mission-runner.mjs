@@ -113,7 +113,7 @@ function main(args) {
       if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("pending handoff prevents the previous executor from starting");
       if (!["ACKNOWLEDGED","DISCONNECTED","BLOCKED","RESUMING"].includes(m.status)) throw new Error("mission must be ACKNOWLEDGED, DISCONNECTED, RESUMING or unblocked BLOCKED");
       if(m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before start");
-      transition(m,"IN_PROGRESS"); m.started_at=m.started_at||now();
+      transition(m,"IN_PROGRESS"); m.started_at=m.started_at||now(); m.presence.state="ACTIVE"; m.presence.connected_at=m.presence.connected_at||now(); m.presence.last_seen=now();
       m.execution={lease_id:crypto.randomUUID(),owner_ai:m.responsible_ai,participant_id:m.participant_id,lease_expires_at:new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString()};
       m.next_action="execute current_task and heartbeat/checkpoint"; writeState(s,"MISSION_STARTED"); return;
     }
@@ -194,7 +194,7 @@ function main(args) {
     if (cmd === "block" || cmd === "disconnect") {
       if (!a.length) throw new Error("a reason is required");
       if (cmd === "block") m.blockers.push({kind:"BLOCKER",reason:a.join(" "),at:now(),status:"OPEN"});
-      else m.blockers.push({kind:"DISCONNECT",reason:a.join(" "),at:now(),status:"RECORDED",resumed_at:null});
+      else { m.blockers.push({kind:"DISCONNECT",reason:a.join(" "),at:now(),status:"RECORDED",resumed_at:null}); m.presence.state="DISCONNECTED"; m.presence.disconnected_at=now(); }
       transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED"); m.next_action=cmd==="block"?"resolve blocker and resume":"resume from saved checkpoint"; writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
     }
     if (cmd === "handoff-create") {
