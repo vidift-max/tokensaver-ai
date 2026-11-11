@@ -142,8 +142,8 @@ try{
   await new Promise(resolve=>setTimeout(resolve,16000));
   assert.equal(sqlOk(`SELECT CASE WHEN lease_expires_at<=NOW() THEN 'EXPIRED' ELSE 'LIVE' END FROM team_tasks WHERE task_id=${quote(taskId)}`),"EXPIRED","the initial lease must expire by database time, without mutating its expiry timestamp");
   const [recoveryResultA,recoveryResultB]=await Promise.all([
-    runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId),
-    runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId)
+    runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId,"--watch"),
+    runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId,"--watch")
   ]);
   assert.equal(recoveryResultA.status,0,"recovery worker A failed: "+recoveryResultA.stderr);
   assert.equal(recoveryResultB.status,0,"recovery worker B failed: "+recoveryResultB.stderr);
@@ -154,6 +154,10 @@ try{
   assert.equal(recoveryEvidenceA.selected_candidate_principal_id,replacement.principalId);
   assert.equal(recoveryEvidenceB.selected_candidate_principal_id,replacement.principalId);
   assert.equal(recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,1,"two recovery workers must serialize to one recovery transition");
+  const recoveryTaskResponse=await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+replacement.token}});
+  assert.equal(recoveryTaskResponse.status,200);
+  const recoveryTask=await recoveryTaskResponse.json();
+  assert.equal(recoveryTask.status,"RECOVERY_REQUIRED","PostgreSQL must persist recovery state before replacement acquire");
 
   const takeover=mustRun(replacement,replacementDir,"start");
   const replacementState=stateFor(replacementDir);
@@ -204,6 +208,7 @@ try{
     recovery_worker_b_pid:recoveryResultB.pid,
     concurrent_recovery_workers:2,
     recovery_transition_count:recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,
+    recovery_status_persisted:recoveryTask.status,
     recovery_worker_selected_b:recoveryEvidenceA.selected_candidate_principal_id,
     fencing_a:fencingA,
     fencing_b:fencingB,
