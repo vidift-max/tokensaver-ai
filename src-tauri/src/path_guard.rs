@@ -166,7 +166,14 @@ fn read_roots_file(path:&Path)->AppResult<Vec<ImportRoot>> {
     if !metadata.file_type().is_file() {
         return Err(AppError::new("PATH_NOT_ALLOWED","O arquivo de áreas de importação não pode ser um link ou diretório."));
     }
-    let file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    let mut options=OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file=options.open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     let mut bytes=Vec::new();
     file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     if bytes.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
