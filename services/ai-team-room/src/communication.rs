@@ -204,6 +204,7 @@ async fn persist_message(pool:&PgPool,who:&AuthenticatedIdentity,room_id:Uuid,ch
     let (row,created)=if let Some(row)=inserted{(row,true)}else{
         let row=sqlx::query_as::<_,MessageRow>("SELECT message_id,room_id,channel_id,sender_principal_id,parent_message_id,body,created_at,edited_at,deleted_at FROM team_room_messages WHERE channel_id=$1 AND sender_principal_id=$2 AND client_message_id=$3")
             .bind(channel).bind(who.principal_id).bind(input.client_message_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if row.body!=input.body.trim()||row.parent_message_id!=input.parent_message_id{return Err(StatusCode::CONFLICT);}
         (row,false)
     };
     if created{
@@ -406,6 +407,7 @@ mod postgres_tests {
     use axum::body::Body;
     use ai_team_room_service::{admit_authenticated_participant,migrate,connect_pool};
     use sha2::{Digest,Sha256};
+    use serde_json::json;
     use tower::ServiceExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -493,7 +495,7 @@ mod postgres_tests {
         assert_eq!(event["type"],"MESSAGE_CREATED");
         server.abort();
 
-        let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws"),&a.token,None).await;
+        let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
         assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED);
 
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
