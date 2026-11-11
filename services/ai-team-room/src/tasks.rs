@@ -244,3 +244,92 @@ pub async fn release_lease(
     Ok(updated)
 }
 
+
+
+#[cfg(test)]
+mod distributed_lease_tests {
+    use super::*;
+    use crate::{connect_pool,migrate};
+    use std::sync::Arc;
+
+    async fn fixture() -> (PgPool,Uuid,Vec<AuthenticatedIdentity>) {
+        let url=std::env::var("DATABASE_URL").expect("PostgreSQL integration tests require DATABASE_URL");
+        let pool=connect_pool(&url).await.unwrap();
+        migrate(&pool).await.unwrap();
+        let tenant=Uuid::new_v4();
+        let room=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'distributed-lease-test')").bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,'lease-room')").bind(room).bind(tenant).execute(&pool).await.unwrap();
+        let mut identities=Vec::new();
+        for n in 0..10 {
+            let principal=Uuid::new_v4();
+            let participant=Uuid::new_v4();
+            let workload=Uuid::new_v4();
+            let session=Uuid::new_v4();
+            let execution=Uuid::new_v4();
+            let subject=format!("lease-test-{n}");
+            sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','test-issuer',$3)")
+                .bind(principal).bind(tenant).bind(&subject).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,$4)")
+                .bind(participant).bind(tenant).bind(principal).bind(format!("lease executor {n}")).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'test-issuer',$4,'ACTIVE')")
+                .bind(workload).bind(tenant).bind(principal).bind(&subject).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status) VALUES($1,$2,$3,$4,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')")
+                .bind(session).bind(tenant).bind(room).bind(principal).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES($1,$2,$3,$4,$5,$6,$7,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')")
+                .bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).bind(&subject).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
+                .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).execute(&pool).await.unwrap();
+            identities.push(AuthenticatedIdentity{tenant_id:tenant,participant_id:participant,principal_id:principal,session_id:session,execution_id:execution,room_id:room,issuer:"test-issuer".into(),subject});
+        }
+        (pool,tenant,identities)
+    }
+
+    #[tokio::test]
+    async fn ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection() {
+        let (pool,tenant,identities)=fixture().await;
+        let task=create_task(&pool,&identities[0],CreateTask{mission_id:Uuid::new_v4(),title:"distributed fencing E2E".into(),checkpoint:serde_json::json!({"progress":41,"next_action":"resume"})}).await.unwrap();
+        let pool=Arc::new(pool);
+        let mut attempts=Vec::new();
+        for identity in identities.iter().cloned() {
+            let p=pool.clone();
+            let task_id=task.task_id;
+            attempts.push(tokio::spawn(async move { acquire_lease(&p,&identity,task_id,30).await.map(|grant|(identity,grant)) }));
+        }
+        let mut winners=Vec::new();
+        for attempt in attempts {
+            if let Ok(Ok(winner))=attempt.await { winners.push(winner); }
+        }
+        assert_eq!(winners.len(),1,"exactly one executor may own the task");
+        let (old_identity,old_grant)=winners.remove(0);
+        assert_eq!(old_grant.task.fencing_token,1);
+
+        sqlx::query("UPDATE team_tasks SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE task_id=$1")
+            .bind(task.task_id).execute(&*pool).await.unwrap();
+        assert_eq!(recover_expired(&pool,task_room(&pool,task.task_id).await).await.unwrap(),1);
+        let replacement=identities.iter().find(|id|id.principal_id!=old_identity.principal_id).unwrap().clone();
+        let new_grant=acquire_lease(&pool,&replacement,task.task_id,30).await.unwrap();
+        assert!(new_grant.reassigned);
+        assert_eq!(new_grant.task.fencing_token,2);
+        assert_eq!(new_grant.task.checkpoint["progress"],41);
+
+        let stale=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"corrupt":true})).await;
+        assert!(matches!(stale,Err(TaskError::Fenced)));
+        let future=write_checkpoint(&pool,&replacement,task.task_id,99,serde_json::json!({"future":true})).await;
+        assert!(matches!(future,Err(TaskError::Fenced)));
+
+        let completed=complete_task(&pool,&replacement,task.task_id,new_grant.task.fencing_token,serde_json::json!({"done":true})).await.unwrap();
+        assert_eq!(completed.status,"COMPLETED");
+        let reopen=write_checkpoint(&pool,&replacement,task.task_id,new_grant.task.fencing_token,serde_json::json!({"reopen":true})).await;
+        assert!(matches!(reopen,Err(TaskError::Fenced)));
+
+        let handoffs:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_handoffs WHERE task_id=$1 AND status='RESUMED' AND from_fencing_token=1 AND to_fencing_token=2")
+            .bind(task.task_id).fetch_one(&*pool).await.unwrap();
+        assert_eq!(handoffs,1);
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&*pool).await.unwrap();
+    }
+
+    async fn task_room(pool:&PgPool,task_id:Uuid)->Uuid {
+        sqlx::query_scalar("SELECT room_id FROM team_tasks WHERE task_id=$1").bind(task_id).fetch_one(pool).await.unwrap()
+    }
+}
