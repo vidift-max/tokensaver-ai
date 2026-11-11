@@ -69,10 +69,18 @@ fn auth_status(error: AuthError) -> StatusCode {
 
 async fn exchange(
     State(state): State<AppState>,
-    peer: Option<ConnectInfo<SocketAddr>>,
-    Json(request): Json<ExchangeRequest>,
+    request: axum::extract::Request,
 ) -> Result<Json<ai_team_room_service::auth::ExchangeResponse>, StatusCode> {
-    if !allow_exchange(peer.map(|ConnectInfo(address)| address)) { return Err(StatusCode::TOO_MANY_REQUESTS); }
+    // ConnectInfo is installed by the production make-service. Read it from
+    // request extensions so in-process routers without that layer still compile
+    // and use the conservative unresolved-peer bucket.
+    let peer = request.extensions().get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(address)| *address);
+    if !allow_exchange(peer) { return Err(StatusCode::TOO_MANY_REQUESTS); }
+    let body = axum::body::to_bytes(request.into_body(), 20_000).await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+    let request: ExchangeRequest = serde_json::from_slice(&body)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     if request.workload_token.len() > 16_384 { return Err(StatusCode::PAYLOAD_TOO_LARGE); }
     let config = state.oidc.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     exchange_workload_token(&state.pool, config, request.room_id, &request.workload_token)
