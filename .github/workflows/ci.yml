@@ -1,5 +1,10 @@
 name: TokenSaver AI CI
 
+# Keep only the newest validation for this branch; older push runs validate superseded trees.
+concurrency:
+  group: tokensaver-ai-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [v2-saas-alpha]
