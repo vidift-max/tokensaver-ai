@@ -122,11 +122,8 @@ async fn heartbeat(
     sqlx::query("UPDATE workload_identities SET last_seen_at=$1 WHERE principal_id=$2 AND status='ACTIVE'")
         .bind(last_seen_at).bind(identity.principal_id).execute(&mut *tx).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    // Heartbeat renews only leases already valid at database time; an expired
-    // lease can never be resurrected by a late heartbeat.
-    sqlx::query("UPDATE team_tasks SET lease_renewed_at=NOW(), lease_expires_at=GREATEST(lease_expires_at,NOW()+INTERVAL '60 seconds'), updated_at=NOW() WHERE owner_execution_id=$1 AND owner_session_id=$2 AND status IN ('OWNED','REASSIGNED') AND lease_expires_at>NOW()")
-        .bind(identity.execution_id).bind(identity.session_id).execute(&mut *tx).await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Presence heartbeat is deliberately separate from task lease renewal.
+    // Only /lease/renew may extend a task lease, and it must present its fence.
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(HeartbeatResponse { session_id:identity.session_id, execution_id:identity.execution_id, last_seen_at }))
 }
@@ -220,6 +217,16 @@ async fn create_task(
         .map(|task|(StatusCode::CREATED,Json(task))).map_err(task_status)
 }
 
+async fn task_by_mission(
+    State(state): State<AppState>,
+    Path(mission_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<tasks::TaskLease>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.read").await.map_err(auth_status)?;
+    tasks::get_task_by_mission(&state.pool,&identity,mission_id).await.map(Json).map_err(task_status)
+}
+
 async fn acquire_task_lease(
     State(state): State<AppState>, Path(task_id): Path<Uuid>,
     headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
@@ -304,6 +311,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/me", get(team_room_me))
         .route("/team-room/{room_id}/join", post(join_room))
         .route("/team-room/tasks", post(create_task))
+        .route("/team-room/tasks/by-mission/{mission_id}", get(task_by_mission))
         .route("/team-room/tasks/{task_id}/lease/acquire", post(acquire_task_lease))
         .route("/team-room/tasks/{task_id}/lease/renew", post(renew_task_lease))
         .route("/team-room/tasks/{task_id}/lease/release", post(release_task_lease))
