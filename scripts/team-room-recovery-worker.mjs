@@ -1,26 +1,36 @@
 #!/usr/bin/env node
 /**
- * One-shot Team Room recovery worker.
- * It uses its own authenticated task.assign identity to mark expired leases
- * for recovery and select a live replacement candidate. The candidate Runner
- * must still acquire its own lease; this worker never impersonates it.
+ * Authenticated Team Room recovery worker.
+ * In --watch mode it polls for an eligible replacement until the bounded deadline.
+ * It never impersonates the candidate: the candidate Runner acquires its own lease.
  */
 const args=process.argv.slice(2);
 const watch=args.includes("--watch");
 const positional=args.filter(value=>value!=="--watch");
-const [roomId, taskId, previousOwnerPrincipalId] = positional;
+const [roomId,taskId,previousOwnerPrincipalId]=positional;
 const pollMs=Number(process.env.TEAM_ROOM_RECOVERY_POLL_MS||"2000");
 const maxWaitMs=Number(process.env.TEAM_ROOM_RECOVERY_MAX_WAIT_MS||"300000");
 const baseUrl=(process.env.TEAM_ROOM_API_URL||"").replace(/\/+$/,"");
 const token=process.env.TEAM_ROOM_SESSION_TOKEN||"";
-if(!baseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||!Number.isInteger(pollMs)||pollMs<250||!Number.isInteger(maxWaitMs)||maxWaitMs<1000){
+if(!baseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
+   !Number.isSafeInteger(pollMs)||pollMs<250||pollMs>60000||
+   !Number.isSafeInteger(maxWaitMs)||maxWaitMs<1000||maxWaitMs>900000){
   console.error("usage: TEAM_ROOM_API_URL=... TEAM_ROOM_SESSION_TOKEN=... [TEAM_ROOM_RECOVERY_POLL_MS=2000] [TEAM_ROOM_RECOVERY_MAX_WAIT_MS=300000] node team-room-recovery-worker.mjs <room_id> <task_id> <previous_owner_principal_id> [--watch]");
   process.exit(2);
 }
-async function request(method,path){
-  const response=await fetch(baseUrl+path,{method,headers:{authorization:"Bearer "+token,accept:"application/json"}});
+async function request(method,route){
+  const response=await fetch(baseUrl+route,{
+    method,
+    headers:{authorization:"Bearer "+token,accept:"application/json"},
+    signal:AbortSignal.timeout(10000)
+  });
   const body=await response.text();
-  let value={};try{
+  let value={};
+  try{value=body?JSON.parse(body):{};}catch{}
+  if(!response.ok) throw new Error("Team Room recovery request rejected: "+method+" "+route+" HTTP "+response.status);
+  return value;
+}
+async function main(){
   const deadline=Date.now()+(watch?maxWaitMs:0);
   let iteration=0;
   for(;;){
@@ -43,12 +53,13 @@ async function request(method,path){
         result:"CANDIDATE_SELECTED",
         ownership_note:"candidate must authenticate independently and acquire the task; this worker never impersonates the candidate"
       }));
-      break;
+      return;
     }
     if(!watch||Date.now()>=deadline) throw new Error("no eligible replacement candidate before recovery worker deadline");
     await new Promise(resolve=>setTimeout(resolve,pollMs));
   }
-}catch(error){
-  console.error(error instanceof Error?error.message:String(error));
-  process.exit(1);
 }
+main().catch(error=>{
+  console.error(error instanceof Error?error.message:String(error));
+  process.exitCode=1;
+});
