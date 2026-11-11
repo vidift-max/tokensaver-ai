@@ -25,9 +25,9 @@ async function request(method,route,body){
     ...(body?{body:JSON.stringify(body)}:{}),
     signal:AbortSignal.timeout(10000)
   });
-  const body=await response.text();
+  const responseText=await response.text();
   let value={};
-  try{value=body?JSON.parse(body):{};}catch{}
+  try{value=responseText?JSON.parse(responseText):{};}catch{value={error:"non-JSON response"};}
   if(!response.ok) throw new Error("Team Room recovery request rejected: "+method+" "+route+" HTTP "+response.status);
   return value;
 }
