@@ -115,6 +115,55 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    #[test]
+    fn restore_publication_racing_project_initialization_never_replaces_winner() {
+        use std::sync::Barrier;
+
+        let base = temp_path();
+        let projects = base.join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        let root = Arc::new(projects.join("project-race"));
+        let stage = projects.join(".restore-stage");
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("restore-marker"), b"restored").unwrap();
+
+        let barrier = Arc::new(Barrier::new(3));
+        let init = {
+            let root = Arc::clone(&root);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                claim_project_root(&root)
+            })
+        };
+        let restore = {
+            let root = Arc::clone(&root);
+            let stage = stage.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                crate::filesystem::publish_noreplace(&stage, &root)
+            })
+        };
+
+        barrier.wait();
+        init.join().expect("initializer thread")
+            .expect("initialization must accept the winning directory claim");
+        let restore_result = restore.join().expect("restore thread");
+
+        assert!(root.is_dir());
+        if restore_result.is_ok() {
+            assert_eq!(fs::read(root.join("restore-marker")).unwrap(), b"restored");
+            assert!(!stage.exists());
+        } else {
+            assert_eq!(restore_result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+            assert!(!root.join("restore-marker").exists());
+            assert!(stage.join("restore-marker").is_file());
+        }
+
+        let _ = fs::remove_dir_all(base);
+    }
+
     #[cfg(unix)]
     #[test]
     fn claim_rejects_symlink_project_directory() {
