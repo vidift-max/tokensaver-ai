@@ -52,7 +52,7 @@ CREATE TABLE task_lease_events (
     participant_id UUID,
     session_id UUID,
     fencing_token BIGINT NOT NULL CHECK (fencing_token > 0),
-    event_type TEXT NOT NULL CHECK (event_type IN ('ACQUIRED','RENEWED','EXPIRED','RELEASED','FENCED','COMPLETED','RECOVERY_QUEUED')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('ACQUIRED','RENEWED','CHECKPOINTED','EXPIRED','RELEASED','FENCED','COMPLETED','RECOVERY_QUEUED')),
     metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(task_id,fencing_token,event_type)
