@@ -1,4 +1,5 @@
 mod tasks;
+mod communication;
 
 use ai_team_room_service::{
     admit_authenticated_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
@@ -319,6 +320,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/tasks/{task_id}/complete", post(complete_task))
         .route("/team-room/{room_id}/tasks/{task_id}/candidates", get(task_candidates))
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
+        .merge(communication::router(state.pool.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(state)
 }
