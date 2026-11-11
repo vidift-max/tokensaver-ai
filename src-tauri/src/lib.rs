@@ -18,7 +18,7 @@ mod advanced;
 use error::{AppError, AppResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File}, io::Read, path::{Component, Path, PathBuf}};
+use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Component, Path, PathBuf}};
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -66,8 +66,15 @@ fn ensure_blob_with_status(root:&Path,sha:&str,bytes:&[u8])->AppResult<(String,b
         return Ok((blob_rel,false));
     }
     let tmp=root.join(format!(".blob-{}.tmp",Uuid::new_v4()));
-    fs::write(&tmp,bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar o blob temporário."))?;
-    match fs::rename(&tmp,&blob_abs){
+    let mut temp=OpenOptions::new().write(true).create_new(true).open(&tmp)
+        .map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível criar o blob temporário."))?;
+    if temp.write_all(bytes).and_then(|_|temp.sync_all()).is_err(){
+        drop(temp);
+        let _=fs::remove_file(&tmp);
+        return Err(AppError::new("STORAGE_ERROR","Não foi possível gravar o blob temporário."));
+    }
+    drop(temp);
+    match filesystem::publish_noreplace(&tmp,&blob_abs){
         Ok(())=>Ok((blob_rel,true)),
         Err(_)=>{
             let _=fs::remove_file(&tmp);
