@@ -214,6 +214,8 @@ async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaim
     }
     let keys = jwks.get("keys").and_then(Value::as_array).ok_or(AuthError::ProviderUnavailable)?;
     if keys.len() > 128 { return Err(AuthError::ProviderUnavailable); }
+    let kid_count = keys.iter().filter(|key| key.get("kid").and_then(Value::as_str) == Some(kid.as_str())).count();
+    if kid_count != 1 { return Err(AuthError::Unauthorized); }
     let matching: Vec<&Value> = keys.iter().filter(|key| {
         key.get("kid").and_then(Value::as_str) == Some(kid.as_str())
             && key.get("kty").and_then(Value::as_str) == Some("RSA")
@@ -635,6 +637,16 @@ rYCbrUTET0soLkbXAVaf4NZm
         drop(wrong_metadata);
         assert!(matches!(resolve_jwks_url(&config, true).await, Err(AuthError::ProviderUnavailable)));
         server.abort();
+    }
+
+    #[test]
+    fn localhost_http_exception_rejects_lookalike_hosts_and_userinfo() {
+        assert!(is_loopback_http_url("http://localhost:8080/realms/team-room"));
+        assert!(is_loopback_http_url("http://127.0.0.1:8080/realms/team-room"));
+        assert!(!is_loopback_http_url("http://localhost.attacker.example/realm"));
+        assert!(!is_loopback_http_url("http://127.0.0.1.attacker.example/realm"));
+        assert!(!is_loopback_http_url("http://localhost@attacker.example/realm"));
+        assert!(!is_loopback_http_url("https://localhost/realm"));
     }
 
     #[tokio::test]
