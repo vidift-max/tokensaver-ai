@@ -317,6 +317,9 @@ mod distributed_lease_tests {
         assert!(new_grant.reassigned);
         assert_eq!(new_grant.task.fencing_token,2);
         assert_eq!(new_grant.task.checkpoint["progress"],41);
+        let downgrade=sqlx::query("UPDATE team_tasks SET fencing_token=1 WHERE task_id=$1")
+            .bind(task.task_id).execute(&*pool).await;
+        assert!(downgrade.is_err(),"PostgreSQL trigger must reject fencing token rollback");
 
         let stale=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"corrupt":true})).await;
         assert!(matches!(stale,Err(TaskError::Fenced)));
