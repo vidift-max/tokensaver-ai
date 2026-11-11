@@ -115,7 +115,7 @@ async function main(args) {
     }
     if (cmd === "acknowledge") { if (m.status!=="ASSIGNED") throw new Error("mission must be ASSIGNED"); transition(m,"ACKNOWLEDGED"); m.next_action="start mission"; writeState(s,"MISSION_ACKNOWLEDGED"); return; }
     if (cmd === "start") {
-      if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("pending handoff prevents the previous executor from starting");
+      if (["PENDING","ACCEPTED","HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("pending or accepted handoff prevents an independent start");
       if (!["ACKNOWLEDGED","DISCONNECTED","BLOCKED","RESUMING"].includes(m.status)) throw new Error("mission must be ACKNOWLEDGED, DISCONNECTED, RESUMING or unblocked BLOCKED");
       if(m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before start");
       // Local state is metadata only. PostgreSQL must grant ownership before IN_PROGRESS.
@@ -207,8 +207,8 @@ async function main(args) {
     }
     if (cmd === "reassign-queue") { console.log(JSON.stringify(m.reassignment_queue,null,2)); return; }
     if (cmd === "resume") {
-      if (m.handoff.status==="HANDOFF_ACCEPTED" && (a[0]!==m.responsible_ai || a[1]!==m.participant_id)) throw new Error("TASK_REASSIGNED: only the accepted responsible AI may resume");
-      if (m.handoff.status==="HANDOFF_CREATED") throw new Error("pending handoff must be accepted before resume");
+      if (["ACCEPTED","HANDOFF_ACCEPTED"].includes(m.handoff.status) && (a[0]!==m.responsible_ai || a[1]!==m.participant_id)) throw new Error("TASK_REASSIGNED: only the accepted responsible AI may resume");
+      if (["PENDING","HANDOFF_CREATED"].includes(m.handoff.status)) throw new Error("pending handoff must be accepted before resume");
       if (!["DISCONNECTED","BLOCKED","RECOVERY_REQUIRED","RESUMING"].includes(m.status)) throw new Error("mission is not resumable from current status");
       if (m.status==="BLOCKED" && m.blockers.some(blocker=>blocker.status==="OPEN")) throw new Error("resolve blockers before resume");
       if (!m.checkpoint && m.status!=="DISCONNECTED") throw new Error("no checkpoint available");
@@ -249,31 +249,57 @@ async function main(args) {
       writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
     }
     if (cmd === "handoff-create") {
-      if (!["IN_PROGRESS","DISCONNECTED","RECOVERY_REQUIRED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected, recovery-required or review-pending mission");
-      if (!a[0] || !a[0].trim()) throw new Error("target AI required");
-      if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("a handoff is already pending; duplicate handoff rejected");
-      if (m.execution?.task_id && Number.isSafeInteger(m.execution?.fencing_token)) {
-        await new TeamRoomClient().release(m.execution);
-      } else {
-        throw new Error("authenticated remote lease required before handoff");
+      if (!["IN_PROGRESS","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff creation requires a live remote owner lease");
+      if (a.length < 4 || a.slice(0,4).some(value=>!/^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value))) {
+        throw new Error("usage: handoff-create <to_principal_id> <to_participant_id> <to_session_id> <to_execution_id> [reason]");
       }
-      m.handoff={status:"HANDOFF_CREATED",from_ai:m.responsible_ai,target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null,checkpoint_id:m.checkpoint?.checkpoint_id||null,context:{mission_id:m.mission_id,task_id:m.current_task_id||m.current_task,checkpoint:m.checkpoint,files_changed:[...m.files_changed],commits:[...m.commits],tests:[...m.tests],last_result:m.last_result,next_action:m.next_action,blockers:JSON.parse(JSON.stringify(m.blockers))}};
-      if (m.status!=="WAITING_REVIEW") transition(m,"WAITING_HANDOFF");
-      m.execution={task_id:m.execution.task_id,fencing_token:m.execution.fencing_token,ownership_state:"RELEASED",lease_expires_at:null};
-      m.next_action="await explicit handoff acceptance"; writeState(s,"HANDOFF_CREATED"); return;
+      if (["PENDING","ACCEPTED"].includes(m.handoff.status)) throw new Error("a handoff is already active");
+      const lease=m.execution;
+      if (!lease?.task_id || !Number.isSafeInteger(lease.fencing_token) || lease.ownership_state!=="OWNED") throw new Error("current PostgreSQL owner lease required");
+      const recipient={principal_id:a[0],participant_id:a[1],session_id:a[2],execution_id:a[3]};
+      const handoff=await new TeamRoomClient().createHandoff(lease,recipient,a.slice(4).join(" ")||"owner initiated handoff");
+      m.handoff={status:handoff.status,handoff_id:handoff.handoff_id,from_principal_id:handoff.from_principal_id,to_principal_id:handoff.to_principal_id,to_participant_id:handoff.to_participant_id,to_session_id:handoff.to_session_id,to_execution_id:handoff.to_execution_id,created_at:handoff.created_at,expires_at:handoff.expires_at,accepted_at:null,completed_at:null,checkpoint_reference:handoff.checkpoint_reference};
+      m.next_action="wait for the exact addressed Team Room session to accept; source retains ownership until acceptance";
+      writeState(s,"AUTHENTICATED_HANDOFF_CREATED",{handoff_id:handoff.handoff_id,expires_at:handoff.expires_at}); return;
     }
     if (cmd === "handoff-accept") {
-      if (m.handoff.status!=="HANDOFF_CREATED" || !a[0]) throw new Error("no pending handoff or participant_id missing");
-      m.handoff.status="HANDOFF_ACCEPTED"; m.handoff.participant_id=a[0]; m.handoff.accepted_at=now(); m.responsible_ai=m.handoff.target_ai; m.participant_id=a[0];
-      transition(m,"RESUMING"); m.execution={lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null};
-      for (const item of m.reassignment_queue) if (item.status==="QUEUED") { item.status="ASSIGNED"; item.assigned_to=m.responsible_ai; item.assigned_at=now(); break; }
-      m.next_action="new responsible AI must resume from accepted checkpoint"; writeState(s,"HANDOFF_ACCEPTED"); return;
+      if (a.length!==1 || !a[0]) throw new Error("usage: handoff-accept <handoff_id>");
+      const grant=await new TeamRoomClient().acceptHandoff(a[0]);
+      if (grant.task.mission_id!==new TeamRoomClient().missionUuid(m.mission_id)) throw new Error("handoff task mission_id does not match the current local mission");
+      m.handoff={...m.handoff,status:"ACCEPTED",handoff_id:grant.handoff.handoff_id,from_principal_id:grant.handoff.from_principal_id,to_principal_id:grant.handoff.to_principal_id,to_participant_id:grant.handoff.to_participant_id,to_session_id:grant.handoff.to_session_id,to_execution_id:grant.handoff.to_execution_id,accepted_at:grant.handoff.accepted_at,checkpoint_reference:grant.handoff.checkpoint_reference};
+      m.responsible_ai=grant.identity.principal_id; m.participant_id=grant.identity.participant_id;
+      m.presence.session_id=grant.identity.session_id; m.presence.state="ACTIVE"; m.presence.last_seen=now();
+      m.execution={task_id:grant.task.task_id,fencing_token:grant.fencing_token,owner_principal_id:grant.identity.principal_id,owner_participant_id:grant.identity.participant_id,owner_session_id:grant.identity.session_id,owner_execution_id:grant.identity.execution_id,lease_expires_at:grant.task.lease_expires_at,ownership_state:"OWNED"};
+      m.current_task_id=grant.task.task_id; transition(m,"IN_PROGRESS");
+      m.next_action="continue from the server-preserved PostgreSQL checkpoint; renew and checkpoint with the new fence";
+      writeState(s,"AUTHENTICATED_HANDOFF_ACCEPTED",{handoff_id:grant.handoff.handoff_id,task_id:grant.task.task_id,fencing_token:grant.fencing_token}); return;
+    }
+    if (cmd === "handoff-reject") {
+      if (a.length<2) throw new Error("usage: handoff-reject <handoff_id> <reason>");
+      const handoff=await new TeamRoomClient().rejectHandoff(a[0],a.slice(1).join(" "));
+      m.handoff={...m.handoff,status:handoff.status,handoff_id:handoff.handoff_id};
+      writeState(s,"AUTHENTICATED_HANDOFF_REJECTED",{handoff_id:handoff.handoff_id}); return;
+    }
+    if (cmd === "handoff-cancel") {
+      if (a.length<2) throw new Error("usage: handoff-cancel <handoff_id> <reason>");
+      const previousStatus=m.handoff.status;
+      const handoff=await new TeamRoomClient().cancelHandoff(a[0],a.slice(1).join(" "));
+      m.handoff={...m.handoff,status:handoff.status,handoff_id:handoff.handoff_id};
+      if (previousStatus==="ACCEPTED" || previousStatus==="HANDOFF_ACCEPTED") {
+        if (m.execution) { m.execution.ownership_state="RELEASED"; m.execution.lease_expires_at=null; }
+        transition(m,"RECOVERY_REQUIRED");
+        m.next_action="request a new authenticated recovery handoff; the previous owner is not restored";
+      } else {
+        m.next_action="source lease remains authoritative; continue only while PostgreSQL confirms the live fence";
+      }
+      writeState(s,"AUTHENTICATED_HANDOFF_CANCELLED",{handoff_id:handoff.handoff_id,previous_status:previousStatus}); return;
     }
     if (cmd === "handoff-complete") {
-      if (m.handoff.status!=="HANDOFF_ACCEPTED" || m.status!=="IN_PROGRESS") throw new Error("handoff must be accepted and the new responsible AI must resume first");
-      m.handoff.status="HANDOFF_COMPLETED"; m.handoff.completed_at=now();
-      for (const item of m.reassignment_queue) if (item.status==="ASSIGNED" && item.assigned_to===m.responsible_ai) { item.status="COMPLETED"; item.completed_at=now(); }
-      writeState(s,"HANDOFF_COMPLETED"); return;
+      if (!m.handoff.handoff_id) throw new Error("no server-side handoff reference is stored locally");
+      const handoff=await new TeamRoomClient().getHandoff(m.handoff.handoff_id);
+      if (handoff.status!=="COMPLETED") throw new Error("handoff is not COMPLETED in PostgreSQL; complete the task using the current fenced owner first");
+      m.handoff={...m.handoff,status:"COMPLETED",completed_at:handoff.completed_at};
+      writeState(s,"AUTHENTICATED_HANDOFF_COMPLETION_VERIFIED",{handoff_id:handoff.handoff_id}); return;
     }
     if (cmd === "submit-review") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: submit-review <result>; mission must be IN_PROGRESS");

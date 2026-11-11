@@ -168,10 +168,12 @@ pub async fn acquire_lease(
 
     if was_reassigned {
         let handoff_id=Uuid::new_v4();
-        sqlx::query("INSERT INTO task_handoffs (handoff_id,task_id,tenant_id,from_principal_id,to_principal_id,from_fencing_token,to_fencing_token,status,context,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'RESUMED',$8,NOW())")
-          .bind(handoff_id).bind(task_id).bind(identity.tenant_id).bind(previous_owner)
-          .bind(identity.principal_id).bind(previous_token).bind(task.fencing_token)
-          .bind(serde_json::json!({"checkpoint":task.checkpoint,"mission_id":task.mission_id,"task_id":task.task_id}))
+        let resume_context=serde_json::json!({"checkpoint":task.checkpoint,"mission_id":task.mission_id,"task_id":task.task_id});
+        sqlx::query("INSERT INTO task_handoffs (handoff_id,task_id,tenant_id,room_id,from_principal_id,from_participant_id,from_session_id,from_execution_id,to_principal_id,to_participant_id,to_session_id,to_execution_id,from_fencing_token,to_fencing_token,status,context,checkpoint_reference,reason,expires_at,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'ACCEPTED',$15,$15,'automatic lease takeover',NOW()+INTERVAL '5 minutes',NOW())")
+          .bind(handoff_id).bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
+          .bind(previous_owner).bind(old.owner_participant_id).bind(old.owner_session_id).bind(old.owner_execution_id)
+          .bind(identity.principal_id).bind(identity.participant_id).bind(identity.session_id).bind(identity.execution_id)
+          .bind(previous_token).bind(task.fencing_token).bind(resume_context)
           .execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -244,6 +246,22 @@ pub async fn complete_task(
       "UPDATE team_tasks SET status='COMPLETED',checkpoint=$3,checkpoint_version=checkpoint_version+1,completed_at=NOW(),updated_at=NOW(),owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(final_checkpoint).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"COMPLETED",serde_json::json!({"checkpoint_version":updated.checkpoint_version})).await?;
+    let completed_handoffs=sqlx::query_scalar::<_,Uuid>("UPDATE task_handoffs SET status='COMPLETED',completed_at=NOW() WHERE task_id=$1 AND status='ACCEPTED' AND to_fencing_token=$2 RETURNING handoff_id")
+        .bind(task_id).bind(fencing_token).fetch_all(&mut *tx).await?;
+    for handoff_id in completed_handoffs {
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'task_handoff',$3,'HANDOFF_COMPLETED',$4)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(handoff_id)
+            .bind(serde_json::json!({"task_id":task_id,"fencing_token":fencing_token,"completed_by_principal_id":identity.principal_id}))
+            .execute(&mut *tx).await?;
+    }
+    let cancelled_handoffs=sqlx::query_scalar::<_,Uuid>("UPDATE task_handoffs SET status='CANCELLED',reason='task completed before handoff acceptance' WHERE task_id=$1 AND status='PENDING' RETURNING handoff_id")
+        .bind(task_id).fetch_all(&mut *tx).await?;
+    for handoff_id in cancelled_handoffs {
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'task_handoff',$3,'HANDOFF_CANCELLED',$4)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(handoff_id)
+            .bind(serde_json::json!({"task_id":task_id,"reason":"task completed before handoff acceptance"}))
+            .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(updated)
 }
@@ -264,6 +282,15 @@ pub async fn recover_expired(pool: &PgPool, room_id: Uuid) -> Result<u64, TaskEr
         .bind(serde_json::json!({"room_id":room_id,"task_id":task.task_id,"mission_id":task.mission_id,"status":"RECOVERY_REQUIRED","fencing_token":task.fencing_token,"lease_event":"EXPIRED"}))
         .execute(&mut *tx).await?;
     }
+    let expired_handoffs=sqlx::query_scalar::<_,Uuid>("UPDATE task_handoffs SET status='EXPIRED' WHERE room_id=$1 AND status='PENDING' AND expires_at<=NOW() RETURNING handoff_id")
+        .bind(room_id).fetch_all(&mut *tx).await?;
+    for handoff_id in expired_handoffs {
+        let tenant:Uuid=sqlx::query_scalar("SELECT tenant_id FROM task_handoffs WHERE handoff_id=$1").bind(handoff_id).fetch_one(&mut *tx).await?;
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'task_handoff',$3,'HANDOFF_EXPIRED',$4)")
+            .bind(Uuid::new_v4()).bind(tenant).bind(handoff_id)
+            .bind(serde_json::json!({"room_id":room_id,"handoff_id":handoff_id}))
+            .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(expired.len() as u64)
 }
@@ -280,6 +307,14 @@ pub async fn release_lease(
       "UPDATE team_tasks SET status='UNOWNED',owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&task,identity,"RELEASED",serde_json::json!({})).await?;
+    let cancelled_handoffs=sqlx::query_scalar::<_,Uuid>("UPDATE task_handoffs SET status='CANCELLED',reason='source lease released' WHERE task_id=$1 AND status='PENDING' RETURNING handoff_id")
+        .bind(task_id).fetch_all(&mut *tx).await?;
+    for handoff_id in cancelled_handoffs {
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'task_handoff',$3,'HANDOFF_CANCELLED',$4)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(handoff_id)
+            .bind(serde_json::json!({"task_id":task_id,"reason":"source lease released"}))
+            .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(updated)
 }
@@ -435,7 +470,7 @@ mod distributed_lease_tests {
             .bind(release_task_id).fetch_one(&*pool).await.unwrap();
         assert_eq!(release_status,"UNOWNED");
 
-        let handoffs:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_handoffs WHERE task_id=$1 AND status='RESUMED' AND from_fencing_token=1 AND to_fencing_token=2")
+        let handoffs:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_handoffs WHERE task_id=$1 AND status='COMPLETED' AND from_fencing_token=1 AND to_fencing_token=2")
             .bind(task.task_id).fetch_one(&*pool).await.unwrap();
         assert_eq!(handoffs,1);
         println!("DISTRIBUTED_EVIDENCE_JSON={}",serde_json::json!({

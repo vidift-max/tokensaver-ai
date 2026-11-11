@@ -58,7 +58,7 @@ function seed(){
       VALUES(${quote(identity.executionId)},${quote(tenantId)},${quote(roomId)},${quote(identity.participantId)},${quote(identity.principalId)},${quote(identity.sessionId)},${quote(subject)},NOW(),NOW()+INTERVAL '10 minutes','ACTIVE');
       INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status)
       VALUES(gen_random_uuid(),${quote(tenantId)},${quote(roomId)},${quote(identity.participantId)},${quote(identity.principalId)},${quote(identity.sessionId)},'ACTIVE');`);
-    const grants=identity.role.startsWith("recovery-worker")?["task.assign"]:["task.read","task.write","task.transition"];
+    const grants=identity.role.startsWith("recovery-worker")?["task.assign","task.transition","task.read"]:["task.read","task.write","task.transition"];
     for(const permission of grants){
       sqlOk(`INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission)
         VALUES(gen_random_uuid(),${quote(tenantId)},${quote(identity.principalId)},${quote(roomId)},${quote(permission)})`);
@@ -85,10 +85,27 @@ function runAsync(identity,stateDir,...args){
 function stateFor(stateDir){
   return JSON.parse(fs.readFileSync(path.join(stateDir,"STATE.json"),"utf8")).missions[missionLabel];
 }
+function stateForMission(stateDir,id){
+  return JSON.parse(fs.readFileSync(path.join(stateDir,"STATE.json"),"utf8")).missions[id];
+}
 function runRecoveryAsync(identity,...args){
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[recoveryScript,...args],{
       env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token},
+      stdio:["ignore","pipe","pipe"]
+    });
+    let stdout="",stderr="";
+    child.stdout.on("data",chunk=>stdout+=chunk);
+    child.stderr.on("data",chunk=>stderr+=chunk);
+    child.once("error",reject);
+    child.once("close",status=>resolve({status,stdout,stderr,pid:child.pid}));
+  });
+}
+function runCompetingHandoffAccept(identity,handoffId){
+  const source=`const response=await fetch(process.env.TEAM_ROOM_API_URL+"/team-room/handoffs/"+process.env.HANDOFF_ID+"/accept",{method:"POST",headers:{authorization:"Bearer "+process.env.TEAM_ROOM_SESSION_TOKEN}}); console.log(JSON.stringify({status:response.status})); process.exitCode=response.status===403?0:1;`;
+  return new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,["--input-type=module","-e",source],{
+      env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token,HANDOFF_ID:handoffId},
       stdio:["ignore","pipe","pipe"]
     });
     let stdout="",stderr="";
@@ -143,6 +160,17 @@ try{
   console.log("Runner A process exited; waiting for the real 15-second PostgreSQL lease to expire.");
   await new Promise(resolve=>setTimeout(resolve,16000));
   assert.equal(sqlOk(`SELECT CASE WHEN lease_expires_at<=NOW() THEN 'EXPIRED' ELSE 'LIVE' END FROM team_tasks WHERE task_id=${quote(taskId)}`),"EXPIRED","the initial lease must expire by database time, without mutating its expiry timestamp");
+  // Make B the first live candidate and recovery worker A a second live,
+  // independently authorized contender. The previous owner remains last.
+  for(const [identity,age] of [[owner,60],[replacement,5],[recoveryWorkerA,25],[recoveryWorkerB,35]]){
+    sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
+      UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '${age} seconds' WHERE execution_id=${quote(identity.executionId)};`);
+  }
+  const candidatesResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/${taskId}/candidates`,{headers:{authorization:"Bearer "+recoveryWorkerA.token}});
+  assert.equal(candidatesResponse.status,200);
+  const liveCandidates=await candidatesResponse.json();
+  assert.ok(liveCandidates.some(candidate=>candidate.principal_id===replacement.principalId),"addressed replacement must be an eligible live candidate");
+  assert.ok(liveCandidates.some(candidate=>candidate.principal_id===recoveryWorkerA.principalId),"competing candidate must also be eligible and authorized");
   const [recoveryResultA,recoveryResultB]=await Promise.all([
     runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId,"--watch"),
     runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId,"--watch")
@@ -151,8 +179,10 @@ try{
   assert.equal(recoveryResultB.status,0,"recovery worker B failed: "+recoveryResultB.stderr);
   const recoveryEvidenceA=JSON.parse(recoveryResultA.stdout.trim().split("\n").at(-1));
   const recoveryEvidenceB=JSON.parse(recoveryResultB.stdout.trim().split("\n").at(-1));
-  assert.equal(recoveryEvidenceA.result,"CANDIDATE_SELECTED");
-  assert.equal(recoveryEvidenceB.result,"CANDIDATE_SELECTED");
+  assert.equal(recoveryEvidenceA.result,"HANDOFF_OFFERED");
+  assert.equal(recoveryEvidenceB.result,"HANDOFF_OFFERED");
+  assert.equal(recoveryEvidenceA.handoff_id,recoveryEvidenceB.handoff_id,"recovery workers must converge on one pending handoff");
+  assert.equal(recoveryEvidenceA.handoff_status,"PENDING");
   assert.equal(recoveryEvidenceA.selected_candidate_principal_id,replacement.principalId);
   assert.equal(recoveryEvidenceB.selected_candidate_principal_id,replacement.principalId);
   assert.equal(recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,1,"two recovery workers must serialize to one recovery transition");
@@ -161,7 +191,14 @@ try{
   const recoveryTask=await recoveryTaskResponse.json();
   assert.equal(recoveryTask.status,"RECOVERY_REQUIRED","PostgreSQL must persist recovery state before replacement acquire");
 
-  const takeover=mustRun(replacement,replacementDir,"start");
+  const handoffId=recoveryEvidenceA.handoff_id;
+  const [takeover,competingAccept]=await Promise.all([
+    runAsync(replacement,replacementDir,"handoff-accept",handoffId),
+    runCompetingHandoffAccept(recoveryWorkerA,handoffId)
+  ]);
+  assert.equal(takeover.status,0,"addressed Runner B must accept the authenticated recovery handoff: "+takeover.stderr);
+  assert.equal(competingAccept.status,0,"unaddressed candidate must be rejected: "+competingAccept.stderr);
+  assert.equal(JSON.parse(competingAccept.stdout.trim()).status,403,"competing candidate must receive HTTP 403");
   const replacementState=stateFor(replacementDir);
   const fencingB=replacementState.execution.fencing_token;
   assert.equal(replacementState.execution.task_id,taskId);
@@ -182,13 +219,76 @@ try{
     staleResults[key]="REJECTED";
   }
 
+  mustRun(replacement,replacementDir,"renew");
   mustRun(replacement,replacementDir,"checkpoint","recovered checkpoint accepted by PostgreSQL");
-  mustRun(replacement,replacementDir,"complete","Runner B completed after recovery");
+  mustRun(replacement,replacementDir,"complete","Runner B completed after authenticated handoff");
+  const handoffResponse=await fetch(apiUrl+`/team-room/handoffs/${handoffId}`,{headers:{authorization:"Bearer "+replacement.token}});
+  assert.equal(handoffResponse.status,200);
+  const finalHandoff=await handoffResponse.json();
+  assert.equal(finalHandoff.status,"COMPLETED","task completion must atomically complete its handoff");
   const finalResponse=await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+replacement.token}});
   assert.equal(finalResponse.status,200);
   const finalTask=await finalResponse.json();
   assert.equal(finalTask.status,"COMPLETED");
   assert.equal(finalTask.fencing_token,2);
+
+  // Separate owner-initiated transfer: A retains fence 1 while the
+  // offer is pending; only the exact B session can atomically receive fence 2.
+  const ownerHandoffMission="TEST-MISSION-OWNER-HANDOFF-001";
+  const ownerHandoffUuid=client.missionUuid(ownerHandoffMission);
+  const ownerHandoffA=fs.mkdtempSync(path.join(os.tmpdir(),"owner-handoff-a-"));dirs.push(ownerHandoffA);
+  const ownerHandoffB=fs.mkdtempSync(path.join(os.tmpdir(),"owner-handoff-b-"));dirs.push(ownerHandoffB);
+  for(const [identity,stateDir,label] of [[owner,ownerHandoffA,"Owner A"],[replacement,ownerHandoffB,"Recipient B"]]){
+    mustRun(identity,stateDir,"init",ownerHandoffMission,"2","Owner-initiated authenticated handoff proof");
+    mustRun(identity,stateDir,"assign",label,identity.participantId);
+    mustRun(identity,stateDir,"acknowledge");
+  }
+  mustRun(owner,ownerHandoffA,"start");
+  const ownerHandoffTask=stateForMission(ownerHandoffA,ownerHandoffMission).execution.task_id;
+  assert.equal(stateForMission(ownerHandoffA,ownerHandoffMission).execution.fencing_token,1);
+  for(const [identity,age] of [[owner,40],[replacement,5],[recoveryWorkerA,15],[recoveryWorkerB,25]]){
+    sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
+      UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '${age} seconds' WHERE execution_id=${quote(identity.executionId)};`);
+  }
+  const ownerCandidatesResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/${ownerHandoffTask}/candidates`,{headers:{authorization:"Bearer "+recoveryWorkerA.token}});
+  assert.equal(ownerCandidatesResponse.status,200);
+  const ownerCandidates=await ownerCandidatesResponse.json();
+  assert.ok(ownerCandidates.some(candidate=>candidate.principal_id===replacement.principalId));
+  assert.ok(ownerCandidates.some(candidate=>candidate.principal_id===recoveryWorkerA.principalId));
+  mustRun(owner,ownerHandoffA,"handoff-create",replacement.principalId,replacement.participantId,replacement.sessionId,replacement.executionId,"planned owner-initiated transfer");
+  const ownerHandoffId=stateForMission(ownerHandoffA,ownerHandoffMission).handoff.handoff_id;
+  const pendingResponse=await fetch(apiUrl+`/team-room/handoffs/${ownerHandoffId}`,{headers:{authorization:"Bearer "+owner.token}});
+  assert.equal(pendingResponse.status,200);
+  assert.equal((await pendingResponse.json()).status,"PENDING","source must retain ownership while offer is pending");
+  const [ownerHandoffAccept,ownerHandoffCompetitor]=await Promise.all([
+    runAsync(replacement,ownerHandoffB,"handoff-accept",ownerHandoffId),
+    runCompetingHandoffAccept(recoveryWorkerA,ownerHandoffId)
+  ]);
+  assert.equal(ownerHandoffAccept.status,0,"addressed recipient B must accept owner-created handoff: "+ownerHandoffAccept.stderr);
+  assert.equal(ownerHandoffCompetitor.status,0,"second eligible candidate must be denied: "+ownerHandoffCompetitor.stderr);
+  assert.equal(JSON.parse(ownerHandoffCompetitor.stdout.trim()).status,403);
+  const ownerHandoffFenceB=stateForMission(ownerHandoffB,ownerHandoffMission).execution.fencing_token;
+  assert.equal(ownerHandoffFenceB,2);
+  const ownerHandoffStale={};
+  for(const [key,args] of [["renew",["renew"]],["checkpoint",["checkpoint","stale owner handoff checkpoint"]],["complete",["complete","stale owner handoff complete"]],["release",["release"]]]){
+    const isolated=fs.mkdtempSync(path.join(os.tmpdir(),"owner-handoff-stale-"));dirs.push(isolated);
+    fs.writeFileSync(path.join(isolated,"STATE.json"),JSON.stringify(JSON.parse(fs.readFileSync(path.join(ownerHandoffA,"STATE.json"),"utf8"))));
+    const result=runSync(owner,isolated,...args);
+    assert.equal(result.status,2,`previous owner A ${key} must be rejected after authenticated handoff`);
+    assert.match(result.stderr,/HTTP 412/,result.stderr);
+    ownerHandoffStale[key]="REJECTED";
+  }
+  mustRun(replacement,ownerHandoffB,"renew");
+  mustRun(replacement,ownerHandoffB,"checkpoint","B checkpoint accepted after owner-initiated handoff");
+  mustRun(replacement,ownerHandoffB,"complete","B completes owner-initiated handoff");
+  mustRun(replacement,ownerHandoffB,"handoff-complete");
+  const ownerHandoffFinalResponse=await fetch(apiUrl+`/team-room/handoffs/${ownerHandoffId}`,{headers:{authorization:"Bearer "+replacement.token}});
+  assert.equal(ownerHandoffFinalResponse.status,200);
+  const ownerHandoffFinal=await ownerHandoffFinalResponse.json();
+  assert.equal(ownerHandoffFinal.status,"COMPLETED");
+  const ownerHandoffFinalTask=await (await fetch(apiUrl+`/team-room/tasks/by-mission/${ownerHandoffUuid}`,{headers:{authorization:"Bearer "+replacement.token}})).json();
+  assert.equal(ownerHandoffFinalTask.status,"COMPLETED");
+  assert.equal(ownerHandoffFinalTask.fencing_token,2);
 
   const evidence={
     mission_label:missionLabel,
@@ -197,6 +297,7 @@ try{
     runner_a_process_pid:ownerStart.pid,
     runner_b_initial_rejected_process_pid:replacementStart.pid,
     runner_b_process_pid:takeover.pid,
+    competing_candidate_process_pid:competingAccept.pid,
     runner_a_principal_id:owner.principalId,
     runner_a_session_id:owner.sessionId,
     runner_a_execution_id:owner.executionId,
@@ -222,6 +323,13 @@ try{
     runner_initial_start_concurrent:true,
     task_count_for_mission:1,
     takeover:"ACCEPTED",
+    handoff_id:handoffId,
+    handoff_status:finalHandoff.status,
+    handoff_from_fencing_token:finalHandoff.from_fencing_token,
+    handoff_to_fencing_token:finalHandoff.to_fencing_token,
+    competing_candidate_accept:"REJECTED_HTTP_403",
+    competing_candidate_was_eligible:true,
+    runner_b_renew:"ACCEPTED",
     stale_a_renew:staleResults.renew,
     stale_a_checkpoint:staleResults.checkpoint,
     stale_a_complete:staleResults.complete,
@@ -230,6 +338,18 @@ try{
     runner_b_checkpoint_version:finalTask.checkpoint_version,
     runner_b_complete:"ACCEPTED",
     final_task_status:finalTask.status,
+    owner_initiated_handoff_id:ownerHandoffId,
+    owner_initiated_handoff_task_id:ownerHandoffTask,
+    owner_initiated_handoff_status:ownerHandoffFinal.status,
+    owner_initiated_handoff_fencing_a:1,
+    owner_initiated_handoff_fencing_b:ownerHandoffFenceB,
+    owner_initiated_competing_candidate:"REJECTED_HTTP_403",
+    owner_initiated_competing_candidate_was_eligible:true,
+    owner_initiated_stale_a:ownerHandoffStale,
+    owner_initiated_runner_b_renew:"ACCEPTED",
+    owner_initiated_runner_b_checkpoint:"ACCEPTED",
+    owner_initiated_runner_b_complete:"ACCEPTED",
+    owner_initiated_final_task_status:ownerHandoffFinalTask.status,
     distinct_runner_sessions:owner.sessionId!==replacement.sessionId,
     distinct_runner_processes:ownerStart.pid!==takeover.pid,
     database:"PostgreSQL 16 shared Team Room service",

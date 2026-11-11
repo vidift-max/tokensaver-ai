@@ -146,6 +146,58 @@ export class TeamRoomClient {
     return {identity, task: grant.task, fencing_token: grant.task.fencing_token};
   }
 
+  async createHandoff(lease, recipient, reason, expiresInSeconds = 300) {
+    const identity = await this.authenticate();
+    this.assertCurrentOwner({ ...lease, status: "OWNED", owner_principal_id: identity.principal_id,
+      owner_participant_id: identity.participant_id, owner_session_id: identity.session_id,
+      owner_execution_id: identity.execution_id, lease_expires_at: lease.lease_expires_at }, identity, lease.fencing_token);
+    return this.request("POST", `/team-room/tasks/${lease.task_id}/handoffs`, {
+      to_principal_id: recipient.principal_id,
+      to_participant_id: recipient.participant_id,
+      to_session_id: recipient.session_id,
+      to_execution_id: recipient.execution_id,
+      fencing_token: lease.fencing_token,
+      checkpoint_reference: recipient.checkpoint_reference || null,
+      reason,
+      expires_in_seconds: expiresInSeconds
+    });
+  }
+
+  async createRecoveryHandoff(taskId, recipient, reason) {
+    return this.request("POST", `/team-room/tasks/${taskId}/handoffs/recovery`, {
+      to_principal_id: recipient.principal_id,
+      to_participant_id: recipient.participant_id,
+      to_session_id: recipient.session_id,
+      to_execution_id: recipient.execution_id,
+      reason
+    });
+  }
+
+  async acceptHandoff(handoffId) {
+    const identity = await this.authenticate();
+    const grant = await this.request("POST", `/team-room/handoffs/${handoffId}/accept`);
+    const task = grant.task;
+    this.assertCurrentOwner(task, identity, task.fencing_token);
+    if (grant.handoff?.status !== "ACCEPTED" ||
+        grant.handoff?.to_fencing_token !== task.fencing_token ||
+        grant.handoff?.to_session_id !== identity.session_id) {
+      throw new TeamRoomError("Team Room did not confirm recipient-bound handoff ownership", 502, "INVALID_RESPONSE");
+    }
+    return { identity, task, fencing_token: task.fencing_token, handoff: grant.handoff };
+  }
+
+  async rejectHandoff(handoffId, reason) {
+    return this.request("POST", `/team-room/handoffs/${handoffId}/reject`, { reason });
+  }
+
+  async cancelHandoff(handoffId, reason) {
+    return this.request("POST", `/team-room/handoffs/${handoffId}/cancel`, { reason });
+  }
+
+  async getHandoff(handoffId) {
+    return this.request("GET", `/team-room/handoffs/${handoffId}`);
+  }
+
   async presence() { return this.request("POST", "/team-room/heartbeat"); }
 
   async renew(lease) {

@@ -1,4 +1,5 @@
 mod tasks;
+mod handoffs;
 mod communication;
 
 use ai_team_room_service::{
@@ -343,6 +344,74 @@ async fn recover_room_tasks(
     Ok(Json(serde_json::json!({"recovery_required":recovered})))
 }
 
+fn handoff_status(error: handoffs::HandoffError) -> StatusCode {
+    match error {
+        handoffs::HandoffError::NotFound => StatusCode::NOT_FOUND,
+        handoffs::HandoffError::Forbidden => StatusCode::FORBIDDEN,
+        handoffs::HandoffError::Conflict => StatusCode::CONFLICT,
+        handoffs::HandoffError::Expired | handoffs::HandoffError::Fenced => StatusCode::PRECONDITION_FAILED,
+        handoffs::HandoffError::Invalid => StatusCode::BAD_REQUEST,
+        handoffs::HandoffError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn create_task_handoff(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<handoffs::CreateHandoffRequest>,
+) -> Result<(StatusCode,Json<handoffs::TaskHandoff>),StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    handoffs::create(&state.pool,&identity,task_id,request).await
+        .map(|handoff|(StatusCode::CREATED,Json(handoff))).map_err(handoff_status)
+}
+
+async fn create_recovery_task_handoff(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<handoffs::RecoveryHandoffRequest>,
+) -> Result<(StatusCode,Json<handoffs::TaskHandoff>),StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.assign").await.map_err(auth_status)?;
+    handoffs::create_recovery(&state.pool,&identity,task_id,request.to_principal_id,
+        request.to_participant_id,request.to_session_id,request.to_execution_id,request.reason).await
+        .map(|handoff|(StatusCode::CREATED,Json(handoff))).map_err(handoff_status)
+}
+
+async fn accept_task_handoff(
+    State(state): State<AppState>, Path(handoff_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<handoffs::HandoffGrant>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    handoffs::accept(&state.pool,&identity,handoff_id,60).await.map(Json).map_err(handoff_status)
+}
+
+async fn reject_task_handoff(
+    State(state): State<AppState>, Path(handoff_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<handoffs::HandoffReason>,
+) -> Result<Json<handoffs::TaskHandoff>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    handoffs::reject(&state.pool,&identity,handoff_id,request.reason).await.map(Json).map_err(handoff_status)
+}
+
+async fn cancel_task_handoff(
+    State(state): State<AppState>, Path(handoff_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<handoffs::HandoffReason>,
+) -> Result<Json<handoffs::TaskHandoff>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    handoffs::cancel(&state.pool,&identity,handoff_id,request.reason).await.map(Json).map_err(handoff_status)
+}
+
+async fn get_task_handoff(
+    State(state): State<AppState>, Path(handoff_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<handoffs::TaskHandoff>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.read").await.map_err(auth_status)?;
+    handoffs::get(&state.pool,&identity,handoff_id).await.map(Json).map_err(handoff_status)
+}
+
 fn build_router(state: AppState) -> Router {
     let base = Router::new()
         .route("/health/live", get(live))
@@ -362,6 +431,12 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/tasks/{task_id}/lease/release", post(release_task_lease))
         .route("/team-room/tasks/{task_id}/checkpoint", post(checkpoint_task))
         .route("/team-room/tasks/{task_id}/complete", post(complete_task))
+        .route("/team-room/tasks/{task_id}/handoffs", post(create_task_handoff))
+        .route("/team-room/tasks/{task_id}/handoffs/recovery", post(create_recovery_task_handoff))
+        .route("/team-room/handoffs/{handoff_id}", get(get_task_handoff))
+        .route("/team-room/handoffs/{handoff_id}/accept", post(accept_task_handoff))
+        .route("/team-room/handoffs/{handoff_id}/reject", post(reject_task_handoff))
+        .route("/team-room/handoffs/{handoff_id}/cancel", post(cancel_task_handoff))
         .route("/team-room/{room_id}/tasks/{task_id}/candidates", get(task_candidates))
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))

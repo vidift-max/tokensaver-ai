@@ -40,17 +40,19 @@ test("persists mission, checkpoint and resume across separate processes", t => {
  assert.equal(m.blockers[0].kind,"DISCONNECT"); assert.equal(m.blockers[0].status,"RESUMED");
 });
 
-test("handoff requires explicit acceptance and records lifecycle", t => {
+test("handoff is never granted by local state without authenticated Team Room confirmation", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
- run(c,"init","M-121","121","Handoff");
+ run(c,"init","M-121","121","Authenticated handoff");
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start"); run(c,"checkpoint","before handoff");
- assert.equal(run(c,"handoff-create","AI-B").status,0);
- assert.equal(run(c,"handoff-complete").status,2);
- assert.equal(run(c,"handoff-accept","p-b").status,0);
- assert.equal(run(c,"resume","AI-B","p-b").status,0);
- assert.equal(run(c,"handoff-complete").status,0);
- const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-121"];
- assert.equal(m.handoff.status,"HANDOFF_COMPLETED"); assert.equal(m.responsible_ai,"AI-B");
+ const before=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-121"];
+ const target=["20000000-0000-4000-8000-000000000001","20000000-0000-4000-8000-000000000002","20000000-0000-4000-8000-000000000003","20000000-0000-4000-8000-000000000004"];
+ assert.equal(run(c,"handoff-create",...target,"planned transfer").status,2,"HTTP fixture does not implement authenticated handoff; Runner must fail closed");
+ assert.equal(run(c,"handoff-accept","20000000-0000-4000-8000-000000000005").status,2,"an unverified handoff id cannot authorize acceptance");
+ assert.equal(run(c,"handoff-complete").status,2,"local metadata cannot mark a handoff complete");
+ const after=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-121"];
+ assert.equal(after.handoff.status,"NONE");
+ assert.equal(after.execution.ownership_state,"OWNED");
+ assert.equal(after.execution.fencing_token,before.execution.fencing_token);
 });
 
 test("prompt is stored but not marked delivered without delivery evidence", t => {
@@ -194,7 +196,7 @@ test("heartbeat presence timeout requires missed heartbeats, not a long-running 
  assert.equal(s.missions["M-134"].reassignment_queue[0].checkpoint_id,s.missions["M-134"].checkpoint.checkpoint_id);
 });
 
-test("recovery preserves checkpoint and handoff blocks the previous executor", t => {
+test("recovery preserves checkpoint but cannot fabricate a remote handoff", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-135","135","Recovery handoff");
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
@@ -202,23 +204,17 @@ test("recovery preserves checkpoint and handoff blocks the previous executor", t
  run(c,"record-commit","abc123"); run(c,"record-test","unit tests pending");
  run(c,"disconnect","heartbeat timeout");
  assert.equal(run(c,"recover").status,0);
- assert.equal(run(c,"handoff-create","AI-B").status,0);
- assert.equal(run(c,"handoff-create","AI-C").status,2);
- assert.equal(run(c,"handoff-accept","p-b").status,0);
- assert.equal(run(c,"resume").status,2);
- assert.equal(run(c,"resume","AI-A","p-a").status,2);
- assert.equal(run(c,"resume","AI-B","p-b").status,0);
- assert.equal(run(c,"handoff-complete").status,0);
+ const target=["20000000-0000-4000-8000-000000000011","20000000-0000-4000-8000-000000000012","20000000-0000-4000-8000-000000000013","20000000-0000-4000-8000-000000000014"];
+ assert.equal(run(c,"handoff-create",...target,"recovery transfer").status,2,"recovery handoff must be created by the authenticated recovery endpoint, not local state");
+ assert.equal(run(c,"handoff-accept","20000000-0000-4000-8000-000000000015").status,2,"only the exact server-addressed session can accept");
  const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-135"];
- assert.equal(m.status,"IN_PROGRESS");
- assert.equal(m.responsible_ai,"AI-B");
+ assert.equal(m.status,"RECOVERY_REQUIRED");
+ assert.equal(m.handoff.status,"NONE");
  assert.equal(m.checkpoint.description,"automatic disconnect checkpoint");
  assert.equal(m.checkpoint.task_id,"implement feature");
  assert.deepEqual(m.checkpoint.files_changed,["src/feature.rs"]);
  assert.deepEqual(m.checkpoint.commits,["abc123"]);
- assert.equal(m.handoff.context.mission_id,"M-135");
- assert.equal(m.handoff.context.checkpoint.checkpoint_id,m.checkpoint.checkpoint_id);
- assert.equal(m.reassignment_queue[0].status,"COMPLETED");
+ assert.equal(m.reassignment_queue[0].status,"QUEUED");
 });
 
 test("legacy state is upgraded in memory with continuity fields", t => {

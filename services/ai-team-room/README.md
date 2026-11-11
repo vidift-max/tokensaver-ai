@@ -217,3 +217,33 @@ The React desktop navigation includes an AI Team Room workspace with general cha
 - Audio: no WebRTC/SFU/signaling or audio grants are implemented. WEBRTC_PRODUCTION = PENDING; controls remain disabled and no audio is captured.
 - Unread: read cursors are stored, but aggregate unread counts and push notifications are not yet exposed.
 - Presence: REGISTERED, CONNECTED and EXECUTING remain separate concepts. The API exposes connection freshness and task ownership; it does not claim a provider/model is actively responding.
+
+
+## Authenticated task handoff (migration 0010)
+
+The staged handoff protocol is persisted in PostgreSQL and bound to the exact tenant, room, task, source principal/participant/session/execution, recipient principal/participant/session/execution, old fencing generation, checkpoint reference, reason and expiry.
+
+State machine:
+
+- `PENDING → ACCEPTED | REJECTED | EXPIRED | CANCELLED`
+- `ACCEPTED → COMPLETED | CANCELLED`
+- Terminal states cannot be reopened.
+- A pending owner-initiated handoff does not release the source lease. The source remains authoritative until the addressed recipient accepts.
+- Acceptance locks the task row and handoff row in one PostgreSQL transaction, validates the exact recipient session/execution, active membership, active workload identity and `task.transition` permission, checks the source fence/lease or recovery state, increments fencing exactly once, updates task ownership and marks the handoff ACCEPTED atomically.
+- A non-recipient cannot accept by knowing the handoff UUID. Candidate identity is exact across principal, participant, session and execution. Concurrent accept requests serialize on the task row.
+- Task completion changes the matching ACCEPTED handoff to COMPLETED in the same transaction as task completion. A recipient cancelling an ACCEPTED handoff relinquishes its lease to UNOWNED; it never restores the old owner's stale fence. If an accepted recipient's lease expires, the next recovery takeover closes that abandoned ACCEPTED handoff as CANCELLED.
+- Recovery coordinators with `task.assign` may create an idempotent recipient-bound recovery handoff only after PostgreSQL has marked the task RECOVERY_REQUIRED and the previous lease has expired. The candidate must independently authenticate and call accept; the recovery worker never impersonates it. A different recovery candidate cancels the prior pending offer before a replacement offer is persisted.
+- Expired pending offers are moved to EXPIRED by acceptance/rejection checks and by the existing recovery path. A room-wide scheduler remains an operational follow-up.
+
+Authenticated endpoints:
+
+| Endpoint | Permission | Purpose |
+|---|---|---|
+| `POST /team-room/tasks/{task_id}/handoffs` | `task.transition` | Current owner creates a recipient-bound offer using its fencing token |
+| `POST /team-room/tasks/{task_id}/handoffs/recovery` | `task.assign` | Recovery coordinator creates/reuses an offer for an eligible candidate |
+| `POST /team-room/handoffs/{handoff_id}/accept` | `task.transition` | Exact recipient accepts and atomically receives the next fence |
+| `POST /team-room/handoffs/{handoff_id}/reject` | `task.transition` | Exact recipient rejects a pending offer |
+| `POST /team-room/handoffs/{handoff_id}/cancel` | `task.transition` | Source cancels pending offer; current recipient can relinquish an accepted offer |
+| `GET /team-room/handoffs/{handoff_id}` | `task.read` | Source/recipient session reads its handoff record |
+
+The Mission Runner commands call these remote endpoints. Local `STATE.json` handoff fields remain diagnostic metadata only; they do not authorize or complete a transfer. Use `handoff-create` with the recipient's principal, participant, session and execution UUIDs; the recipient uses `handoff-accept <handoff_id>`. Use the normal fenced `complete` command to complete the accepted handoff.

@@ -67,6 +67,21 @@ jobs:
           echo "exit_code=$result" >> distributed-runner-evidence/test.log
           echo "exit_code=$result" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Run authenticated PostgreSQL handoff state, authorization and recovery integration test
+        id: handoff_integration
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p distributed-runner-evidence
+          printf 'test=PostgreSQL authenticated handoff state machine\n' >> distributed-runner-evidence/test.log
+          set +e
+          cargo test --manifest-path services/ai-team-room/Cargo.toml postgres_handoff_states_authorization_fencing_and_candidate_race -- --nocapture 2>&1 | tee -a distributed-runner-evidence/test.log
+          result=${PIPESTATUS[0]}
+          set -e
+          echo "handoff_exit_code=$result" >> distributed-runner-evidence/test.log
+          echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Build real Team Room service
         id: service_build
         if: always()
@@ -116,6 +131,7 @@ jobs:
         env:
           RUST_EXIT: ${{ steps.rust_integration.outputs.exit_code }}
           BUILD_EXIT: ${{ steps.service_build.outputs.exit_code }}
+          HANDOFF_EXIT: ${{ steps.handoff_integration.outputs.exit_code }}
           PROCESS_EXIT: ${{ steps.process_e2e.outputs.exit_code }}
         shell: bash
         run: |
@@ -128,6 +144,7 @@ jobs:
             --arg sha "$GITHUB_SHA" \
             --argjson rust_exit "${RUST_EXIT:-99}" \
             --argjson build_exit "${BUILD_EXIT:-99}" \
+            --argjson handoff_exit "${HANDOFF_EXIT:-99}" \
             --argjson process_exit "${PROCESS_EXIT:-99}" \
             --argjson process "$process_evidence" \
             '{
@@ -137,9 +154,10 @@ jobs:
               team_room:"real Axum service process",
               rust_postgres_integration:{exit_code:$rust_exit,result:(if $rust_exit==0 then "PASS" else "FAIL_OR_NOT_RUN" end)},
               team_room_build:{exit_code:$build_exit,result:(if $build_exit==0 then "PASS" else "FAIL_OR_NOT_RUN" end)},
+              authenticated_handoff_postgres:{exit_code:$handoff_exit,result:(if $handoff_exit==0 then "PASS" else "FAIL_OR_NOT_RUN" end)},
               independent_runner_processes:{exit_code:$process_exit,result:(if $process_exit==0 and $process!=null then "PASS" else "FAIL_OR_NOT_RUN" end)},
               runner_process_evidence:$process,
-              result:(if $rust_exit==0 and $build_exit==0 and $process_exit==0 and $process!=null and $process.result=="PASS" then "PASS" else "FAIL" end)
+              result:(if $rust_exit==0 and $handoff_exit==0 and $build_exit==0 and $process_exit==0 and $process!=null and $process.result=="PASS" then "PASS" else "FAIL" end)
             }' > distributed-runner-evidence/distributed-runner-evidence.json
           cat distributed-runner-evidence/distributed-runner-evidence.json
       - name: Upload PostgreSQL distributed evidence
