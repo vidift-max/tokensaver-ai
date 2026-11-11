@@ -45,6 +45,20 @@ VALUES (gen_random_uuid(), :tenant_id, :principal_id, :room_id, 'room.join');
 
 Add `room.read` separately. No room permission implies GitHub, files, code, database, publishing, command execution, or provider API access.
 
+## Mission Runner remote authority
+
+The Mission Runner now requires a valid Team Room local session for every ownership-changing execution command. Configure these runtime variables outside the repository/STATE file:
+
+- `TEAM_ROOM_API_URL`: Team Room service base URL (HTTPS; HTTP is accepted only for loopback development).
+- `TEAM_ROOM_SESSION_TOKEN`: opaque local session token returned once by `POST /auth/exchange`; inject from a secret manager or secure runtime environment.
+- `TEAM_ROOM_ROOM_ID`: UUID of the room bound to that session.
+
+The Runner validates `GET /auth/me` and the configured room before task creation/acquire. It uses a deterministic UUID derived from its local mission identifier, then calls the idempotent create/lookup API and remote lease acquire. Local `STATE.json` stores only the remote task reference, current fencing token and checkpoint/diagnostic context; it cannot grant ownership. Missing configuration, network errors, session errors, permission errors, expired leases and stale fencing all fail closed.
+
+Commands `start`, `resume`, `renew`, `checkpoint`, `complete`, `release`, and review approval use the Team Room API. `heartbeat` updates presence only and never renews a task lease. Renew explicitly with `renew`.
+
+The Node HTTP fixture in `tests/mission-runner.test.mjs` validates Runner-to-client request flow and fail-closed behavior. It is not a substitute for the PostgreSQL-backed two-Runner takeover proof; that proof remains pending until separate authenticated sessions and a shared PostgreSQL Team Room are exercised in CI.
+
 ## Run locally
 
 Use a dedicated PostgreSQL instance, never the desktop's SQLite database. Supply OIDC trust variables only when a real trusted issuer is configured. Without them, health endpoints work but token exchange returns 503.
