@@ -225,3 +225,21 @@ The desktop's SQLite database is local and project-scoped; it cannot serve as th
 **NO-GO:** do not start private invite redemption, shared admission, messaging, private chat, task execution, presence or audio as operational features until the collaboration service boundary, workload identity, shared transactional persistence and security gates are approved.
 
 The current code must not be advertised as an AI Team Room or as real multi-agent connectivity. This mission delivered a small, testable domain foundation and stopped at the point where implementing more inside the local desktop would contradict Mission 106's separate-service architecture and create false security guarantees.
+
+
+## CI follow-up and corrective commit
+
+After the initial report commit, the first CI run for commit `8db4ac7fede5e2fe9e3e80ec9a2b0ac407347f70` failed at `cargo check`. The failure was traced in the job log to a truncated `src-tauri/src/lib.rs` written during module registration: the Tauri `run()` entrypoint had been omitted. This was an implementation/editing error, not a Rust identity-domain test failure.
+
+Correction:
+- Commit: `343110e1568d6f992b0f914c77eea9d11cb21b9e`
+- Message: `fix(team-room): preserve Tauri entrypoint while registering identity module`
+- File: `src-tauri/src/lib.rs`
+- Action: restored the complete original 14,305-character file from the immediately preceding commit and inserted only `mod team_room_identity;`.
+- Post-write verification: GitHub fetch returned 14,329 characters; the file contains both `pub fn run()` and `mod team_room_identity;`.
+
+Corrected CI:
+- Run ID: `42967167477`
+- Head SHA: `343110e1568d6f992b0f914c77eea9d11cb21b9e`
+- Status at this update: `in_progress`; Linux and Windows jobs had not yet completed `cargo check`.
+- Therefore Rust tests and frontend build remain **NOT TESTED / PENDING** at this update. The failed run is not counted as a passing test. Update this report only after the corrected run has final job conclusions.
