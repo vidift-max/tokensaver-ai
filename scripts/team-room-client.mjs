@@ -28,6 +28,11 @@ export class TeamRoomClient {
     this.baseUrl = (env.TEAM_ROOM_API_URL || "").replace(/\/+$/, "");
     this.token = env.TEAM_ROOM_SESSION_TOKEN || "";
     this.roomId = env.TEAM_ROOM_ROOM_ID || "";
+    const configuredLeaseSeconds = env.TEAM_ROOM_LEASE_SECONDS ? Number(env.TEAM_ROOM_LEASE_SECONDS) : 60;
+    if (!Number.isInteger(configuredLeaseSeconds) || configuredLeaseSeconds < 15 || configuredLeaseSeconds > 300) {
+      throw new TeamRoomError("TEAM_ROOM_LEASE_SECONDS must be an integer from 15 to 300", 0, "CONFIG_INVALID");
+    }
+    this.leaseSeconds = configuredLeaseSeconds;
     if (!this.baseUrl || !this.token || !this.roomId) {
       throw new TeamRoomError("TEAM_ROOM_API_URL, TEAM_ROOM_SESSION_TOKEN and TEAM_ROOM_ROOM_ID are required; remote authority is unavailable", 0, "CONFIG_REQUIRED");
     }
@@ -104,14 +109,14 @@ export class TeamRoomClient {
     return task;
   }
 
-  async acquire(taskId, leaseSeconds = 60) {
+  async acquire(taskId, leaseSeconds = this.leaseSeconds) {
     return this.request("POST", `/team-room/tasks/${taskId}/lease/acquire`, {lease_seconds: leaseSeconds});
   }
 
   async start(mission) {
     const identity = await this.authenticate();
     const task = await this.ensureTask(mission, identity);
-    const grant = await this.acquire(task.task_id);
+    const grant = await this.acquire(task.task_id,this.leaseSeconds);
     this.assertCurrentOwner(grant.task, identity);
     return {identity, task: grant.task, fencing_token: grant.task.fencing_token};
   }
@@ -136,7 +141,7 @@ export class TeamRoomClient {
       throw new TeamRoomError("Task is owned by another authenticated executor; resume denied", 412, "LOSS_OF_OWNERSHIP");
     }
     // An unowned or expired task still requires an explicit PostgreSQL acquire.
-    const grant = await this.acquire(task.task_id);
+    const grant = await this.acquire(task.task_id,this.leaseSeconds);
     this.assertCurrentOwner(grant.task, identity);
     return {identity, task: grant.task, fencing_token: grant.task.fencing_token};
   }

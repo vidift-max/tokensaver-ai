@@ -65,7 +65,7 @@ function seed(){
   }
 }
 function runnerEnv(identity,stateDir){
-  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId};
+  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId,TEAM_ROOM_LEASE_SECONDS:"15"};
 }
 function runSync(identity,stateDir,...args){
   const result=spawnSync(process.execPath,[runnerScript,...args],{encoding:"utf8",env:runnerEnv(identity,stateDir),timeout:20000,maxBuffer:1024*1024});
@@ -138,7 +138,9 @@ try{
   assert.equal(initialTask.task_id,taskId);
   assert.equal(initialTask.owner_principal_id,owner.principalId);
 
-  sqlOk(`UPDATE team_tasks SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE task_id=${quote(taskId)} AND fencing_token=1`);
+  console.log("Runner A process exited; waiting for the real 15-second PostgreSQL lease to expire.");
+  await new Promise(resolve=>setTimeout(resolve,16000));
+  assert.equal(sqlOk(`SELECT (lease_expires_at<=NOW())::text FROM team_tasks WHERE task_id=${quote(taskId)}`),"t","the initial lease must expire by database time, without mutating its expiry timestamp");
   const [recoveryResultA,recoveryResultB]=await Promise.all([
     runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId),
     runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId)
