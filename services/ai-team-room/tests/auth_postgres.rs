@@ -168,3 +168,42 @@ async fn expired_assertion_is_rejected_before_session_creation() {
     sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
     server.abort();
 }
+
+
+#[tokio::test]
+async fn local_session_expiry_rotation_and_unknown_subject_are_enforced() {
+    let (pool, config, tenant, room, _principal, subject, server) = setup().await;
+    let first_assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
+    let first = exchange_workload_token(&pool, &config, room, &first_assertion).await.unwrap();
+
+    // A new upstream assertion rotates the existing room session and execution.
+    let second_assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
+    let second = exchange_workload_token(&pool, &config, room, &second_assertion).await.unwrap();
+    let previous_status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
+        .bind(first.identity.session_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(previous_status, "REVOKED");
+
+    let mut old_headers = axum::http::HeaderMap::new();
+    old_headers.insert("authorization", format!("Bearer {}", first.access_token).parse().unwrap());
+    assert!(matches!(authenticate_session(&pool, &old_headers).await, Err(AuthError::Unauthorized)));
+
+    let mut new_headers = axum::http::HeaderMap::new();
+    new_headers.insert("authorization", format!("Bearer {}", second.access_token).parse().unwrap());
+    assert!(authenticate_session(&pool, &new_headers).await.is_ok());
+
+    sqlx::query("UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_id = $1")
+        .bind(second.identity.session_id).execute(&pool).await.unwrap();
+    assert!(matches!(authenticate_session(&pool, &new_headers).await, Err(AuthError::Unauthorized)));
+    let expired_status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
+        .bind(second.identity.session_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(expired_status, "EXPIRED");
+
+    let unknown_subject = token("not-registered", &Uuid::new_v4().to_string(), 300);
+    assert!(matches!(
+        exchange_workload_token(&pool, &config, room, &unknown_subject).await,
+        Err(AuthError::IdentityUnavailable)
+    ));
+
+    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
+    server.abort();
+}
