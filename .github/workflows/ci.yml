@@ -208,6 +208,18 @@ jobs:
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients?clientId=team-room-ci" | jq -r '.[0].id')"
           test -n "$CLIENT_ID" && test "$CLIENT_ID" != "null"
 
+          # Remove the default account scope; the resource server intentionally requires
+          # exactly one audience and must not accept an extra "account" audience.
+          DEFAULT_SCOPES="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/default-client-scopes")"
+          ACCOUNT_SCOPE_ID="$(echo "$DEFAULT_SCOPES" | jq -r '.[] | select(.name=="account") | .id' | head -n 1)"
+          if [ -n "$ACCOUNT_SCOPE_ID" ] && [ "$ACCOUNT_SCOPE_ID" != "null" ]; then
+            curl --fail --silent --show-error -o /dev/null \
+              -X DELETE "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/default-client-scopes/$ACCOUNT_SCOPE_ID" \
+              -H "Authorization: Bearer $ADMIN_TOKEN"
+          fi
+
           # Give the real Keycloak client a default scope and an explicit API audience.
           STAGE="create-client-scope"
           curl --fail --silent --show-error -o /dev/null \
