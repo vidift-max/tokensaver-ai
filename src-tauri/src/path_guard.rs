@@ -157,13 +157,24 @@ fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
     app.path().app_config_dir().map(|p|p.join("import_roots.json")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível localizar as configurações do aplicativo."))
 }
 
-fn load_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
-    let path=config_path(app)?;
-    if !path.exists(){return Ok(Vec::new());}
+fn read_roots_file(path:&Path)->AppResult<Vec<ImportRoot>> {
+    let metadata=match fs::symlink_metadata(path) {
+        Ok(metadata)=>metadata,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(Vec::new()),
+        Err(_)=>return Err(AppError::new("STORAGE_ERROR","Não foi possível verificar as áreas de importação.")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(AppError::new("PATH_NOT_ALLOWED","O arquivo de áreas de importação não pode ser um link ou diretório."));
+    }
     let file=File::open(path).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
-    let mut bytes=Vec::new(); file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
+    let mut bytes=Vec::new();
+    file.take(MAX_IMPORT_ROOTS_JSON_BYTES+1).read_to_end(&mut bytes).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível ler as áreas de importação."))?;
     if bytes.len() as u64>MAX_IMPORT_ROOTS_JSON_BYTES{return Err(AppError::new("PATH_NOT_ALLOWED","Arquivo de áreas de importação excede o limite."));}
     parse_roots_json(&bytes)
+}
+
+fn load_roots(app:&tauri::AppHandle)->AppResult<Vec<ImportRoot>> {
+    read_roots_file(&config_path(app)?)
 }
 
 fn parse_roots_json(bytes: &[u8]) -> AppResult<Vec<ImportRoot>> {
@@ -296,6 +307,22 @@ mod tests {
         let path = "a".repeat(MAX_IMPORT_ROOT_PATH_BYTES + 1);
         let json = serde_json::to_vec(&vec![ImportRoot { path }]).unwrap();
         assert!(parse_roots_json(&json).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_roots_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root=std::env::temp_dir().join(format!("tokensaver-roots-link-{}",Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target=root.join("valid.json");
+        let link=root.join("import_roots.json");
+        fs::write(&target,b"[]").unwrap();
+        symlink(&target,&link).unwrap();
+
+        assert!(read_roots_file(&link).is_err());
+
+        let _=fs::remove_dir_all(root);
     }
 
     #[test]
