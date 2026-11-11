@@ -328,12 +328,19 @@ async fn create_decision(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,head
     let valid:bool=sqlx::query_scalar("SELECT COALESCE(bool_and(EXISTS(SELECT 1 FROM room_memberships m WHERE m.room_id=$1 AND m.principal_id=x AND m.status='ACTIVE')),FALSE) FROM unnest($2::uuid[]) x")
         .bind(room_id).bind(&input.participants).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     if !valid{return Err(StatusCode::BAD_REQUEST);}
+    if let Some(reference)=input.reference_message_id{
+        let visible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_messages m JOIN team_room_channels c ON c.channel_id=m.channel_id WHERE m.message_id=$1 AND m.room_id=$2 AND (c.channel_type='GENERAL' OR EXISTS(SELECT 1 FROM team_room_channel_members cm WHERE cm.channel_id=c.channel_id AND cm.principal_id=$3)))")
+            .bind(reference).bind(room_id).bind(who.principal_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !visible{return Err(StatusCode::FORBIDDEN);}
+    }
+    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let row=sqlx::query_as::<_,DecisionRow>("INSERT INTO team_room_decisions(decision_id,tenant_id,room_id,author_principal_id,mission_id,title,decision,participants,reference_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING decision_id,author_principal_id,mission_id,title,decision,participants,reference_message_id,created_at")
         .bind(Uuid::new_v4()).bind(who.tenant_id).bind(room_id).bind(who.principal_id).bind(input.mission_id).bind(input.title.trim()).bind(input.decision.trim()).bind(input.participants).bind(input.reference_message_id)
-        .fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let payload=serde_json::json!({"room_id":room_id,"decision":row});
     sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'DECISION_CREATED',$4)")
-        .bind(Uuid::new_v4()).bind(who.tenant_id).bind(room_id).bind(payload).execute(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        .bind(Uuid::new_v4()).bind(who.tenant_id).bind(room_id).bind(payload).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED,Json(row)))
 }
 
@@ -354,12 +361,19 @@ async fn create_attachment_ref(State(pool):State<PgPool>,Path(room_id):Path<Uuid
             .bind(message).bind(input.channel_id).bind(room_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
         if !same{return Err(StatusCode::BAD_REQUEST);}
     }
+    if let Some(task_id)=input.task_id{
+        let task_visible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_tasks WHERE task_id=$1 AND tenant_id=$2 AND room_id=$3)")
+            .bind(task_id).bind(who.tenant_id).bind(room_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !task_visible{return Err(StatusCode::NOT_FOUND);}
+    }
+    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let row=sqlx::query_as::<_,AttachmentRow>("INSERT INTO team_room_attachment_refs(attachment_id,tenant_id,room_id,channel_id,uploaded_by_principal_id,message_id,task_id,file_name,storage_ref,content_type,byte_len,sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING attachment_id,channel_id,message_id,task_id,file_name,storage_ref,content_type,byte_len,sha256,created_at")
         .bind(Uuid::new_v4()).bind(who.tenant_id).bind(room_id).bind(input.channel_id).bind(who.principal_id).bind(input.message_id).bind(input.task_id).bind(input.file_name.trim()).bind(input.storage_ref.trim()).bind(input.content_type).bind(input.byte_len).bind(input.sha256)
-        .fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let payload=serde_json::json!({"room_id":room_id,"attachment":row});
     sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'ATTACHMENT_CREATED',$4)")
-        .bind(Uuid::new_v4()).bind(who.tenant_id).bind(input.channel_id).bind(payload).execute(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        .bind(Uuid::new_v4()).bind(who.tenant_id).bind(input.channel_id).bind(payload).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED,Json(row)))
 }
 
