@@ -45,11 +45,12 @@ a93ROy+abL98Yf/fSAlNg3Lw
 const N: &str = "yLl5hgomp60yGxBsQbRb0G9j8YR6YolqOVDww6jCiCGurQ6l_tNmvWhzkYMFkR0fSfROWaoyerLuGlE6RLcDarGSjk0W07kH6dcWtQy5J8BWY9mOzJjcDyMPcSter1ESLucnGbVOFs4Qj-Jq-WqJDsnDkzUSHeZoCiNUggLpx_5DFVc2FLLpqLKWkKr2abcfZLFwlu3wbpEOS3whcBOppZd_K-HAVrYYmwiDDVQVA6E4ilq78pcOrKVdCanLQeRgybykZsalRp9HnN6QsZVwo3k0PHCHopuGoGyFu8ZbBvXz6csm50Koj6ePkT9BZaWm_c94jIxkcikDK5r0hz6P3w";
 
 #[derive(Serialize)]
-struct Claims { iss: String, sub: String, aud: String, exp: usize, nbf: usize, jti: String, scope: String }
+struct Claims { iss: String, sub: String, aud: String, iat: usize, exp: usize, nbf: usize, jti: String, scope: String }
 
 fn token(subject: &str, jti: &str, lifetime_seconds: i64) -> String {
     let claims = Claims {
         iss: ISSUER.into(), sub: subject.into(), aud: AUDIENCE.into(),
+        iat: Utc::now().timestamp() as usize,
         exp: (Utc::now() + Duration::seconds(lifetime_seconds)).timestamp() as usize,
         nbf: (Utc::now() - Duration::seconds(1)).timestamp() as usize,
         jti: jti.into(), scope: "team_room:connect".into(),
