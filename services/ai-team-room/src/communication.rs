@@ -273,7 +273,7 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
     loop{
         tokio::select!{
             _=revalidate.tick()=>{
-                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id JOIN room_memberships m ON m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE')")
+                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id JOIN room_memberships m ON m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
                     .bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                 if !active{let _=socket.send(Message::Close(None)).await;break;}
             }
