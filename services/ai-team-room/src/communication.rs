@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgListener, FromRow, PgPool, Row};
 use uuid::Uuid;
 
-use ai_team_room_service::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
+use ai_team_room_service::auth::{authenticate_session, require_permission, AuthenticatedIdentity, AuthError};
 
 #[derive(Debug, Serialize, FromRow)]
 struct MessageRow {
@@ -49,11 +49,7 @@ struct HistoryResponse {
     has_more: bool,
 }
 
-#[derive(Debug, FromRow)]
-struct ChannelRow { channel_id: Uuid, channel_type: String }
-
-fn auth_status(error: crate::ai_team_room_service::auth::AuthError) -> StatusCode {
-    use crate::ai_team_room_service::auth::AuthError;
+fn auth_status(error: AuthError) -> StatusCode {
     match error {
         AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
         AuthError::IdentityUnavailable | AuthError::Forbidden => StatusCode::FORBIDDEN,
