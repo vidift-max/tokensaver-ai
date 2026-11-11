@@ -270,6 +270,17 @@ async fn complete_task(
     tasks::complete_task(&state.pool,&identity,task_id,request.fencing_token,request.checkpoint).await.map(Json).map_err(task_status)
 }
 
+async fn task_candidates(
+    State(state): State<AppState>,
+    Path((room_id, _task_id)): Path<(Uuid,Uuid)>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<tasks::TaskCandidate>>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    if identity.room_id!=room_id { return Err(StatusCode::FORBIDDEN); }
+    require_permission(&state.pool,&identity,"task.assign").await.map_err(auth_status)?;
+    tasks::list_candidates(&state.pool,identity.tenant_id,room_id).await.map(Json).map_err(task_status)
+}
+
 async fn recover_room_tasks(
     State(state): State<AppState>, Path(room_id): Path<Uuid>,
     headers: axum::http::HeaderMap,
@@ -298,6 +309,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/tasks/{task_id}/lease/release", post(release_task_lease))
         .route("/team-room/tasks/{task_id}/checkpoint", post(checkpoint_task))
         .route("/team-room/tasks/{task_id}/complete", post(complete_task))
+        .route("/team-room/{room_id}/tasks/{task_id}/candidates", get(task_candidates))
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(state)
