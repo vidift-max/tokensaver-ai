@@ -44,7 +44,7 @@ pub enum AuthError {
     ProviderUnavailable,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OidcClaims {
     iss: String,
     sub: String,
@@ -157,6 +157,8 @@ pub async fn exchange_workload_token(
     if expires_at <= now { return Err(AuthError::Unauthorized); }
 
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM auth_token_replays WHERE expires_at <= NOW()")
+        .execute(&mut *tx).await?;
     // A provider assertion is accepted once. Replaying the same jti cannot mint
     // another local session, even when two exchanges race.
     let replay = sqlx::query(
@@ -246,6 +248,10 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, AuthError> {
 pub async fn authenticate_session(pool: &PgPool, headers: &HeaderMap) -> Result<AuthenticatedIdentity, AuthError> {
     let token = bearer_token(headers)?;
     let digest = Sha256::digest(token.as_bytes()).to_vec();
+    sqlx::query("UPDATE sessions SET status = 'EXPIRED' WHERE token_hash = $1 AND status = 'ACTIVE' AND expires_at <= NOW()")
+        .bind(&digest).execute(pool).await?;
+    sqlx::query("UPDATE workload_executions SET status = 'EXPIRED' WHERE session_id IN (SELECT session_id FROM sessions WHERE token_hash = $1 AND status = 'EXPIRED') AND status = 'ACTIVE'")
+        .bind(&digest).execute(pool).await?;
     let row = sqlx::query_as::<_, SessionIdentity>(
         r#"SELECT s.tenant_id, w.participant_id, s.principal_id, s.session_id, w.execution_id,
                   s.room_id, pr.provider AS issuer, pr.external_subject AS subject
@@ -289,4 +295,104 @@ pub async fn close_session(pool: &PgPool, identity: &AuthenticatedIdentity) -> R
         .bind(identity.execution_id).bind(identity.session_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod jwt_tests {
+    use super::*;
+    use axum::{routing::get, Json, Router};
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde_json::json;
+    use tokio::net::TcpListener;
+
+    const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDIuXmGCianrTIb
+EGxBtFvQb2PxhHpiiWo5UPDDqMKIIa6tDqX+02a9aHORgwWRHR9J9E5ZqjJ6su4a
+UTpEtwNqsZKOTRbTuQfp1xa1DLknwFZj2Y7MmNwPIw9xK16vURIu5ycZtU4WzhCP
+4mr5aokOycOTNRId5mgKI1SCAunH/kMVVzYUsumospaQqvZptx9ksXCW7fBukQ5L
+fCFwE6mll38r4cBWthibCIMNVBUDoTiKWrvylw6spV0JqctB5GDJvKRmxqVGn0ec
+3pCxlXCjeTQ8cIeim4agbIW7xlsG9fPpyybnQqiPp4+RP0Flpab9z3iMjGRyKQMr
+mvSHPo/fAgMBAAECggEABKIe8huwUkpOLFbeJxMA0/9uPX9KIbImjQBehXzL39vm
+SmwhzlaWq8DRXo25W7pFlhFR8MkGoCjh2z83MeMVXo05qgmtuf2gaQZrN+A2T0HQ
+iulGz8mLgRHxxzIx3eF2osOjZ/kRE9QgwYUN5KSlPQvQynL9DNi/sPCpZCn+m0OA
+49UQuF7wXhvE0ZnniUPMubAlLE9QCjm0oJyE2Cz1ggEkQVLOkgJVPWcAxx7+Rq+a
+HlLTkvfAZqF2WoGkORqKBoXu50HzA+y/VGQzEWW04WaqzZD2eHCWVgFnC+TIFBhN
+FwctX2iG0wjpcDpIYZ3odkTB/BrjyiRLwOVbiojZUQKBgQDi5asixAhqdCBHe31J
+ojM17YtRXlZnkbdtgqfAPErhyPgzOqc/bE04UDN7yK4eMYvS1dYOhwQEU6UNiiNp
+6c40N8qUES2f6Q6+ATH2wGQqpX88JT4/7KSoDGWKujAy/NKNMt4mWCC6shfnykUM
+QyuFgex9GPp6wDg+hZ5x6SQICQKBgQDieGivz+fgOECpJFLrNq1Mb5yycfPHQNl
+LtGKQgWEK+aNLmbDnZzhcRCwmGj/HaquIdx4gIhz4wj6py2BQEeEvTgSgDKYn0JCl
+F9VhzxDitsWH/Ik8n84MhqV13rLpG9e577iucTcsr0HE9FILj1V4h565C14I9XJk
+vZConhNCpwKBgQCe4x+tT8No8HruM66vkpLz762AxGQTULo3SKg5+L6jT71m+mrG
+AgwtJBR5WTV81UtJ0A5+y9NnSD+rtJFKCL0qWetVNpZRhb2aFnIrjdxW9N+deaMW
+1psTRuMQe4NnIR48XGOuTEZXFoGhAkbJ6HugmTPHAmfc76AzQBSNRirCKQKBgGNR
+VO/NaK4vXUQQNwEKUIPV6s1jJfq7GNCXgiZHZwyOICv2cdt5rADisM3g8xl8UU+e
+laqX60a4wQxrsYhL3wqE14htI60QTW7pfd3QFmKmrwgNGw5oMs/ReNyxVpreaAQV
++lMeOYkyLtC2KQkCygP6zgPu1UVuhsVhUQBxmpa/AoGBAIOLs6rSTcZ2/C7pI/Un
++J0c2OUloGFyh2myDNABc3qV5XW2Ax8tNc4qHkHf5j4WS3mWDvjsNDYrHKcfI0og
+Zz2oCgvmWOAGdhIM+9i/xRZaXDUMyZSx/1bSRaWrcJHgWcnGuVQ75O5rVSjordo7
+a93ROy+abL98Yf/fSAlNg3Lw
+-----END PRIVATE KEY-----"#;
+
+    const N: &str = "yLl5hgomp60yGxBsQbRb0G9j8YR6YolqOVDww6jCiCGurQ6l_tNmvWhzkYMFkR0fSfROWaoyerLuGlE6RLcDarGSjk0W07kH6dcWtQy5J8BWY9mOzJjcDyMPcSter1ESLucnGbVOFs4Qj-Jq-WqJDsnDkzUSHeZoCiNUggLpx_5DFVc2FLLpqLKWkKr2abcfZLFwlu3wbpEOS3whcBOppZd_K-HAVrYYmwiDDVQVA6E4ilq78pcOrKVdCanLQeRgybykZsalRp9HnN6QsZVwo3k0PHCHopuGoGyFu8ZbBvXz6csm50Koj6ePkT9BZaWm_c94jIxkcikDK5r0hz6P3w";
+
+    async fn test_server() -> (String, tokio::task::JoinHandle<()>) {
+        let jwks = json!({"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
+        let app = Router::new().route("/jwks", get(move || {
+            let value = jwks.clone();
+            async move { Json(value) }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        (format!("http://{address}/jwks"), task)
+    }
+
+    fn signed_token(issuer: &str, audience: &str, exp: usize, kid: &str) -> String {
+        let claims = OidcClaims {
+            iss: issuer.into(), sub: "agent-subject".into(), aud: json!(audience),
+            exp, nbf: Some(Utc::now().timestamp() as usize - 1),
+            jti: Uuid::new_v4().to_string(), scope: "team_room:connect".into(),
+        };
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.into());
+        encode(&header, &claims, &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn oidc_jwks_signature_issuer_audience_expiry_and_kid_are_enforced() {
+        let (jwks_url, server) = test_server().await;
+        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url };
+        let valid = signed_token(&config.issuer, &config.audience, (Utc::now() + Duration::minutes(2)).timestamp() as usize, "test-key");
+        assert!(verify_oidc_token(&config, &valid).await.is_ok());
+
+        let expired = signed_token(&config.issuer, &config.audience, (Utc::now() - Duration::minutes(2)).timestamp() as usize, "test-key");
+        assert!(matches!(verify_oidc_token(&config, &expired).await, Err(AuthError::Unauthorized)));
+
+        let wrong_issuer = signed_token("https://attacker.example.test", &config.audience, (Utc::now() + Duration::minutes(2)).timestamp() as usize, "test-key");
+        assert!(matches!(verify_oidc_token(&config, &wrong_issuer).await, Err(AuthError::Unauthorized)));
+
+        let wrong_audience = signed_token(&config.issuer, "other-api", (Utc::now() + Duration::minutes(2)).timestamp() as usize, "test-key");
+        assert!(matches!(verify_oidc_token(&config, &wrong_audience).await, Err(AuthError::Unauthorized)));
+
+        let unknown_kid = signed_token(&config.issuer, &config.audience, (Utc::now() + Duration::minutes(2)).timestamp() as usize, "unknown-key");
+        assert!(matches!(verify_oidc_token(&config, &unknown_kid).await, Err(AuthError::Unauthorized)));
+
+        let mut invalid_signature = valid.clone();
+        invalid_signature.push('x');
+        assert!(matches!(verify_oidc_token(&config, &invalid_signature).await, Err(AuthError::Unauthorized)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_algorithms_other_than_rs256_are_rejected_before_jwks_use() {
+        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url: "https://unused.invalid/jwks".into() };
+        let token = jsonwebtoken::encode(
+            &Header::new(Algorithm::HS256),
+            &json!({"iss":config.issuer,"sub":"x","aud":config.audience,"exp":(Utc::now()+Duration::minutes(1)).timestamp(),"jti":"x","scope":"team_room:connect"}),
+            &jsonwebtoken::EncodingKey::from_secret(b"test-only-secret"),
+        ).unwrap();
+        assert!(matches!(verify_oidc_token(&config, &token).await, Err(AuthError::Unauthorized)));
+    }
 }
