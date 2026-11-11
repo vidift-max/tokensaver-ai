@@ -33,7 +33,7 @@ export default function TeamRoom() {
   const socketRef=useRef<WebSocket|null>(null);
 
   const request=useCallback(async(path:string,init:RequestInit={})=>{
-    const response=await fetch(apiUrl.replace(/\/$/,"")+path,{...init,headers:{"content-type":"application/json","authorization:"Bearer "+token,...(init.headers||{})}});
+    const response=await fetch(apiUrl.replace(/\/$/,"")+path,{...init,headers:{"content-type":"application/json","authorization":"Bearer "+token,...(init.headers||{})}});
     if(!response.ok) throw new Error("Team Room HTTP "+response.status);
     if(response.status===204)return null;
     return response.json();
