@@ -341,3 +341,24 @@ mod distributed_lease_tests {
         sqlx::query_scalar("SELECT room_id FROM team_tasks WHERE task_id=$1").bind(task_id).fetch_one(pool).await.unwrap()
     }
 }
+
+#[derive(Debug,Clone,Serialize,FromRow)]
+pub struct TaskCandidate {
+    pub principal_id: Uuid,
+    pub participant_id: Uuid,
+    pub session_id: Uuid,
+    pub execution_id: Uuid,
+    pub last_seen_at: DateTime<Utc>,
+    pub active_lease_count: i64,
+}
+
+pub async fn list_candidates(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    room_id: Uuid,
+) -> Result<Vec<TaskCandidate>,TaskError> {
+    let candidates=sqlx::query_as::<_,TaskCandidate>(
+      "SELECT p.principal_id, m.participant_id, s.session_id, w.execution_id, m.last_seen_at, (SELECT COUNT(*) FROM team_tasks t WHERE t.owner_principal_id=p.principal_id AND t.status IN ('OWNED','REASSIGNED') AND t.lease_expires_at>NOW()) AS active_lease_count FROM room_memberships m JOIN principals p ON p.tenant_id=m.tenant_id AND p.principal_id=m.principal_id JOIN participants pa ON pa.tenant_id=m.tenant_id AND pa.participant_id=m.participant_id AND pa.principal_id=m.principal_id JOIN sessions s ON s.room_id=m.room_id AND s.session_id=m.session_id AND s.principal_id=m.principal_id JOIN workload_executions w ON w.session_id=s.session_id AND w.principal_id=p.principal_id AND w.participant_id=pa.participant_id JOIN workload_identities wi ON wi.tenant_id=p.tenant_id AND wi.principal_id=p.principal_id JOIN principal_permissions pp ON pp.tenant_id=p.tenant_id AND pp.principal_id=p.principal_id AND pp.room_id=m.room_id AND pp.permission='task.transition' AND pp.revoked_at IS NULL WHERE m.tenant_id=$1 AND m.room_id=$2 AND m.status='ACTIVE' AND m.last_seen_at>NOW()-INTERVAL '90 seconds' AND p.enabled=TRUE AND pa.enabled=TRUE AND wi.status='ACTIVE' AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND w.heartbeat_at>NOW()-INTERVAL '90 seconds' ORDER BY active_lease_count,m.last_seen_at DESC"
+    ).bind(tenant_id).bind(room_id).fetch_all(pool).await?;
+    Ok(candidates.into_iter().filter(|candidate|candidate.active_lease_count<3).collect())
+}
