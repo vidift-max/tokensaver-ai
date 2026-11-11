@@ -3,10 +3,8 @@ use ai_team_room_service::{
     connect_pool, migrate, readiness,
 };
 use axum::{
-    extract::{ConnectInfo, Path, Request, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -30,27 +28,21 @@ struct ExchangeRequest { room_id: Uuid, workload_token: String }
 
 static EXCHANGE_ATTEMPTS: OnceLock<Mutex<HashMap<String, VecDeque<Instant>>>> = OnceLock::new();
 
-async fn rate_limit_exchange(request: Request, next: Next) -> Response {
-    let key = request.extensions().get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(address)| address.ip().to_string())
-        .unwrap_or_else(|| "unresolved-peer".to_string());
-    {
-        let limits = EXCHANGE_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut limits = limits.lock().expect("rate limiter mutex poisoned");
-        let now = Instant::now();
-        if limits.len() > 4096 {
-            limits.retain(|_, attempts| attempts.back().is_some_and(|last| now.duration_since(*last) < Duration::from_secs(60)));
-        }
-        let attempts = limits.entry(key).or_default();
-        while attempts.front().is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60)) {
-            attempts.pop_front();
-        }
-        if attempts.len() >= 10 {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-        attempts.push_back(now);
+fn allow_exchange(peer: Option<SocketAddr>) -> bool {
+    let key = peer.map(|address| address.ip().to_string()).unwrap_or_else(|| "unresolved-peer".to_string());
+    let limits = EXCHANGE_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut limits = limits.lock().expect("rate limiter mutex poisoned");
+    let now = Instant::now();
+    if limits.len() > 4096 {
+        limits.retain(|_, attempts| attempts.back().is_some_and(|last| now.duration_since(*last) < Duration::from_secs(60)));
     }
-    next.run(request).await
+    let attempts = limits.entry(key).or_default();
+    while attempts.front().is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60)) {
+        attempts.pop_front();
+    }
+    if attempts.len() >= 10 { return false; }
+    attempts.push_back(now);
+    true
 }
 
 async fn live() -> (StatusCode, Json<HealthResponse>) {
@@ -77,8 +69,10 @@ fn auth_status(error: AuthError) -> StatusCode {
 
 async fn exchange(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     Json(request): Json<ExchangeRequest>,
 ) -> Result<Json<ai_team_room_service::auth::ExchangeResponse>, StatusCode> {
+    if !allow_exchange(peer.map(|ConnectInfo(address)| address)) { return Err(StatusCode::TOO_MANY_REQUESTS); }
     if request.workload_token.len() > 16_384 { return Err(StatusCode::PAYLOAD_TOO_LARGE); }
     let config = state.oidc.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     exchange_workload_token(&state.pool, config, request.room_id, &request.workload_token)
@@ -134,7 +128,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
-        .route("/auth/exchange", post(exchange).route_layer(middleware::from_fn(rate_limit_exchange)))
+        .route("/auth/exchange", post(exchange))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(logout))
         .route("/team-room/me", get(team_room_me))
