@@ -1072,3 +1072,24 @@ O relatório de reconciliação existente registra o run 43053560701 como 4/4 SU
 - Não foi possível disparar nem listar um workflow para esse commit com as ações GitHub disponíveis nesta sessão. Não inventar run ID ou conclusão.
 
 **Decisão permanece:** GO CONDICIONADO para desenvolvimento; NO-GO para autonomia distribuída. O CI do serviço e do código-base está verde, mas os requisitos de Runner integrado, recovery daemon, handoff explícito e seleção automática continuam pendentes.
+
+
+# FINAL REPORT HEAD VALIDATION UPDATE — 2026-11-11
+
+The subsequent documentation commit `5e1ca8a5bceccc0e9c42a20c99e2ef85aa9387ed` reconciled the audit chronology and corrected the CI evidence. It changes only `reports/AI_WORK_CONTINUITY_RUNNER_REPORT.md`; code remains the already validated code HEAD `a360a3ea751c6dc5b32cb865201a81b4b2845ece`.
+
+The workflow attached to the exact documentation HEAD `5e1ca8a5bceccc0e9c42a20c99e2ef85aa9387ed` is `43055057136`: **4/4 SUCCESS**.
+
+- `foundation`: SUCCESS.
+- `foundation-windows`: SUCCESS.
+- `ai-team-room-service`: SUCCESS.
+- `keycloak-oidc-smoke`: SUCCESS.
+
+Therefore:
+- Code HEAD `a360a3e`: validated by `43053560701`, 4/4 SUCCESS.
+- Documentation HEAD `5e1ca8a`: validated by `43055057136`, 4/4 SUCCESS.
+- The two results are distinct and each is attached to its exact SHA.
+- No code changes occurred after `a360a3e` in the documentation-only commits through `5e1ca8a`.
+- The current branch still has branch protection disabled. The observed freeze is valid at this audit point, but GitHub does not enforce it against a future push.
+
+This final evidence update is also documentation-only. Its new commit must receive its own four-job CI before that new SHA is described as validated. Do not infer that result from runs `43053560701` or `43055057136`.
