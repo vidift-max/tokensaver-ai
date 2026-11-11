@@ -273,6 +273,11 @@ fn prepare_restore_projects_root(storage: &Path) -> AppResult<PathBuf> {
     Ok(projects_root)
 }
 
+fn is_canonical_sha256(sha: &str) -> bool {
+    sha.len() == 64
+        && sha.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn insert_restore_db_blob(
     blobs: &mut std::collections::BTreeMap<String, u64>,
     sha: String,
@@ -285,8 +290,7 @@ fn insert_restore_db_blob(
     // SHA-256 identifiers and their relative paths are canonical lowercase.
     // Accepting uppercase here would normalize only the comparison map while
     // leaving the restored SQLite row pointing at a differently-cased path.
-    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
-        || sha != sha.to_ascii_lowercase()
+    if !is_canonical_sha256(&sha)
         || len < 0 || relative != format!("blobs/{}", sha) {
         return Err(AppError::new("BACKUP_INVALID", "Metadados de blob inválidos no banco."));
     }
@@ -401,9 +405,9 @@ pub fn restore_project_backup(
     let mut manifest_blobs = std::collections::BTreeMap::new();
     let mut restore_payload_bytes = 0u64;
     for blob in &manifest.blobs {
-        if blob.sha256.len() != 64 || !blob.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            || blob.file_name != blob.sha256.to_ascii_lowercase()
-            || manifest_blobs.insert(blob.sha256.to_ascii_lowercase(), blob.byte_len).is_some() {
+        if !is_canonical_sha256(&blob.sha256)
+            || blob.file_name != blob.sha256
+            || manifest_blobs.insert(blob.sha256.clone(), blob.byte_len).is_some() {
             return Err(AppError::new("BACKUP_INVALID", "Manifesto contém blob inválido ou duplicado."));
         }
         let path = backup_blobs_dir.join(&blob.file_name);
@@ -580,6 +584,13 @@ mod tests {
         assert!(!outside.exists(), "symlink destination must not be created as a side effect");
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restore_sha256_requires_canonical_lowercase_hex() {
+        assert!(is_canonical_sha256(&"a".repeat(64)));
+        assert!(!is_canonical_sha256(&"A".repeat(64)));
+        assert!(!is_canonical_sha256("not-a-sha256"));
     }
 
     #[test]
