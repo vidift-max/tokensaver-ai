@@ -782,3 +782,12 @@ Implement and deploy a durable recovery scheduler/outbox worker, explicit staged
 **GO CONDICIONADO** for continued integration/testing of distributed ownership foundations.
 
 **NO-GO** for production multi-agent orchestration until the final CI passes, recovery scheduling and staged handoff are complete, the local Runner is connected to the shared API, and deployment security controls are in place. Never claim provider execution or prompt delivery from a task lease alone.
+
+
+### Final ownership-binding hardening (after the first report draft)
+
+- Added a composite foreign key from the task's tenant/room/participant/principal/session/execution tuple to the exact `workload_executions` row. This prevents a task from persisting an owner execution that belongs to a different authenticated participant or session.
+- Added positive renewal assertion to the 10-executor PostgreSQL integration test.
+- **Code HEAD after this hardening:** `76ee61345f97e17dd2e8dfe9d3b7a38284d707da`.
+- **Additional commit:** `76ee61345f97e17dd2e8dfe9d3b7a38284d707da` — composite owner/workload execution FK.
+- The CI run for this code HEAD is pending; do not treat any earlier or cancelled run as proof for this final tree.
