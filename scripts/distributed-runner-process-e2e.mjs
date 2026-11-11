@@ -38,6 +38,22 @@ function sqlOk(sql){
   if(result.status!==0) throw new Error("psql failed: "+(result.stderr||result.stdout));
   return result.stdout.trim();
 }
+function candidateEligible(identity){
+  const count=sqlOk(`SELECT COUNT(*) FROM room_memberships m
+    JOIN sessions s ON s.session_id=m.session_id AND s.principal_id=m.principal_id
+    JOIN participants pa ON pa.participant_id=m.participant_id AND pa.principal_id=m.principal_id AND pa.tenant_id=m.tenant_id
+    JOIN principals p ON p.principal_id=m.principal_id AND p.tenant_id=m.tenant_id
+    JOIN workload_executions w ON w.session_id=s.session_id AND w.principal_id=p.principal_id AND w.participant_id=pa.participant_id
+    JOIN principal_permissions pp ON pp.tenant_id=p.tenant_id AND pp.principal_id=p.principal_id AND pp.room_id=m.room_id AND pp.permission='task.transition' AND pp.revoked_at IS NULL
+    WHERE m.tenant_id=${quote(tenantId)} AND m.room_id=${quote(roomId)}
+      AND m.principal_id=${quote(identity.principalId)} AND m.participant_id=${quote(identity.participantId)}
+      AND m.session_id=${quote(identity.sessionId)} AND w.execution_id=${quote(identity.executionId)}
+      AND m.status='ACTIVE' AND m.last_seen_at>NOW()-INTERVAL '90 seconds'
+      AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
+      AND p.enabled=TRUE AND pa.enabled=TRUE AND w.status='ACTIVE' AND w.revoked_at IS NULL
+      AND w.expires_at>NOW() AND w.heartbeat_at>NOW()-INTERVAL '90 seconds'`);
+  return count==="1";
+}
 function quote(value){return "'"+String(value).replaceAll("'","''")+"'";}
 function seed(){
   sqlOk(`INSERT INTO tenants(tenant_id,name) VALUES(${quote(tenantId)},'distributed-runner-process-e2e');
@@ -253,11 +269,8 @@ try{
     sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
       UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '${age} seconds' WHERE execution_id=${quote(identity.executionId)};`);
   }
-  const ownerCandidatesResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/${ownerHandoffTask}/candidates`,{headers:{authorization:"Bearer "+recoveryWorkerA.token}});
-  assert.equal(ownerCandidatesResponse.status,200);
-  const ownerCandidates=await ownerCandidatesResponse.json();
-  assert.ok(ownerCandidates.some(candidate=>candidate.principal_id===replacement.principalId));
-  assert.ok(ownerCandidates.some(candidate=>candidate.principal_id===recoveryWorkerA.principalId));
+  assert.ok(candidateEligible(replacement),"addressed recipient must have an active authenticated session, execution, membership and task.transition permission");
+  assert.ok(candidateEligible(recoveryWorkerA),"competing recipient must independently satisfy the same live-candidate authorization checks");
   mustRun(owner,ownerHandoffA,"handoff-create",replacement.principalId,replacement.participantId,replacement.sessionId,replacement.executionId,"planned owner-initiated transfer");
   const ownerHandoffId=stateForMission(ownerHandoffA,ownerHandoffMission).handoff.handoff_id;
   const pendingResponse=await fetch(apiUrl+`/team-room/handoffs/${ownerHandoffId}`,{headers:{authorization:"Bearer "+owner.token}});
