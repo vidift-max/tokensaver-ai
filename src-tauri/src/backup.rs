@@ -256,6 +256,15 @@ fn remap_project_scope(
     Ok(())
 }
 
+fn prepare_restore_projects_root(storage: &Path) -> AppResult<PathBuf> {
+    let projects_root = storage.join("projects");
+    // Never use create_dir_all here: if "projects" is a symlink, it can
+    // create directories at the symlink destination before we reject it.
+    crate::project_storage::claim_project_root(&projects_root)
+        .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível preparar a pasta de projetos."))?;
+    Ok(projects_root)
+}
+
 fn insert_restore_db_blob(
     blobs: &mut std::collections::BTreeMap<String, u64>,
     sha: String,
@@ -420,12 +429,7 @@ pub fn restore_project_backup(
         }
     }
 
-    let projects_root = storage.join("projects");
-    // Never use create_dir_all here: if "projects" is a symlink, it can
-    // create directories at the symlink destination before we reject it.
-    // Reuse the no-symlink root claim used by normal project initialization.
-    crate::project_storage::claim_project_root(&projects_root)
-        .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível preparar a pasta de projetos."))?;
+    let projects_root = prepare_restore_projects_root(&storage)?;
     let target = projects_root.join(&target_project_id);
     let projects_meta = fs::symlink_metadata(&projects_root)
         .map_err(|_| AppError::new("RESTORE_ERROR", "Pasta de projetos indisponível."))?;
@@ -507,6 +511,26 @@ mod tests {
     use super::*;
 
  
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_projects_root_symlink_is_rejected_without_creating_outside_target() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!("tokensaver-restore-root-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let storage = base.join("storage");
+        fs::create_dir_all(&storage).unwrap();
+        let outside = base.join("outside-not-created");
+        symlink(&outside, storage.join("projects")).unwrap();
+
+        let error = prepare_restore_projects_root(&storage)
+            .expect_err("restore must reject a symlinked projects root");
+        assert_eq!(error.code, "RESTORE_ERROR");
+        assert!(!outside.exists(), "symlink destination must not be created as a side effect");
+
+        let _ = fs::remove_dir_all(base);
+    }
 
     #[test]
     fn restore_db_blob_map_enforces_manifest_blob_cap() {
