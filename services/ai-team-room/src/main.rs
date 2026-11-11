@@ -31,10 +31,10 @@ struct HealthResponse { service: &'static str, status: &'static str }
 struct HeartbeatResponse { session_id: Uuid, execution_id: Uuid, last_seen_at: DateTime<Utc> }
 
 #[derive(Debug, sqlx::FromRow)]
-struct PresenceRow { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, heartbeat_at: Option<DateTime<Utc>> }
+struct PresenceRow { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, display_name:String, provider:String, last_seen_at:DateTime<Utc>, heartbeat_at: Option<DateTime<Utc>>, presence_state:String, current_task_id:Option<Uuid> }
 
 #[derive(Serialize)]
-struct PresenceItem { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, last_seen_at: Option<DateTime<Utc>>, state: String }
+struct PresenceItem { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, display_name:String, provider:String, last_activity_at:DateTime<Utc>, current_task_id:Option<Uuid>, connected:bool, state: String }
 
 #[derive(Deserialize)]
 struct ExchangeRequest { room_id: Uuid, workload_token: String }
@@ -138,16 +138,36 @@ async fn room_presence(
     if identity.room_id != room_id { return Err(StatusCode::FORBIDDEN); }
     require_permission(&state.pool, &identity, "room.read").await.map_err(auth_status)?;
     let rows = sqlx::query_as::<_, PresenceRow>(
-        "SELECT m.participant_id,m.principal_id,m.session_id,w.heartbeat_at FROM room_memberships m LEFT JOIN workload_executions w ON w.session_id=m.session_id AND w.status='ACTIVE' AND w.revoked_at IS NULL WHERE m.room_id=$1 AND m.status='ACTIVE' ORDER BY m.joined_at"
+        "SELECT m.participant_id,m.principal_id,m.session_id,p.display_name,pr.provider,m.last_seen_at,w.heartbeat_at,m.presence_state,(SELECT t.task_id FROM team_tasks t WHERE t.room_id=m.room_id AND t.owner_principal_id=m.principal_id AND t.status IN ('OWNED','REASSIGNED') AND t.lease_expires_at>NOW() ORDER BY t.updated_at DESC LIMIT 1) AS current_task_id FROM room_memberships m JOIN participants p ON p.participant_id=m.participant_id JOIN principals pr ON pr.principal_id=m.principal_id LEFT JOIN workload_executions w ON w.session_id=m.session_id AND w.status='ACTIVE' AND w.revoked_at IS NULL WHERE m.room_id=$1 AND m.status='ACTIVE' ORDER BY m.joined_at"
     ).bind(room_id).fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let timeout = std::env::var("TEAM_ROOM_HEARTBEAT_TIMEOUT_SECONDS").ok().and_then(|v|v.parse::<i64>().ok()).filter(|v|*v>=10).unwrap_or(90);
     let now = Utc::now();
     let items = rows.into_iter().map(|row| {
         let age = row.heartbeat_at.map(|at| (now-at).num_seconds()).unwrap_or(i64::MAX);
-        let state = if age <= timeout/2 { "ACTIVE" } else if age <= timeout { "IDLE" } else if age <= timeout*2 { "SUSPECTED_DISCONNECTED" } else { "DISCONNECTED" };
-        PresenceItem { participant_id:row.participant_id, principal_id:row.principal_id, session_id:row.session_id, last_seen_at:row.heartbeat_at, state:state.to_string() }
+        let connected=age<=timeout;
+        let state = if !connected { "DISCONNECTED" } else if row.current_task_id.is_some() { "EXECUTING" } else { row.presence_state.as_str() };
+        PresenceItem { participant_id:row.participant_id, principal_id:row.principal_id, session_id:row.session_id, display_name:row.display_name, provider:row.provider, last_activity_at:row.last_seen_at, current_task_id:row.current_task_id, connected, state:state.to_string() }
     }).collect();
     Ok(Json(items))
+}
+
+#[derive(Deserialize)]
+struct PresenceUpdate { state:String }
+
+async fn update_presence(State(state):State<AppState>,Path(room_id):Path<Uuid>,headers:axum::http::HeaderMap,Json(input):Json<PresenceUpdate>)->Result<StatusCode,StatusCode>{
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    if identity.room_id!=room_id{return Err(StatusCode::FORBIDDEN);}
+    require_permission(&state.pool,&identity,"presence.update").await.map_err(auth_status)?;
+    if !matches!(input.state.as_str(),"ONLINE"|"AWAY"|"BUSY"|"WAITING"|"BLOCKED"){return Err(StatusCode::BAD_REQUEST);}
+    let mut tx=state.pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let changed=sqlx::query("UPDATE room_memberships SET presence_state=$1,last_seen_at=NOW() WHERE room_id=$2 AND principal_id=$3 AND session_id=$4 AND status='ACTIVE'")
+      .bind(&input.state).bind(room_id).bind(identity.principal_id).bind(identity.session_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if changed.rows_affected()!=1{return Err(StatusCode::FORBIDDEN);}
+    sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'PRESENCE_CHANGED',$4)")
+      .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(room_id).bind(serde_json::json!({"room_id":room_id,"principal_id":identity.principal_id,"participant_id":identity.participant_id,"state":input.state}))
+      .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn team_room_me(
@@ -308,7 +328,7 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(logout))
         .route("/team-room/heartbeat", post(heartbeat))
-        .route("/team-room/{room_id}/presence", get(room_presence))
+        .route("/team-room/{room_id}/presence", get(room_presence).put(update_presence))
         .route("/team-room/me", get(team_room_me))
         .route("/team-room/{room_id}/join", post(join_room))
         .route("/team-room/tasks", post(create_task))
