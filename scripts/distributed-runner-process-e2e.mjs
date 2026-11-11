@@ -176,6 +176,7 @@ try{
     staleResults[key]="REJECTED";
   }
 
+  mustRun(replacement,replacementDir,"checkpoint","recovered checkpoint accepted by PostgreSQL");
   mustRun(replacement,replacementDir,"complete","Runner B completed after recovery");
   const finalResponse=await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+replacement.token}});
   assert.equal(finalResponse.status,200);
@@ -215,6 +216,7 @@ try{
     stale_a_checkpoint:staleResults.checkpoint,
     stale_a_complete:staleResults.complete,
     stale_a_release:staleResults.release,
+    runner_b_checkpoint:"ACCEPTED",
     runner_b_complete:"ACCEPTED",
     final_task_status:finalTask.status,
     distinct_runner_sessions:owner.sessionId!==replacement.sessionId,
