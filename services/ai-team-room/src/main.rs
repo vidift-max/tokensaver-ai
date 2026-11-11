@@ -101,7 +101,12 @@ async fn join_room(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<ai_team_room_service::AdmissionResult>, StatusCode> {
     let identity = authenticate_session(&state.pool, &headers).await.map_err(auth_status)?;
-    if identity.room_id != room_id { return Err(StatusCode::FORBIDDEN); }
+    if identity.room_id != room_id {
+        let _ = sqlx::query("INSERT INTO security_audit_events (security_event_id, tenant_id, room_id, principal_id, action, outcome, reason_code, metadata) VALUES ($1,$2,$3,$4,'authorization.room_scope_denied','DENIED','session_room_mismatch',$5)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id).bind(identity.principal_id)
+            .bind(serde_json::json!({"requested_room_id": room_id})).execute(&state.pool).await;
+        return Err(StatusCode::FORBIDDEN);
+    }
     require_permission(&state.pool, &identity, "room.join").await.map_err(auth_status)?;
     admit_authenticated_participant(
         &state.pool, room_id, identity.participant_id, identity.principal_id, identity.session_id,
