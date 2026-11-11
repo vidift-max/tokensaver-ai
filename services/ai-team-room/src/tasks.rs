@@ -315,6 +315,16 @@ mod distributed_lease_tests {
         assert_eq!(duplicate.checkpoint["progress"],41,"idempotent retry must not overwrite canonical task state");
         let looked_up=get_task_by_mission(&pool,&identities[0],mission_id).await.unwrap();
         assert_eq!(looked_up.task_id,task.task_id);
+        assert!(matches!(get_task_by_mission(&pool,&identities[0],Uuid::new_v4()).await,Err(TaskError::NotFound)));
+
+        let concurrent_mission=Uuid::new_v4();
+        let (left,right)=tokio::join!(
+            create_task(&pool,&identities[0],CreateTask{mission_id:concurrent_mission,title:"concurrent idempotent create A".into(),checkpoint:serde_json::json!({})}),
+            create_task(&pool,&identities[0],CreateTask{mission_id:concurrent_mission,title:"concurrent idempotent create B".into(),checkpoint:serde_json::json!({})})
+        );
+        let left=left.unwrap();
+        let right=right.unwrap();
+        assert_eq!(left.task_id,right.task_id,"concurrent creates must return the same canonical task");
         let pool=Arc::new(pool);
         let mut attempts=Vec::new();
         for identity in identities.iter().cloned() {
@@ -374,6 +384,8 @@ mod distributed_lease_tests {
 
         let stale=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"corrupt":true})).await;
         assert!(matches!(stale,Err(TaskError::Fenced)));
+        let stale_complete=complete_task(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"stale_complete":true})).await;
+        assert!(matches!(stale_complete,Err(TaskError::Fenced)),"a previous owner must not complete after takeover");
         let future=write_checkpoint(&pool,&replacement,task.task_id,99,serde_json::json!({"future":true})).await;
         assert!(matches!(future,Err(TaskError::Fenced)));
 
