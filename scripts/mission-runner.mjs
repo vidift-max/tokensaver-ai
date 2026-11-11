@@ -74,7 +74,7 @@ function createCheckpoint(m, description) {
 function usage() {
   console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  list\n  register-next <id> <number> <title>\n  switch <mission_id>\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  resolve-blockers\n  set-task <task>\n  record-file <path>\n  record-commit <sha>\n  record-test <result>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  submit-review <result>\n  approve\n  reject <reason>\n  cancel <reason>\n  complete <result> (direct close; use submit-review for review gate)\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered (disabled until verified provider dispatch exists)");
 }
-function main(args) {
+async function main(args) {
   const [cmd, ...a] = args;
   if (!cmd || cmd === "help" || cmd === "--help") return usage();
   const release = lock();
@@ -315,4 +315,4 @@ function main(args) {
     throw new Error("unknown command: " + cmd);
   } finally { release(); }
 }
-try { main(process.argv.slice(2)); } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
+main(process.argv.slice(2)).catch(error => fail(error instanceof Error ? error.message : String(error)));
