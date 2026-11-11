@@ -119,6 +119,7 @@ jobs:
         run: |
           set -euo pipefail
           STAGE="admin-login"
+          STAGE="admin-login"
           ADMIN_TOKEN="$(curl --fail --silent --show-error \
             -d 'client_id=admin-cli' -d 'username=ci-admin' \
             -d 'password=ci-only-bootstrap-password' -d 'grant_type=password' \
@@ -231,6 +232,7 @@ jobs:
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/service-account-user" | jq -r .id)"
           test -n "$SERVICE_ACCOUNT_SUB" && test "$SERVICE_ACCOUNT_SUB" != "null"
 
+          STAGE="client-credentials-token"
           TOKEN_ENDPOINT="$ISSUER/protocol/openid-connect/token"
           TOKEN_RESPONSE="$(curl --fail --silent --show-error \
             -u "team-room-ci:$CLIENT_SECRET" -d 'grant_type=client_credentials' "$TOKEN_ENDPOINT")"
