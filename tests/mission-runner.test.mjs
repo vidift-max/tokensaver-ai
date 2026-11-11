@@ -174,7 +174,6 @@ test("recovery preserves checkpoint and handoff blocks the previous executor", t
  run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
  run(c,"set-task","implement feature"); run(c,"record-file","src/feature.rs");
  run(c,"record-commit","abc123"); run(c,"record-test","unit tests pending");
- run(c,"checkpoint","saved before disconnect");
  run(c,"disconnect","heartbeat timeout");
  assert.equal(run(c,"recover").status,0);
  assert.equal(run(c,"handoff-create","AI-B").status,0);
@@ -187,6 +186,7 @@ test("recovery preserves checkpoint and handoff blocks the previous executor", t
  const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-135"];
  assert.equal(m.status,"IN_PROGRESS");
  assert.equal(m.responsible_ai,"AI-B");
+ assert.equal(m.checkpoint.description,"automatic disconnect checkpoint");
  assert.equal(m.checkpoint.task_id,"implement feature");
  assert.deepEqual(m.checkpoint.files_changed,["src/feature.rs"]);
  assert.deepEqual(m.checkpoint.commits,["abc123"]);
