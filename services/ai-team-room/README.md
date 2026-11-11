@@ -191,6 +191,7 @@ The existing Axum service now exposes authenticated communication routes. They r
 - GET|POST /team-room/{room_id}/private/{other_principal_id}/messages — private conversation/history. Both principals must be active room members; only the two channel members can read/write; requires private_chat.
 - GET /team-room/{room_id}/participants — authorized participant metadata and connection/execution snapshot; requires room.read.
 - GET|PUT /team-room/{room_id}/presence — read or update own ONLINE|AWAY|BUSY|WAITING|BLOCKED presence; update requires presence.update. Stale heartbeat overrides visual state to DISCONNECTED; an active owned task is shown as EXECUTING.
+- POST /team-room/{room_id}/leave — authenticated leave, membership transition to LEFT and session revocation; requires room.join.
 - GET /team-room/{room_id}/tasks — existing distributed tasks; requires task.read. Creation continues through existing POST /team-room/tasks and task.write; ownership/fencing remains exclusively in the existing task service.
 - GET|POST /team-room/{room_id}/decisions — list/create decisions; create requires decision.propose, and participant/message references are checked against room/channel ACL.
 - GET|POST /team-room/{room_id}/attachments — list/create metadata references; requires attachment.read / attachment.upload; private references are filtered by channel membership.
