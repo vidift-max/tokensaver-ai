@@ -30,7 +30,7 @@ No messaging API exists. WebSocket is deferred until identity, authorization, me
 
 The schema distinguishes `participant_id`, `principal_id`, and `session_id`. A participant registration is metadata and cannot authenticate. Admission verifies that the participant maps to an enabled AI principal and that a non-revoked, unexpired room-scoped session exists for that same principal. Workload identity verification and secure session issuance are not yet implemented; only trusted internal callers may invoke the admission primitive.
 
-A future `workload_execution_id` must be a separate entity bound to principal + session + worker identity + fresh heartbeat. No execution state is exposed by this service yet.
+The `workload_executions` table now gives `execution_id` a separate persisted identity, with composite foreign keys binding it to the participant/principal/session tuple and worker subject, heartbeat, expiry and revocation fields. No trusted runtime adapter writes this table and no execution state is exposed by this service yet.
 
 ## Admission invariant
 
