@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
+use std::{collections::HashMap, sync::OnceLock, time::{Duration as StdDuration, Instant}};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -14,18 +16,85 @@ pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: String,
+    pub require_discovery: bool,
+    pub expected_jwks_url: Option<String>,
 }
 
 impl OidcConfig {
     pub fn from_env() -> Result<Self, String> {
         let issuer = std::env::var("OIDC_ISSUER").map_err(|_| "OIDC_ISSUER is required")?;
         let audience = std::env::var("OIDC_AUDIENCE").map_err(|_| "OIDC_AUDIENCE is required")?;
-        let jwks_url = std::env::var("OIDC_JWKS_URL").map_err(|_| "OIDC_JWKS_URL is required")?;
-        if !issuer.starts_with("https://") || !jwks_url.starts_with("https://") {
-            return Err("OIDC issuer and JWKS URL must use HTTPS".into());
+        let expected_jwks_url = std::env::var("OIDC_JWKS_URL").ok();
+        if !issuer.starts_with("https://") || issuer.contains('#') || issuer.contains('?')
+            || audience.trim().is_empty() {
+            return Err("OIDC issuer must be an exact HTTPS issuer and audience must be non-empty".into());
         }
-        Ok(Self { issuer, audience, jwks_url })
+        if expected_jwks_url.as_ref().is_some_and(|url| !url.starts_with("https://")) {
+            return Err("OIDC_JWKS_URL pin must use HTTPS".into());
+        }
+        Ok(Self {
+            issuer: issuer.trim_end_matches('/').to_string(),
+            audience,
+            jwks_url: String::new(),
+            require_discovery: true,
+            expected_jwks_url,
+        })
     }
+}
+
+type JsonCache = HashMap<String, (Instant, Value)>;
+static OIDC_CACHE: OnceLock<Mutex<JsonCache>> = OnceLock::new();
+
+async fn fetch_cached_json(url: &str, force_refresh: bool) -> Result<Value, AuthError> {
+    let cache = OIDC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if !force_refresh {
+        if let Some((created, value)) = cache.lock().await.get(url).cloned() {
+            if created.elapsed() < StdDuration::from_secs(300) {
+                return Ok(value);
+            }
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| AuthError::ProviderUnavailable)?;
+    let response = client.get(url).header(reqwest::header::ACCEPT, "application/json")
+        .send().await.map_err(|_| AuthError::ProviderUnavailable)?;
+    if !response.status().is_success()
+        || response.content_length().is_some_and(|size| size > 1_048_576) {
+        return Err(AuthError::ProviderUnavailable);
+    }
+    let bytes = response.bytes().await.map_err(|_| AuthError::ProviderUnavailable)?;
+    if bytes.len() > 1_048_576 { return Err(AuthError::ProviderUnavailable); }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| AuthError::ProviderUnavailable)?;
+    cache.lock().await.insert(url.to_string(), (Instant::now(), value.clone()));
+    Ok(value)
+}
+
+async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<String, AuthError> {
+    if !config.require_discovery {
+        if !config.jwks_url.starts_with("http://127.0.0.1")
+            && !config.jwks_url.starts_with("https://") {
+            return Err(AuthError::ProviderUnavailable);
+        }
+        return Ok(config.jwks_url.clone());
+    }
+    let discovery_url = format!("{}/.well-known/openid-configuration", config.issuer);
+    let metadata = fetch_cached_json(&discovery_url, force_refresh).await?;
+    if metadata.get("issuer").and_then(Value::as_str) != Some(config.issuer.as_str()) {
+        return Err(AuthError::ProviderUnavailable);
+    }
+    let algorithms = metadata.get("id_token_signing_alg_values_supported")
+        .and_then(Value::as_array);
+    if algorithms.is_some_and(|values| !values.iter().any(|v| v.as_str() == Some("RS256"))) {
+        return Err(AuthError::ProviderUnavailable);
+    }
+    let jwks_url = metadata.get("jwks_uri").and_then(Value::as_str)
+        .filter(|url| url.starts_with("https://")).ok_or(AuthError::ProviderUnavailable)?;
+    if config.expected_jwks_url.as_deref().is_some_and(|expected| expected != jwks_url) {
+        return Err(AuthError::ProviderUnavailable);
+    }
+    Ok(jwks_url.to_string())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +121,7 @@ struct OidcClaims {
     exp: usize,
     #[serde(default)]
     nbf: Option<usize>,
+    iat: usize,
     jti: String,
     #[serde(default)]
     scope: String,
@@ -97,26 +167,32 @@ struct SessionIdentity {
 }
 
 async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaims, AuthError> {
+    if token.len() > 16_384 { return Err(AuthError::Unauthorized); }
     let header = decode_header(token).map_err(|_| AuthError::Unauthorized)?;
-    if header.alg != Algorithm::RS256 {
-        return Err(AuthError::Unauthorized);
-    }
-    let kid = header.kid.ok_or(AuthError::Unauthorized)?;
+    if header.alg != Algorithm::RS256 { return Err(AuthError::Unauthorized); }
+    let kid = header.kid.filter(|value| !value.trim().is_empty()).ok_or(AuthError::Unauthorized)?;
 
-    // Fetch the configured issuer's JWKS over TLS. The issuer/JWKS URL are deployment
-    // trust configuration, never values taken from an untrusted token.
-    let response = reqwest::Client::new()
-        .get(&config.jwks_url)
-        .send().await.map_err(|_| AuthError::ProviderUnavailable)?;
-    if !response.status().is_success() {
-        return Err(AuthError::ProviderUnavailable);
+    // Discovery is anchored to the configured issuer; neither iss nor jwks_uri is
+    // accepted from the untrusted token. Unknown kid triggers one bounded refresh.
+    let jwks_url = resolve_jwks_url(config, false).await?;
+    let mut jwks = fetch_cached_json(&jwks_url, false).await?;
+    let has_kid = |value: &Value| value.get("keys").and_then(Value::as_array).is_some_and(|keys| {
+        keys.iter().any(|key| key.get("kid").and_then(Value::as_str) == Some(kid.as_str())
+            && key.get("kty").and_then(Value::as_str) == Some("RSA")
+            && key.get("alg").and_then(Value::as_str) == Some("RS256")
+            && key.get("use").and_then(Value::as_str).map(|v| v == "sig").unwrap_or(true)
+            && key.get("n").and_then(Value::as_str).is_some()
+            && key.get("e").and_then(Value::as_str).is_some())
+    });
+    if !has_kid(&jwks) {
+        let refreshed_url = resolve_jwks_url(config, true).await?;
+        jwks = fetch_cached_json(&refreshed_url, true).await?;
     }
-    let jwks: Value = response.json().await.map_err(|_| AuthError::ProviderUnavailable)?;
     let keys = jwks.get("keys").and_then(Value::as_array).ok_or(AuthError::ProviderUnavailable)?;
     let jwk = keys.iter().find(|key| {
         key.get("kid").and_then(Value::as_str) == Some(kid.as_str())
             && key.get("kty").and_then(Value::as_str) == Some("RSA")
-            && key.get("alg").and_then(Value::as_str).map(|v| v == "RS256").unwrap_or(true)
+            && key.get("alg").and_then(Value::as_str) == Some("RS256")
             && key.get("use").and_then(Value::as_str).map(|v| v == "sig").unwrap_or(true)
     }).ok_or(AuthError::Unauthorized)?;
     let n = jwk.get("n").and_then(Value::as_str).ok_or(AuthError::Unauthorized)?;
@@ -131,12 +207,11 @@ async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaim
     validation.leeway = 0;
     let claims = decode::<OidcClaims>(token, &key, &validation)
         .map_err(|_| AuthError::Unauthorized)?.claims;
-
-    if claims.iss != config.issuer
-        || claims.sub.trim().is_empty()
-        || claims.jti.trim().is_empty()
-        || !claims.scope.split_ascii_whitespace().any(|s| s == "team_room:connect")
-    {
+    let now = Utc::now().timestamp() as usize;
+    if claims.iss != config.issuer || claims.sub.trim().is_empty() || claims.sub.len() > 512
+        || claims.jti.trim().is_empty() || claims.jti.len() > 256
+        || claims.iat > now.saturating_add(60) || claims.iat >= claims.exp
+        || !claims.scope.split_ascii_whitespace().any(|s| s == "team_room:connect") {
         return Err(AuthError::Unauthorized);
     }
     Ok(claims)
@@ -177,14 +252,6 @@ pub async fn exchange_workload_token(
            ORDER BY p.created_at ASC LIMIT 1 FOR UPDATE OF pr, p"#
     ).bind(&claims.iss).bind(&claims.sub).bind(room_id)
         .fetch_optional(&mut *tx).await?.ok_or(AuthError::IdentityUnavailable)?;
-
-    let allowed: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(SELECT 1 FROM principal_permissions
-           WHERE tenant_id = $1 AND principal_id = $2 AND permission = 'room.join'
-             AND revoked_at IS NULL AND (room_id IS NULL OR room_id = $3))"#
-    ).bind(registered.tenant_id).bind(registered.principal_id).bind(room_id)
-        .fetch_one(&mut *tx).await?;
-    if !allowed { return Err(AuthError::Forbidden); }
 
     let previous: Option<Uuid> = sqlx::query_scalar(
         "SELECT session_id FROM sessions WHERE room_id = $1 AND principal_id = $2 AND status = 'ACTIVE' AND revoked_at IS NULL FOR UPDATE"
