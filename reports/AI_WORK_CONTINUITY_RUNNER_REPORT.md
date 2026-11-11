@@ -1195,3 +1195,66 @@ Uma implementação que preserve start/resume locais como fallback, ou permita b
 ## Próxima ação necessária
 
 Primeiro evoluir o contrato Team Room com identidade idempotente para task (chave estável tenant/room/mission_id e constraint correspondente) e leitura autenticada da task/lease. Em seguida integrar Runner fail-closed: start/resume devem adquirir lease antes de IN_PROGRESS; heartbeat deve renovar a task lease; checkpoint/complete/release devem enviar fencing; qualquer falha remota deve marcar LOST_AUTHORITY e bloquear novas escritas. Só depois implementar recovery worker e handoff staged, com testes PostgreSQL e subprocessos do Runner.
+
+
+---
+
+# MISSÃO — IDENTIDADE IDEMPOTENTE + RUNNER SUBORDINADO AO TEAM ROOM (2026-11-11)
+
+## Controle de HEAD e preservação de trabalho paralelo
+
+- Branch: `v2-saas-alpha`.
+- HEAD documental recebido/confirmado antes desta execução: `891a204e2b0aea9da46612626cf75eeec3009d60`.
+- HEAD inicial de código: `a360a3ea751c6dc5b32cb865201a81b4b2845ece`.
+- A auditoria do histórico encontrou alterações paralelas posteriores a `a360a3e`, incluindo correções de SQL/fencing, ajuste de FK para exclusão de tenant, eventos repetidos de lease/checkpoint e checkpoint local no timeout. Foram preservadas; nenhum reset, force push ou descarte foi feito.
+- A sequência desta execução criou os commits:
+  - `98cfe03ca05df887272dcdb36db2957dc885d9b7` — migration 0007 com índice único por tenant/room/mission e detecção explícita de duplicatas legadas.
+  - `6a8051b0fc29fcf845bfa5f115a27c20a7a01aa7` — criação idempotente e leitura por mission_id em tasks.rs.
+  - `7d4acef6c64c581c6d934437afcc203f1f166b50` — heartbeat de presença deixa de renovar task lease; GET autenticado por mission_id.
+  - `4ba33ad9ce2e9aadc8a9cbb2845bbf9043afdf26` — testes PostgreSQL adicionados para repetição/concor­rência idempotente, lookup ausente e complete com fencing antigo.
+  - `2df681a0af924152b672bd00c5d833ec78cd352d` — README atualizado com contrato de idempotência, lookup e separação heartbeat/lease.
+- O HEAD final desta atualização documental será o commit que acrescentar este relatório; deve ser consultado novamente após o commit. Não declarar CI verde sem workflow associado ao SHA exato.
+
+## Resultado por rodada
+
+| Rodada | Estado | Evidência / limitação |
+|---|---|---|
+| 1 Auditoria completa | IMPLEMENTADO / VALIDADO POR INSPEÇÃO | Branch, histórico, Runner, APIs, tasks, migration 0005, testes e CI consultados. Runner segue local; não foi encontrada integração distribuída. |
+| 2 Identidade idempotente | IMPLEMENTADO / NÃO TESTADO | Migration 0007 cria unique index `(tenant_id, room_id, mission_id)`; aborta explicitamente se detectar duplicatas legadas. `create_task` usa `ON CONFLICT` no índice para devolver a task canônica sem sobrescrever checkpoint/owner/fence. |
+| 3 GET task + ownership | IMPLEMENTADO / NÃO TESTADO | `GET /team-room/tasks/by-mission/{mission_id}`, autenticação de sessão e permissão `task.read`; resposta TaskLease inclui status, principal/participant/session/execution owner, lease expiry, fencing e checkpoint. É somente leitura e não concede ownership. |
+| 4 Acquire remoto obrigatório no Runner | PENDENTE | `mission-runner.mjs` ainda não autentica nem chama create/lookup/acquire. |
+| 5 Resume seguro | PENDENTE | Runner ainda confia em estado/checkpoint local; nenhuma reconciliação local/remota implementada. |
+| 6 Presence heartbeat separado de lease renewal | IMPLEMENTADO NO SERVIDOR / NÃO TESTADO | Removida a atualização implícita de `team_tasks.lease_expires_at` de `POST /team-room/heartbeat`. Renovação explícita continua em `/lease/renew`, exigindo fencing. Runner ainda não usa os endpoints. |
+| 7 Checkpoint + complete | SERVIDOR IMPLEMENTADO / RUNNER PENDENTE / TESTE NÃO EXECUTADO | Endpoints existentes exigem fencing e identidade autenticada. Foi acrescentado teste de rejeição de complete pelo owner antigo após takeover; ainda depende de CI PostgreSQL para execução. |
+| 8 Recovery worker | PENDENTE | Existe recuperação manual por endpoint; nenhum processo/daemon periódico separado foi criado. |
+| 9 Handoff + multiprocessos | PARCIAL / PENDENTE | O banco registra takeover/resumed; não há protocolo staged autenticado completo nem teste com dois processos Runner independentes. |
+| 10 Teste final + CI | PENDENTE / NÃO VALIDADO | Nenhum teste local foi executado nesta sessão. A CI do SHA final deve ser verificada após o commit do relatório. |
+
+## Detalhes técnicos implementados
+
+### Idempotência
+
+A migration `0007_idempotent_mission_task_identity.sql` cria índice único em `(tenant_id, room_id, mission_id)`. Antes do índice, um bloco SQL verifica duplicatas preexistentes e aborta com mensagem acionável; não escolhe nem apaga task automaticamente.
+
+A criação usa `INSERT ... ON CONFLICT (tenant_id,room_id,mission_id) DO UPDATE SET updated_at=team_tasks.updated_at RETURNING ...`. A operação fica protegida pelo índice único do PostgreSQL e retorna a linha canônica sob concorrência. O conflito não redefine título, checkpoint, status, owner, lease ou fencing.
+
+### Lookup
+
+A função `get_task_by_mission` limita leitura a `tenant_id` e `room_id` da identidade autenticada. O handler exige `task.read`. A leitura não chama acquire, renew ou qualquer mutação de ownership.
+
+### Heartbeat
+
+O endpoint de presença atualiza workload heartbeat, membership e workload identity. Não modifica mais task lease. `renew_lease` continua validando task row, principal, participant, session, execution, membership, workload identity, expiração e fencing token em transação PostgreSQL.
+
+## Lacunas e riscos remanescentes
+
+1. A migration 0007 ainda precisa ser aplicada no ambiente PostgreSQL de CI/produção; se existirem duplicatas legadas por tenant/room/mission, a migration falhará intencionalmente e exigirá reconciliação explícita.
+2. A rota GET e a criação idempotente ainda precisam ser exercitadas por testes HTTP autenticados, além dos testes de função PostgreSQL.
+3. O Runner ainda fabrica lease/owner local e continua aceitando start/resume/checkpoint/complete locais. Não é executor distribuído e não deve ser promovido a produção/autonomia.
+4. Não existe recovery worker autônomo, handoff staged completo, nem prova multi-processo real do Runner.
+5. O teste adicionado para duas criações concorrentes e fencing antigo ainda não foi executado nesta sessão.
+6. Nenhuma alegação de build/test/CI deve ser inferida dos commits anteriores. A validação exigida é do SHA final exato.
+
+## Decisão
+
+**EXECUÇÃO PARCIAL — NÃO CONCLUÍDA.** As rodadas 2 e 3 foram implementadas no Team Room, e a renovação implícita por presence heartbeat foi removida. A missão permanece NO-GO para execução distribuída porque as rodadas 4, 5, 8 e 9 estão pendentes e a rodada 10 ainda não foi validada. O critério definitivo Runner A/B não foi demonstrado.
