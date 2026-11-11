@@ -182,8 +182,8 @@ jobs:
         run: cargo build --manifest-path services/ai-team-room/Cargo.toml
       - name: Prove real Keycloak token through exchange, session, authorization and PostgreSQL admission
         env:
-          CLIENT_SECRET: \${{ steps.provision.outputs.client_secret }}
-          DATABASE_URL: \${{ env.DATABASE_URL }}
+          CLIENT_SECRET: ${{ steps.provision.outputs.client_secret }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
