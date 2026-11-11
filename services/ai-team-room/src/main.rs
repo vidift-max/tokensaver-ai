@@ -207,20 +207,20 @@ mod http_security_tests {
         let app = test_app();
         let mut last_status = StatusCode::OK;
         for _ in 0..11 {
-            let response = app.clone().oneshot(
-                axum::http::Request::builder().method("POST").uri("/auth/exchange")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"x"}"#)).unwrap()
-            ).await.unwrap();
+            let mut request = axum::http::Request::builder().method("POST").uri("/auth/exchange")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"x"}"#)).unwrap();
+            request.extensions_mut().insert(ConnectInfo("127.0.0.11:8080".parse().unwrap()));
+            let response = app.clone().oneshot(request).await.unwrap();
             last_status = response.status();
         }
         assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
 
-        let oversized = app.oneshot(
-            axum::http::Request::builder().method("POST").uri("/auth/exchange")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"{}"}}"#, "x".repeat(25_000)))).unwrap()
-        ).await.unwrap();
+        let mut oversized_request = axum::http::Request::builder().method("POST").uri("/auth/exchange")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"{}"}}"#, "x".repeat(25_000)))).unwrap();
+        oversized_request.extensions_mut().insert(ConnectInfo("127.0.0.12:8080".parse().unwrap()));
+        let oversized = app.oneshot(oversized_request).await.unwrap();
         assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
