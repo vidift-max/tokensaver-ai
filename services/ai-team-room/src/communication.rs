@@ -489,7 +489,8 @@ mod postgres_tests {
         let ticket_value=ticket_json["ticket"].as_str().unwrap();
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
-        let server_pool=pool.clone();\n        let server=tokio::spawn(async move{axum::serve(listener,router(server_pool)).await.unwrap();});
+        let server_pool=pool.clone();
+        let server=tokio::spawn(async move{axum::serve(listener,router(server_pool)).await.unwrap();});
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let ws_url=format!("ws://{address}/team-room/{room}/ws?ticket={ticket_value}");
         let mut ws_request=ws_url.into_client_request().unwrap();
