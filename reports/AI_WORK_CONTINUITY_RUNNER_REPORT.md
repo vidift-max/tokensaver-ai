@@ -295,7 +295,7 @@ No GitHub token-expiration or insufficient-permission error was returned during 
 | Windows mission tests | PENDENTE | CI run 43041674975 not complete at report creation |
 | Windows BAT runtime | NÃO TESTADO | No BAT invocation evidence |
 | Full end-to-end continuity | PARCIAL | Local CLI scenario suite authored; real BAT/AI dispatch E2E absent |
-| Secret-free BAT and runner source | VALIDADO DOCUMENTALMENTE | Source inspection; automated secret scan not run |
+| Secret-free BAT and runner source | PARCIAL | Source inspection found no embedded credentials; automated secret scan not run |
 
 ## 25. Decisão final
 
@@ -306,3 +306,39 @@ No GitHub token-expiration or insufficient-permission error was returned during 
 The 10 work rounds were addressed in sequence, but round 9/10 acceptance remains conditional on CI completion and a real Windows BAT execution. The report does not convert pending tests into passes.
 
 Next action: inspect the final CI run for the implementation HEAD, execute the BAT on Windows, close test gaps, and only then reassess the acceptance decision.
+
+
+---
+
+## Addendum — Windows smoke evidence and latest branch state (2026-11-11)
+
+This addendum supersedes earlier statements that the Windows BAT invocation had no execution evidence.
+
+### Additional commits after the initial report body
+- `cb499919cd9b27b95e4641c95d74fd18e7457f63` — added a Windows CI smoke step that invokes the actual root BAT through CMD.
+- `7b0a052eefcc72475c6b0dd13e6955eb2b0970dc` — corrected `started_at` so it remains null until mission execution starts; added a test assertion for this timestamp behavior.
+
+### Windows BAT execution evidence
+Workflow run `43041936731`, Windows job `130595783808`:
+- `Smoke-test CONTINUE_MISSION.bat on Windows`: **SUCCESS**, start 2026-11-11T14:48:20Z, completion 2026-11-11T14:48:21Z.
+- The smoke step invoked `help`, `init`, `status`, `assign`, `acknowledge`, `start`, and `checkpoint`.
+- The overall workflow was later **CANCELLED** by a subsequent push while the next cargo step was starting. Therefore this is valid evidence for the BAT smoke step only, not a passing Windows foundation job or a full CI pass.
+
+### Latest code validation
+- Latest code commit: `7b0a052eefcc72475c6b0dd13e6955eb2b0970dc`.
+- Workflow run `43042035568` targets that code commit and was **IN_PROGRESS** at the time of this addendum.
+- Linux mission test step `npm run test:missions`: pending.
+- Windows mission test step `npm run test:missions`: pending.
+- Full Linux/Windows/service/Keycloak workflow: pending.
+- Do not use cancelled runs as evidence of a full CI pass.
+
+### Updated classifications
+| Item | Classification | Evidence |
+|---|---|---|
+| Windows BAT launcher invocation | TESTADO | Windows job 130595783808, smoke step SUCCESS |
+| Full Windows foundation job | PENDENTE | Workflow cancelled after BAT smoke step |
+| Mission-runner automated suite on latest code | PENDENTE | Run 43042035568 not complete |
+| Latest full CI | PENDENTE | Run 43042035568 not complete |
+| External AI handoff and prompt dispatch | PENDENTE | No provider message integration |
+
+**Updated decision remains NO-GO for full mission acceptance and automatic AI continuity.** The local runner and BAT are implemented, and the BAT smoke step passed on Windows. Full test-suite acceptance and all remote orchestration requirements remain open.
