@@ -352,14 +352,40 @@ async fn create_attachment_ref(State(pool):State<PgPool>,Path(room_id):Path<Uuid
     Ok((StatusCode::CREATED,Json(row)))
 }
 
+
+async fn list_tasks(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,headers:HeaderMap)->Result<Json<Vec<tasks::TaskLease>>,StatusCode>{
+    let who=identity(&pool,&headers).await?; require_room_member(&pool,&who,room_id).await?;
+    require_permission(&pool,&who,"task.read").await.map_err(auth_status)?;
+    let rows=sqlx::query_as::<_,tasks::TaskLease>("SELECT task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE tenant_id=$1 AND room_id=$2 ORDER BY updated_at DESC LIMIT 100")
+        .bind(who.tenant_id).bind(room_id).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(rows))
+}
+async fn list_decisions(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,headers:HeaderMap)->Result<Json<Vec<DecisionRow>>,StatusCode>{
+    let who=identity(&pool,&headers).await?; require_room_member(&pool,&who,room_id).await?;
+    require_permission(&pool,&who,"room.read").await.map_err(auth_status)?;
+    let rows=sqlx::query_as::<_,DecisionRow>("SELECT decision_id,author_principal_id,mission_id,title,decision,participants,reference_message_id,created_at FROM team_room_decisions WHERE tenant_id=$1 AND room_id=$2 ORDER BY created_at DESC LIMIT 100")
+        .bind(who.tenant_id).bind(room_id).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(rows))
+}
+async fn list_attachments(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,headers:HeaderMap)->Result<Json<Vec<AttachmentRow>>,StatusCode>{
+    let who=identity(&pool,&headers).await?; require_room_member(&pool,&who,room_id).await?;
+    require_permission(&pool,&who,"attachment.read").await.map_err(auth_status)?;
+    let rows=sqlx::query_as::<_,AttachmentRow>("SELECT a.attachment_id,a.channel_id,a.message_id,a.task_id,a.file_name,a.storage_ref,a.content_type,a.byte_len,a.sha256,a.created_at FROM team_room_attachment_refs a JOIN team_room_channels c ON c.channel_id=a.channel_id WHERE a.tenant_id=$1 AND a.room_id=$2 AND (c.channel_type='GENERAL' OR EXISTS(SELECT 1 FROM team_room_channel_members m WHERE m.channel_id=c.channel_id AND m.principal_id=$3)) ORDER BY a.created_at DESC LIMIT 100")
+        .bind(who.tenant_id).bind(room_id).bind(who.principal_id).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(rows))
+}
+
 pub fn router(pool:PgPool)->Router{
     Router::new()
         .route("/team-room/{room_id}/messages",get(history).post(send_general))
         .route("/team-room/{room_id}/private/{other}/messages",get(private_history).post(send_private))
         .route("/team-room/{room_id}/participants",get(participants))
+        .route("/team-room/{room_id}/tasks",get(list_tasks))
+        .route("/team-room/{room_id}/decisions",get(list_decisions).post(create_decision))
+        .route("/team-room/{room_id}/attachments",get(list_attachments).post(create_attachment_ref))
         .route("/team-room/{room_id}/ws-ticket",post(issue_ws_ticket))
         .route("/team-room/{room_id}/ws",get(websocket))
-        .route("/team-room/{room_id}/decisions",post(create_decision))
-        .route("/team-room/{room_id}/attachments",post(create_attachment_ref))
+        
+        .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(pool)
 }
