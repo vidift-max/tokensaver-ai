@@ -1583,3 +1583,11 @@ The previous report records a successful PostgreSQL distributed lab for code SHA
 ## Final decision
 
 **IMPLEMENTAÇÃO PARCIAL — NÃO VALIDADA NO SHA FINAL.** The permanent PostgreSQL/Team Room/process lab and bounded recovery worker are present and strengthened. Historical evidence proves the earlier SHA, not this updated tree. Staged authenticated handoff and room-wide scheduled recovery remain incomplete. Do not mark this continuation successful until the workflow and artifact pass on exactly `d777812ad65f2b2b10a445b1c531787f6a5b87c6`.
+
+
+### SHA reconciliation after the continuation report
+
+A final test-message wording correction was committed after the first continuation report:
+- `02de2d45c177a62910307f86ad00e1cc8b74fa18` — clarifies that the deterministic Runner A/B flow asserts one canonical task; it does not claim that those two process starts are simultaneous.
+- Therefore the latest **code/test SHA** for this continuation is `02de2d45c177a62910307f86ad00e1cc8b74fa18`. The earlier `d777812ad65f2b2b10a445b1c531787f6a5b87c6` is its immediate predecessor.
+- This report update is documentation-only. Neither the code/test SHA above nor the resulting report-only branch HEAD is marked CI-validated without checks/run evidence tied to that exact SHA.
