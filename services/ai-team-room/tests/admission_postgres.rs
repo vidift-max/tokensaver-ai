@@ -85,14 +85,30 @@ async fn admission_enforces_15_exit_reentry_reconnect_and_duplicate_session() {
     let admitted = admit_authenticated_participant(&f.pool, f.room_id, p16, principal16, session16).await.unwrap();
     assert_eq!(admitted.active_ai_count, 15);
 
+    // Re-entry of a previously LEFT principal must still respect capacity.
+    let (p1, principal1, _) = f.participants[0];
+    let reentry_session = Uuid::new_v4();
+    insert_session(&f.pool, f.tenant_id, f.room_id, principal1, reentry_session).await;
+    assert!(matches!(
+        admit_authenticated_participant(&f.pool, f.room_id, p1, principal1, reentry_session).await,
+        Err(RoomServiceError::RoomCapacityReached)
+    ));
+
+    // Once another participant leaves, the prior member can re-enter.
+    let (_, leaving_principal2, _) = f.participants[1];
+    leave_participant(&f.pool, f.room_id, leaving_principal2).await.unwrap();
+    let reentered = admit_authenticated_participant(&f.pool, f.room_id, p1, principal1, reentry_session).await.unwrap();
+    assert!(reentered.reconnected);
+    assert_eq!(reentered.active_ai_count, 15);
+
     // A fresh room-scoped session for an already-active principal reconnects without
     // allocating another membership/seat and revokes the prior session.
-    let (p2, principal2, old_session) = f.participants[1];
+    let (p3, principal3, old_session) = f.participants[2];
     let new_session = Uuid::new_v4();
-    insert_session(&f.pool, f.tenant_id, f.room_id, principal2, new_session).await;
+    insert_session(&f.pool, f.tenant_id, f.room_id, principal3, new_session).await;
     let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_memberships WHERE room_id = $1 AND status = 'ACTIVE'")
         .bind(f.room_id).fetch_one(&f.pool).await.unwrap();
-    let reconnected = admit_authenticated_participant(&f.pool, f.room_id, p2, principal2, new_session).await.unwrap();
+    let reconnected = admit_authenticated_participant(&f.pool, f.room_id, p3, principal3, new_session).await.unwrap();
     let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_memberships WHERE room_id = $1 AND status = 'ACTIVE'")
         .bind(f.room_id).fetch_one(&f.pool).await.unwrap();
     assert!(reconnected.reconnected);
