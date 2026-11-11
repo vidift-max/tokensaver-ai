@@ -807,3 +807,11 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - First final-tree CI run `43050666142` compiled the Team Room service successfully, then failed the new PostgreSQL integration test because the lease-owner validation SELECT was missing the closing parenthesis for its outer predicate. Five existing service tests passed; the new distributed lease E2E test failed at renewal validation with PostgreSQL SQLSTATE `42601`.
 - Corrected the SQL predicate and removed the unused local binding in commit `07d144a119b0c2aa202a8ae5b5fec41de4f0a54b`.
 - The failed run is recorded as a real failure, not a pass. The corrected final CI run is required before marking the distributed lease E2E as `TESTADO`.
+
+
+### Follow-up compile correction
+
+- CI run `43051089646` found a Rust name-resolution error after the SQL syntax fix: the checkpoint validator's local binding had been renamed while a stale reference remained; the renewal binding was also unused.
+- Corrected both bindings in commits `897237dd4925961ea7a94712a3030957cc8e2dd3` and `60cb89231b214a0a7068b5fca86742cceffce988`.
+- The corrected source now keeps the renewal validation result intentionally unused and binds the checkpoint validation result consistently. CI run `43051381527` is queued for the current tree.
+- Neither failed run is counted as a passing test. PostgreSQL execution and the 10-way concurrency test remain unvalidated until this run completes.
