@@ -588,3 +588,197 @@ Implement a shared Team Room task execution domain: PostgreSQL task ownership an
 **NO-GO** for production autonomous multi-AI continuity, automatic reassignment, or external prompt delivery. Do not claim `AI_EXECUTING`, `PROMPT_DELIVERED`, or complete end-to-end continuity until the corresponding authenticated integration and CI evidence exist.
 
 The current report records all ten rounds and preserves the distinction between implementation, test evidence and remaining limitations. A final CI run on the post-report HEAD remains required.
+
+
+# DISTRIBUTED OWNERSHIP AND FENCING
+
+**Mission date:** 2026-11-11  
+**Branch:** `v2-saas-alpha`  
+**Audit starting HEAD:** `15550675ac93e463e13b9e3cbc63e04ddc91f75a`  
+**Implementation HEAD before this report update:** `096442e907d84439a8ed338818bfb8f2e6d0d820`  
+**Initial CI evidence:** run `43045465661`, conclusion `SUCCESS`, for the audit starting HEAD.  
+**Scope:** ten consecutive rounds on the existing AI Team Room service and PostgreSQL migration chain. No parallel task system was introduced; the local Runner and BAT remain local orchestration only.
+
+## RODADA 1 — Audit of existing ownership and persistence
+
+- **Objective:** identify existing task/session/membership/heartbeat/recovery/handoff/lock/lease structures before changing architecture.
+- **Work:** verified branch and HEAD; read Runner, root BAT, AI Team Room service, auth/session code, migrations 0001–0004, service README, CI workflow and prior continuity report.
+- **Existing/reusable:** `sessions`, `room_memberships`, `workload_executions`, `workload_identities`, `principal_permissions`, authenticated session resolution, heartbeat transaction, PostgreSQL pool/migrations, audit and outbox patterns.
+- **Missing:** no shared task entity, owner binding, lease record, fencing token, shared checkpoint, recovery/handoff tables or distributed executor guard existed in migrations 0001–0004. Existing Runner locks only its local JSON state.
+- **CI:** run `43045465661` was completed SUCCESS for starting HEAD. It covered the prior Linux/Windows foundation, Team Room PostgreSQL integration, Keycloak/OIDC and BAT smoke. It is not evidence for the new changes in this mission.
+- **Result:** reuse decision confirmed; migration 0005 and task API are additive.
+- **Classification:** audit `VALIDADO`; distributed ownership at start `PENDENTE`.
+
+## RODADA 2 — Persistent ownership model
+
+- **Objective:** persist a single task owner with mission, task, participant, session and workload identity.
+- **Work:** migration `0005_distributed_task_ownership.sql` adds `team_tasks`, binding task to tenant/room/mission, creator, owner principal, participant, session and execution, plus status, lease timestamps, checkpoint JSON/version and fencing token. Foreign keys reuse the existing principal/participant/session identity tables.
+- **Files:** `services/ai-team-room/migrations/0005_distributed_task_ownership.sql`.
+- **Result:** database ownership model implemented; task row is the serialization point.
+- **Limitations:** mission_id is a UUID supplied by the caller; there is no foreign key to the local Runner's JSON mission store, intentionally avoiding a cross-system false FK.
+- **Classification:** `IMPLEMENTADO`; database application awaits CI.
+
+## RODADA 3 — Distributed lease
+
+- **Objective:** acquire, renew, expire and release a PostgreSQL lease using database time.
+- **Work:** added transactional `acquire_lease`, `renew_lease`, `release_lease`, and `recover_expired` operations. Acquire locks the task row with `FOR UPDATE`, rechecks active authenticated session, workload execution and room membership, and issues a 15–300 second lease using PostgreSQL `NOW()`. Renew/release require the current authenticated owner binding and current fencing token. Recovery changes expired ownership to `RECOVERY_REQUIRED`.
+- **Files:** `services/ai-team-room/src/tasks.rs`, `services/ai-team-room/src/main.rs`, migration 0005.
+- **Endpoints:** create task; acquire, renew and release lease; recover expired room tasks.
+- **Classification:** `IMPLEMENTADO`; PostgreSQL runtime test `PENDENTE` until the new CI run.
+
+## RODADA 4 — Monotonic fencing
+
+- **Objective:** reject stale and future fencing tokens and make rollback impossible at the database boundary.
+- **Work:** each successful acquire increments the task fencing token exactly once. Checkpoint and completion mutations lock the task and compare exact task, principal, participant, session, execution, status, unexpired lease and token. Migration adds a PostgreSQL trigger to reject token rollback/jumps, require a token increment when ownership changes to a new non-null executor, keep checkpoint versions monotonic and make terminal tasks immutable.
+- **Files:** migration 0005; `services/ai-team-room/src/tasks.rs`.
+- **Classification:** `IMPLEMENTADO`; DB-trigger assertions are authored but await CI.
+
+## RODADA 5 — Concurrency and atomicity
+
+- **Objective:** prove that ten contenders cannot simultaneously own the same task.
+- **Work:** added a PostgreSQL integration test that creates ten distinct authenticated executor fixtures, starts ten concurrent lease acquisitions for one task, and asserts exactly one winner. The same scenario renews the lease, expires it using database time, performs recovery and reassignment, rejects the old executor, rejects a future token, rejects a database token rollback, and prevents post-completion mutation.
+- **Files:** `services/ai-team-room/src/tasks.rs`.
+- **Test:** `ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection`.
+- **Classification:** test `IMPLEMENTADO`; execution result `PENDENTE`.
+
+## RODADA 6 — Distributed handoff
+
+- **Objective:** atomically transfer ownership and preserve the checkpoint/context.
+- **Work:** a successful acquisition after an existing owner or recovery state creates a durable `task_handoffs` record in the same transaction as the new owner and incremented fencing token. The handoff snapshot includes mission_id, task_id and checkpoint; the new authenticated owner is recorded as recipient. Handoff and lease event writes commit atomically with ownership.
+- **Files:** migration 0005; `services/ai-team-room/src/tasks.rs`.
+- **Result:** atomic takeover/handoff-resume record implemented.
+- **Limitations:** current API models acquisition as accepted/resumed takeover and stores status `RESUMED`; it does not expose a separate offer/accept negotiation state machine or a target-addressed `HANDOFF_PENDING` queue. No dual-owner window exists because the task row is locked and updated in one transaction.
+- **Classification:** atomic takeover `IMPLEMENTADO`; explicit staged handoff workflow `PARCIAL`.
+
+## RODADA 7 — Replacement eligibility
+
+- **Objective:** expose only real, authorized and currently available Team Room identities as reassignment candidates.
+- **Work:** added candidate query requiring active membership, active principal/participant/workload identity, unrevoked and unexpired session/execution, heartbeat within 90 seconds, and explicit `task.transition` permission in the room. Candidates with three or more active leases are excluded. Endpoint is permission-gated by `task.assign`.
+- **Files:** `services/ai-team-room/src/tasks.rs`, `services/ai-team-room/src/main.rs`.
+- **Result:** eligibility-filtered candidate discovery implemented.
+- **Limitations:** no automatic selection or dispatch; a selected candidate must authenticate and acquire the lease itself. The capacity threshold is currently a fixed limit of three active leases.
+- **Classification:** candidate discovery `IMPLEMENTADO`; automatic selection `PENDENTE).
+
+## RODADA 8 — Recovery and reconnect integration
+
+- **Objective:** prevent late heartbeat from resurrecting an expired lease and connect heartbeat to live leases.
+- **Work:** authenticated Team Room heartbeat now renews only task leases whose current expiry is still in the future, using PostgreSQL time. Expired leases cannot be revived by a late heartbeat. Explicit recovery endpoint sweeps expired task leases to `RECOVERY_REQUIRED`; a new acquire issues a new fencing token. A short outage can reconnect and renew while the lease remains valid.
+- **Files:** `services/ai-team-room/src/main.rs`, `services/ai-team-room/src/tasks.rs`.
+- **Classification:** heartbeat-to-lease renewal and explicit recovery `IMPLEMENTADO`; automatic background recovery worker `PENDENTE).
+
+## RODADA 9 — PostgreSQL end-to-end
+
+- **Objective:** exercise create → acquire → renew → expire → recovery → replacement acquire → stale-token rejection → completion.
+- **Work:** added a real-PostgreSQL integration test with ten separate principal/participant/session/execution fixtures and concurrent acquisition. It asserts checkpoint preservation and durable handoff row creation.
+- **Files:** `services/ai-team-room/src/tasks.rs`; migration 0005.
+- **Evidence status:** test is in source; no result is claimed until the latest `ai-team-room-service` CI job completes.
+- **Limitations:** the test uses authenticated identity fixtures inserted directly in the PostgreSQL test database. The existing Keycloak E2E independently validates the OIDC trust/session path; this new test does not simulate a real external model provider.
+- **Classification:** E2E test `IMPLEMENTADO`; execution `PENDENTE).
+
+## RODADA 10 — Hardening, CI and closeout
+
+- **Objective:** document the API, security boundaries and real acceptance status.
+- **Work:** added README documentation for ownership, lease, fencing, candidate discovery and endpoint permission scopes. Added explicit release endpoint, task-scoped candidate discovery, transaction-time actor revalidation and database trigger regression assertion.
+- **Files:** migration 0005; `services/ai-team-room/src/tasks.rs`; `services/ai-team-room/src/main.rs`; `services/ai-team-room/README.md`; this report.
+- **CI:** new commits trigger the repository workflow. Runs cancelled by subsequent pushes are not accepted as validation. Final run against the final report HEAD must complete all Linux, Windows, Rust, npm/build, PostgreSQL and Keycloak jobs.
+- **Classification:** implementation `IMPLEMENTADO`; final CI `PENDENTE` at report authoring time.
+
+## Commit trail
+
+- `0811414d6a5868bf78c1b4058e814b6604451998` — initial distributed task ownership schema.
+- `56038607e42fce23632fc2edad86198ee1baf03e` — transactional task lease/fencing implementation.
+- `6ac104b320cbff7521ef4a5b5fdb21df93e9e6b6` — correct owner/session/execution fence comparisons.
+- `d053a9532c431f2e5d37cdcbfe1e4d909d8eba79` — checkpoint audit event type.
+- `4f0c11108b803b12542b0c1bdc46103d434cb338` — authenticated task APIs.
+- `e2ad22cc64967f481a80fed4ee1633104a3ff143` — actor revalidation and fenced release operation.
+- `e23c9d5aa2c8aa4a9c8a93247f4f7703d4bd7f42` — heartbeat renews valid task leases.
+- `7c4393c35f370b1f4009f3384a787d8050248f18` — lease release endpoint.
+- `9168eccb9326bda6ac3a2e5eed8a5685d01f7cc2` — ten-executor concurrency/recovery/fencing test.
+- `a8f39d894fe335292566632852932a58c1db8023` — service crate imports.
+- `b6091c358f3a3f11a86cb13708f2d074d8911e5e` — execution identity in task snapshots.
+- `f38984c5b30c6f97a282d09e55df87148a151473` — PostgreSQL monotonic fencing trigger.
+- `f60fe287ebc33d45850b6164e66d7a991c7b13c2` — validate active membership on task creation.
+- `c0a3599105e960a193586c4e8a51a4c801223241` — DB fencing rollback regression assertion.
+- `bc69b9c363dbc1e4e1652d066a1662f971b1c278` — authorized candidate discovery query.
+- `310b136245c24cdd4e7dd69d7f7acf6f26d79b39` — candidate discovery endpoint.
+- `d80c0b3fcfeb8b05aa240d93783804db56cfb508` — scope candidate list to recoverable task.
+- `ef90e295dca0602b33c7ae69d257c3268fa09d38` — pass task scope to candidate query.
+- `ba9b9ae77e489ffa878718631adc34d0c17f3d29` — Team Room distributed lease documentation.
+- `096442e907d84439a8ed338818bfb8f2e6d0d820` — positive lease renewal assertion.
+
+## ESTADO FINAL
+
+The service now has a PostgreSQL-backed shared task ownership record, row-locked lease acquisition, database-clock expiry, authenticated renewal/release, monotonic fencing, protected checkpoint/completion writes, explicit recovery, durable takeover handoff context and eligibility-filtered replacement discovery. The local Runner/BAT are not the distributed ownership authority.
+
+## IMPLEMENTADO
+
+- Migration 0005 task, lease event and handoff tables.
+- Authenticated task creation/acquire/renew/release/checkpoint/complete/recovery APIs.
+- Row-locked ownership transition and database-clock leases.
+- Monotonic fencing token and checkpoint version trigger.
+- Current owner validation across principal, participant, session and workload execution.
+- Heartbeat renewal only for leases that have not expired.
+- Durable handoff/resume event and context.
+- Authorized candidate discovery with active-session and heartbeat checks.
+- Ten-contender PostgreSQL integration test source.
+
+## TESTADO
+
+- Prior baseline CI run `43045465661`: SUCCESS before this mission's distributed-ownership changes.
+- New distributed lease test source exists; latest execution result must be read from the final CI run before claiming PASS.
+
+## VALIDADO
+
+- Initial branch, HEAD, existing migration schema, Runner, BAT, service and CI were read directly from GitHub.
+- Reuse analysis confirms no task/lease/fencing table existed in migrations 0001–0004.
+- No external AI provider dispatch or execution claim was added.
+
+## PARCIAL
+
+- Handoff: atomic takeover records are durable, but no staged target offer/accept protocol.
+- Recovery: explicit API/transaction exists; no background worker automatically sweeps leases.
+- Replacement: candidate eligibility is queryable, but no automatic scheduler chooses a candidate.
+- Fencing: service operations enforce exact token and database trigger prevents rollback; direct DB-owner privileges remain trusted infrastructure.
+- E2E: PostgreSQL test covers the main state sequence, but provider execution and real model process attestation are not present.
+
+## PENDENTE
+
+- Clean final CI on report HEAD, including the new PostgreSQL integration test and all Linux/Windows/npm/Rust jobs.
+- Background lease-expiry/recovery worker and operational metrics/alerts.
+- Separate HANDOFF_PENDING offer, acceptance, timeout and cancellation protocol if product semantics require explicit recipient acceptance.
+- Automatic candidate selection policy and configurable concurrency/capacity policy.
+- Cross-service integration from local Runner mission/task identifiers into shared task creation and checkpoint APIs.
+- Provider adapters and verified delivery receipts; no provider is configured.
+- Production deployment hardening: TLS ingress, DB least-privilege role, secret manager, backups and migration rollout plan.
+
+## BLOQUEADO
+
+- No GitHub authentication/access failure encountered.
+- No real provider delivery channel is configured; this does not block database ownership implementation, but it blocks external prompt dispatch.
+
+## NÃO TESTADO
+
+- New 10-executor PostgreSQL race test against CI after migration 0005.
+- Stale/future token and database trigger test execution.
+- New task HTTP routes end-to-end through OIDC exchange and permission grants.
+- Cross-process multi-host load test outside GitHub CI.
+- Automated repository-wide secret scan after this mission.
+
+## RISCOS
+
+1. Candidate availability uses a 90-second heartbeat freshness window; this should become a configured policy shared with the presence endpoint.
+2. Lease heartbeat extension is currently a fixed 60 seconds; align with deployment SLO and client retry policy.
+3. A recovery worker is not running continuously; an operator or scheduler must invoke the recovery endpoint, or another executor can acquire an expired lease directly if it already knows the task.
+4. The local Runner still maintains a separate local mission state. It must not be treated as the owner authority until it calls these authenticated service APIs.
+5. The service trusts configured OIDC issuer identity; it does not attest the underlying model runtime.
+6. The candidate capacity threshold is hard-coded to three active leases.
+
+## PRÓXIMA MISSÃO
+
+Implement and deploy a durable recovery scheduler/outbox worker, explicit staged handoff offer/accept with target-bound authorization, and bridge the local Runner's mission/task/checkpoint commands to the authenticated Team Room task APIs. Before production, run multi-process stress tests and deploy with a least-privilege PostgreSQL role and monitored recovery SLO.
+
+## DECISÃO
+
+**GO CONDICIONADO** for continued integration/testing of distributed ownership foundations.
+
+**NO-GO** for production multi-agent orchestration until the final CI passes, recovery scheduling and staged handoff are complete, the local Runner is connected to the shared API, and deployment security controls are in place. Never claim provider execution or prompt delivery from a task lease alone.
