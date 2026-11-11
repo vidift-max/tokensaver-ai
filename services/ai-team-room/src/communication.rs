@@ -532,6 +532,19 @@ mod postgres_tests {
         let frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws.next()).await.unwrap().unwrap().unwrap();
         let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
         assert_eq!(event["type"],"MESSAGE_CREATED");
+
+        let c_ticket=request(app.clone(),"POST",format!("/team-room/{room}/ws-ticket"),&c.token,Some(json!({}))).await;
+        assert_eq!(c_ticket.status(),StatusCode::OK);
+        let c_ticket_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(c_ticket.into_body(),4096).await.unwrap()).unwrap();
+        let c_ws_url=format!("ws://{address}/team-room/{room}/ws?ticket={}",c_ticket_json["ticket"].as_str().unwrap());
+        let mut c_ws_request=c_ws_url.into_client_request().unwrap();
+        c_ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut c_ws,_)=tokio_tungstenite::connect_async(c_ws_request).await.expect("third participant websocket");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let private_event=client.post(format!("http://{address}/team-room/{room}/private/{}/messages",b.principal)).bearer_auth(&a.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"private event must not fan out to C","parent_message_id":null})).send().await.unwrap();
+        assert_eq!(private_event.status(),reqwest::StatusCode::CREATED);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
         server.abort();
 
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
