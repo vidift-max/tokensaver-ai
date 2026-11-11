@@ -254,14 +254,20 @@ async fn websocket(
     let identity=AuthenticatedIdentity{tenant_id:who.tenant_id,participant_id:who.participant_id,principal_id:who.principal_id,session_id:who.session_id,execution_id:who.execution_id,room_id:who.room_id,issuer:who.issuer,subject:who.subject};
     let can_read=require_permission(&pool,&identity,"room.read").await.is_ok();
     if !can_read{return Err(StatusCode::FORBIDDEN);}
-    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal)))
+    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal,identity.session_id)))
 }
 
-async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:Uuid){
+async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:Uuid,session:Uuid){
     let Ok(mut listener)=PgListener::connect_with(&pool).await else{return;};
     if listener.listen("team_room_outbox").await.is_err(){return;}
+    let mut revalidate=tokio::time::interval(std::time::Duration::from_secs(15));
     loop{
         tokio::select!{
+            _=revalidate.tick()=>{
+                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id JOIN room_memberships m ON m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE')")
+                    .bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
+                if !active{let _=socket.send(Message::Close(None)).await;break;}
+            }
             incoming=socket.recv()=>{
                 match incoming{
                     Some(Ok(Message::Close(_)))|None=>break,
