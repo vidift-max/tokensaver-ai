@@ -1,3 +1,4 @@
+use futures_util::SinkExt;
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -406,6 +407,7 @@ mod postgres_tests {
     use ai_team_room_service::{admit_authenticated_participant,migrate,connect_pool};
     use sha2::{Digest,Sha256};
     use tower::ServiceExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     struct Actor { principal:Uuid, participant:Uuid, session:Uuid, token:String }
 
@@ -476,6 +478,7 @@ mod postgres_tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
         let server_pool=pool.clone();\n        let server=tokio::spawn(async move{axum::serve(listener,router(server_pool)).await.unwrap();});
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let ws_url=format!("ws://{address}/team-room/{room}/ws?ticket={ticket_value}");
         let mut ws_request=ws_url.into_client_request().unwrap();
         ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
