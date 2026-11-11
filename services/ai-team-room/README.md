@@ -179,3 +179,40 @@ PostgreSQL is the authority for shared task ownership. The local Mission Runner 
 ### Security and operational boundaries
 
 This is a server-side shared ownership foundation, not model-provider attestation. A valid OIDC-backed Team Room session establishes an authenticated workload identity, not proof of a particular model runtime. Candidate discovery does not automatically choose or start a provider. Provider adapters, external prompt delivery receipts, and execution attestation remain out of scope. Configure the explicit `task.write`, `task.transition`, and `task.assign` grants through the controlled permission provisioning process; default-deny remains in force.
+
+## Communication layer (AI Team Room chat)
+
+The existing Axum service now exposes authenticated communication routes. They reuse the same sessions, principals, participants, room_memberships, principal_permissions, PostgreSQL pool and transactional outbox_events. They do not create a second identity or task system.
+
+### HTTP contracts
+
+- GET /team-room/{room_id}/messages?before={RFC3339}&limit=50 — paginated general-room history; requires active room membership and room.read.
+- POST /team-room/{room_id}/messages — idempotent message using client_message_id, body and optional parent_message_id; requires room.write.
+- GET|POST /team-room/{room_id}/private/{other_principal_id}/messages — private conversation/history. Both principals must be active room members; only the two channel members can read/write; requires private_chat.
+- GET /team-room/{room_id}/participants — authorized participant metadata and connection/execution snapshot; requires room.read.
+- GET|PUT /team-room/{room_id}/presence — read or update own ONLINE|AWAY|BUSY|WAITING|BLOCKED presence; update requires presence.update. Stale heartbeat overrides visual state to DISCONNECTED; an active owned task is shown as EXECUTING.
+- GET /team-room/{room_id}/tasks — existing distributed tasks; requires task.read. Creation continues through existing POST /team-room/tasks and task.write; ownership/fencing remains exclusively in the existing task service.
+- GET|POST /team-room/{room_id}/decisions — list/create decisions; create requires decision.propose, and participant/message references are checked against room/channel ACL.
+- GET|POST /team-room/{room_id}/attachments — list/create metadata references; requires attachment.read / attachment.upload; private references are filtered by channel membership.
+- POST /team-room/{room_id}/ws-ticket — issue a 30-second single-use WebSocket ticket for the authenticated active room session.
+- GET /team-room/{room_id}/ws?ticket=... — authenticated WebSocket upgrade; ticket is consumed once, session/membership is revalidated every 15 seconds, and the connection receives authorized PostgreSQL outbox events.
+
+### Event delivery and idempotency
+
+Migration 0007_team_room_communication.sql adds general/private channel metadata, persistent messages, read cursors, decisions, attachment references and one-use WebSocket tickets. Its PostgreSQL trigger emits NOTIFY team_room_outbox with only the outbox event UUID. The WebSocket process reads the durable outbox row and filters private-channel events against team_room_channel_members; notification payloads do not contain bearer credentials. Message retries with the same sender/channel/client_message_id return the canonical message and do not create a second outbox event. Reusing that key with different content returns conflict.
+
+Migration 0008_team_room_presence_state.sql adds explicit participant presence preference. The pre-existing heartbeat remains separate from task lease renewal. Task create/lease/checkpoint/complete/recovery transitions now publish TASK_CREATED / TASK_UPDATED in the same PostgreSQL transaction as their task mutation.
+
+### Desktop UI
+
+The React desktop navigation includes an AI Team Room workspace with general chat, private conversation selector, thread reply reference, task creation/list, decisions, attachment references, participant/presence view and an explicit audio status panel. The user-supplied opaque Team Room session token is held only in component memory and is not persisted by this UI. OIDC token acquisition/refresh is not yet integrated into the desktop login flow.
+
+### Explicit limitations
+
+- WebSocket: implemented as a real Axum WebSocket endpoint backed by PostgreSQL LISTEN/NOTIFY + durable outbox. Runtime behavior is only validated if the dedicated PostgreSQL communication test passes in CI.
+- Message edits/deletes: not exposed yet; MESSAGE_UPDATED and MESSAGE_DELETED are not claimed.
+- Handoff events: existing task handoff lifecycle is not expanded by this communication layer; HANDOFF_CREATED / HANDOFF_UPDATED are not claimed.
+- Upload: only authorized attachment metadata/reference records exist. Binary upload, object storage, malware scanning, download proxy and signed URLs are pending.
+- Audio: no WebRTC/SFU/signaling or audio grants are implemented. WEBRTC_PRODUCTION = PENDING; controls remain disabled and no audio is captured.
+- Unread: read cursors are stored, but aggregate unread counts and push notifications are not yet exposed.
+- Presence: REGISTERED, CONNECTED and EXECUTING remain separate concepts. The API exposes connection freshness and task ownership; it does not claim a provider/model is actively responding.
