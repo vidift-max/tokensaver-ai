@@ -112,7 +112,7 @@ pub async fn acquire_lease(
     let mut tx = pool.begin().await?;
     let old = lock_task(&mut tx,identity.room_id,task_id).await?;
     if matches!(old.status.as_str(),"COMPLETED"|"CANCELLED") { return Err(TaskError::Terminal); }
-    let still_live: bool = sqlx::query_scalar("SELECT ($1 IN ('OWNED','REASSIGNED') AND $2 > NOW())")
+    let still_live: bool = sqlx::query_scalar("SELECT ($1 IN ('OWNED','REASSIGNED') AND COALESCE($2 > NOW(),FALSE))")
         .bind(&old.status).bind(old.lease_expires_at).fetch_one(&mut *tx).await?;
     if still_live { return Err(TaskError::LeaseHeld); }
 
@@ -146,10 +146,11 @@ async fn validate_current_lease(
 ) -> Result<TaskLease, TaskError> {
     let task=lock_task(tx,identity.room_id,task_id).await?;
     let valid: bool=sqlx::query_scalar(
-        "SELECT ($1=$2 AND $3=$4 AND $5=$6 AND $7=$8 AND $9 IN ('OWNED','REASSIGNED') AND $10>NOW() AND EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id WHERE s.session_id=$6 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.execution_id=$8 AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW())"
-    ).bind(task.task_id).bind(task_id).bind(task.owner_session_id).bind(identity.principal_id)
-     .bind(task.owner_participant_id).bind(identity.session_id).bind(task.fencing_token)
-     .bind(identity.execution_id).bind(&task.status).bind(task.lease_expires_at)
+        "SELECT ($1=$2 AND $3=$4 AND $5=$6 AND $7=$8 AND $9=$10 AND $11 IN ('OWNED','REASSIGNED') AND $12>NOW() AND EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id WHERE s.session_id=$8 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.execution_id=$10 AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW())"
+    ).bind(task.task_id).bind(task_id).bind(task.owner_principal_id).bind(identity.principal_id)
+     .bind(task.owner_participant_id).bind(identity.participant_id).bind(task.owner_session_id)
+     .bind(identity.session_id).bind(task.owner_execution_id).bind(identity.execution_id)
+     .bind(&task.status).bind(task.lease_expires_at)
      .fetch_one(&mut **tx).await?;
     if !valid || fencing_token!=task.fencing_token { return Err(TaskError::Fenced); }
     Ok(task)
