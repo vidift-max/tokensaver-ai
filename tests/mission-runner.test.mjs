@@ -333,7 +333,7 @@ test("stale fencing is rejected remotely for renew, checkpoint and complete afte
 });
 
 
-test("two independent Runner state directories resolve one mission task and only one acquires", t => {
+test("two independent Runner state directories resolve one mission task and only one acquires", async t => {
  const a=env(),b=env();t.after(()=>fs.rmSync(a.dir,{recursive:true,force:true}));t.after(()=>fs.rmSync(b.dir,{recursive:true,force:true}));
  for(const ctx of [a,b]){run(ctx,"init","M-204","204","Same mission");run(ctx,"assign","AI-A","p-a");run(ctx,"acknowledge");}
  assert.equal(run(a,"start").status,0);
