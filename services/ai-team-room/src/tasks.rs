@@ -152,32 +152,28 @@ pub async fn acquire_lease(
     ).bind(identity.session_id).bind(identity.room_id).bind(identity.principal_id).bind(identity.execution_id).fetch_one(&mut *tx).await?;
     if !actor_valid { return Err(TaskError::Fenced); }
     if matches!(old.status.as_str(),"COMPLETED"|"CANCELLED") { return Err(TaskError::Terminal); }
+    if matches!(old.status.as_str(),"LEASE_EXPIRED"|"RECOVERY_REQUIRED"|"HANDOFF_PENDING") {
+        return Err(TaskError::Fenced);
+    }
+    let owner_authority_expired:bool=sqlx::query_scalar("SELECT NOT COALESCE($1::timestamptz>NOW(),FALSE)")
+        .bind(old.lease_expires_at).fetch_one(&mut *tx).await?;
+    if old.owner_principal_id.is_some() && owner_authority_expired {
+        return Err(TaskError::Fenced);
+    }
     let still_live: bool = sqlx::query_scalar("SELECT ($1 IN ('OWNED','REASSIGNED') AND COALESCE($2 > NOW(),FALSE))")
         .bind(&old.status).bind(old.lease_expires_at).fetch_one(&mut *tx).await?;
     if still_live { return Err(TaskError::LeaseHeld); }
 
-    let previous_owner = old.owner_principal_id;
-    let previous_token = old.fencing_token;
-    let was_reassigned = previous_owner.is_some() || matches!(old.status.as_str(),"LEASE_EXPIRED"|"RECOVERY_REQUIRED"|"HANDOFF_PENDING");
+    let previous_owner=old.owner_principal_id;
+    let previous_token=old.fencing_token;
     let task = sqlx::query_as::<_,TaskLease>(
-        "UPDATE team_tasks SET status=CASE WHEN $4 THEN 'REASSIGNED' ELSE 'OWNED' END, owner_principal_id=$2, owner_participant_id=$3, owner_session_id=$5, owner_execution_id=$6, fencing_token=fencing_token+1, lease_issued_at=NOW(), lease_renewed_at=NOW(), lease_expires_at=NOW()+($7 * INTERVAL '1 second'), updated_at=NOW() WHERE task_id=$1 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
-    ).bind(task_id).bind(identity.principal_id).bind(identity.participant_id).bind(was_reassigned)
+        "UPDATE team_tasks SET status='OWNED',owner_principal_id=$2,owner_participant_id=$3,owner_session_id=$4,owner_execution_id=$5,fencing_token=fencing_token+1,lease_issued_at=NOW(),lease_renewed_at=NOW(),lease_expires_at=NOW()+($6 * INTERVAL '1 second'),updated_at=NOW() WHERE task_id=$1 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+    ).bind(task_id).bind(identity.principal_id).bind(identity.participant_id)
      .bind(identity.session_id).bind(identity.execution_id).bind(lease_seconds)
      .fetch_one(&mut *tx).await?;
     record_event(&mut tx,&task,identity,"ACQUIRED",serde_json::json!({"previous_owner":previous_owner,"previous_fencing_token":previous_token})).await?;
-
-    if was_reassigned {
-        let handoff_id=Uuid::new_v4();
-        let resume_context=serde_json::json!({"checkpoint":task.checkpoint,"mission_id":task.mission_id,"task_id":task.task_id});
-        sqlx::query("INSERT INTO task_handoffs (handoff_id,task_id,tenant_id,room_id,from_principal_id,from_participant_id,from_session_id,from_execution_id,to_principal_id,to_participant_id,to_session_id,to_execution_id,from_fencing_token,to_fencing_token,status,context,checkpoint_reference,reason,expires_at,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'ACCEPTED',$15,$15,'automatic lease takeover',NOW()+INTERVAL '5 minutes',NOW())")
-          .bind(handoff_id).bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
-          .bind(previous_owner).bind(old.owner_participant_id).bind(old.owner_session_id).bind(old.owner_execution_id)
-          .bind(identity.principal_id).bind(identity.participant_id).bind(identity.session_id).bind(identity.execution_id)
-          .bind(previous_token).bind(task.fencing_token).bind(resume_context)
-          .execute(&mut *tx).await?;
-    }
     tx.commit().await?;
-    Ok(LeaseGrant { task, lease_seconds, reassigned:was_reassigned })
+    Ok(LeaseGrant { task, lease_seconds, reassigned:false })
 }
 
 async fn validate_current_lease(
@@ -363,6 +359,14 @@ mod distributed_lease_tests {
                 .bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).bind(&subject).execute(&pool).await.unwrap();
             sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
                 .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).execute(&pool).await.unwrap();
+            for permission in ["task.read","task.transition"] {
+                sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)")
+                    .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(permission).execute(&pool).await.unwrap();
+            }
+            if n>=2 {
+                sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,'task.assign')")
+                    .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).execute(&pool).await.unwrap();
+            }
             identities.push(AuthenticatedIdentity{tenant_id:tenant,participant_id:participant,principal_id:principal,session_id:session,execution_id:execution,room_id:room,issuer:"test-issuer".into(),subject});
         }
         (pool,tenant,identities)
@@ -425,23 +429,26 @@ mod distributed_lease_tests {
             .bind(task.task_id).execute(&*pool).await.unwrap();
         assert_eq!(recover_expired(&pool,task_room(&pool,task.task_id).await).await.unwrap(),1);
 
-        let mut takeover_attempts=Vec::new();
-        for candidate in identities.iter().filter(|id|id.principal_id!=old_identity.principal_id).take(2).cloned() {
-            let p=pool.clone();
-            let task_id=task.task_id;
-            takeover_attempts.push(tokio::spawn(async move {
-                acquire_lease(&p,&candidate,task_id,30).await.map(|grant|(candidate,grant))
-            }));
-        }
-        let mut replacements=Vec::new();
-        for attempt in takeover_attempts {
-            if let Ok(Ok(replacement))=attempt.await { replacements.push(replacement); }
-        }
-        assert_eq!(replacements.len(),1,"two concurrent takeover attempts must produce exactly one new owner");
-        let (replacement,new_grant)=replacements.remove(0);
-        assert!(new_grant.reassigned);
-        assert_eq!(new_grant.task.fencing_token,2);
-        assert_eq!(new_grant.task.checkpoint["progress"],43);
+        let candidate_index=if identities[1].principal_id!=old_identity.principal_id {1} else {0};
+        let coordinator_index=(2..identities.len()).find(|index|
+            identities[*index].principal_id!=old_identity.principal_id && *index!=candidate_index
+        ).expect("a separate recovery coordinator must be available");
+        let candidate=identities[candidate_index].clone();
+        let coordinator=identities[coordinator_index].clone();
+        let direct_takeover=acquire_lease(&pool,&candidate,task.task_id,30).await;
+        assert!(matches!(direct_takeover,Err(TaskError::Fenced)),"expired ownership must not be silently reassigned by acquire_lease");
+        let recovery_handoff=crate::handoffs::create_recovery(
+            &pool,&coordinator,task.task_id,candidate.principal_id,candidate.participant_id,
+            candidate.session_id,candidate.execution_id,"lease expired; explicit authenticated handoff required".into()
+        ).await.unwrap();
+        assert_eq!(recovery_handoff.status,"PENDING");
+        let handoff_grant=crate::handoffs::accept(&pool,&candidate,recovery_handoff.handoff_id,30).await.unwrap();
+        assert_eq!(handoff_grant.handoff.status,"ACCEPTED");
+        let replacement=candidate;
+        let new_grant=handoff_grant.task;
+        assert_eq!(new_grant.status,"REASSIGNED");
+        assert_eq!(new_grant.fencing_token,2);
+        assert_eq!(new_grant.checkpoint["progress"],43);
         let downgrade=sqlx::query("UPDATE team_tasks SET fencing_token=1 WHERE task_id=$1")
             .bind(task.task_id).execute(&*pool).await;
         assert!(downgrade.is_err(),"PostgreSQL trigger must reject fencing token rollback");
@@ -457,9 +464,9 @@ mod distributed_lease_tests {
         let future=write_checkpoint(&pool,&replacement,task.task_id,99,serde_json::json!({"future":true})).await;
         assert!(matches!(future,Err(TaskError::Fenced)));
 
-        let completed=complete_task(&pool,&replacement,task.task_id,new_grant.task.fencing_token,serde_json::json!({"done":true})).await.unwrap();
+        let completed=complete_task(&pool,&replacement,task.task_id,new_grant.fencing_token,serde_json::json!({"done":true})).await.unwrap();
         assert_eq!(completed.status,"COMPLETED");
-        let reopen=write_checkpoint(&pool,&replacement,task.task_id,new_grant.task.fencing_token,serde_json::json!({"reopen":true})).await;
+        let reopen=write_checkpoint(&pool,&replacement,task.task_id,new_grant.fencing_token,serde_json::json!({"reopen":true})).await;
         assert!(matches!(reopen,Err(TaskError::Fenced)));
 
         let release_task=create_task(&pool,&replacement,CreateTask{mission_id:Uuid::new_v4(),title:"concurrent release regression".into(),checkpoint:serde_json::json!({})}).await.unwrap();
@@ -492,7 +499,7 @@ mod distributed_lease_tests {
             "runner_b_session_id":replacement.session_id,
             "runner_b_execution_id":replacement.execution_id,
             "fencing_a":old_grant.task.fencing_token,
-            "fencing_b":new_grant.task.fencing_token,
+            "fencing_b":new_grant.fencing_token,
             "initial_acquire":"ACCEPTED",
             "takeover":"ACCEPTED",
             "a_renew":"REJECTED",
