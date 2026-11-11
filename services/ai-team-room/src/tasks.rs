@@ -103,8 +103,8 @@ pub async fn create_task(
     ).bind(identity.session_id).bind(identity.room_id).bind(identity.principal_id).bind(identity.execution_id).fetch_one(&mut *tx).await?;
     if !actor_valid { return Err(TaskError::Fenced); }
     // The unique database key serializes concurrent creates for the same
-    // (tenant, room, mission). The no-op conflict update returns the canonical
-    // row, including its current owner/fence/checkpoint, without resetting it.
+    // (tenant, room, mission). DO NOTHING preserves the existing row; the
+    // follow-up SELECT returns its canonical owner/fence/checkpoint.
     let inserted = sqlx::query_as::<_,TaskLease>(
         "INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,room_id,mission_id) DO NOTHING RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
