@@ -115,13 +115,20 @@ try{
     mustRun(identity,stateDir,"acknowledge");
   }
 
-  const startA=await runAsync(runnerA,stateA,"start");
-  assert.equal(startA.status,0,"Runner A must acquire the initial PostgreSQL lease");
-  const startB=await runAsync(runnerB,stateB,"start");
-  assert.equal(startB.status,2,"Runner B must be denied while Runner A's lease is live");
-  assert.match(startB.stderr,/HTTP 409/,"Runner B must be rejected by the live PostgreSQL lease");
-  const owner=runnerA,replacement=runnerB,ownerDir=stateA,replacementDir=stateB;
-  const ownerStart=startA;
+  const [startA,startB]=await Promise.all([
+    runAsync(runnerA,stateA,"start"),
+    runAsync(runnerB,stateB,"start")
+  ]);
+  assert.equal([startA,startB].filter(result=>result.status===0).length,1,"two independent Runner processes starting concurrently must produce exactly one initial owner");
+  const ownerIsA=startA.status===0;
+  const owner=ownerIsA?runnerA:runnerB;
+  const replacement=ownerIsA?runnerB:runnerA;
+  const ownerDir=ownerIsA?stateA:stateB;
+  const replacementDir=ownerIsA?stateB:stateA;
+  const ownerStart=ownerIsA?startA:startB;
+  const replacementStart=ownerIsA?startB:startA;
+  assert.equal(replacementStart.status,2,"the losing Runner must be denied while the initial lease is live");
+  assert.match(replacementStart.stderr,/HTTP 409/,"the losing Runner must be rejected by the live PostgreSQL lease");
   const ownerState=stateFor(ownerDir);
   const taskId=ownerState.execution.task_id;
   const fencingA=ownerState.execution.fencing_token;
@@ -187,7 +194,7 @@ try{
     mission_id:missionUuid,
     task_id:taskId,
     runner_a_process_pid:ownerStart.pid,
-    runner_b_initial_rejected_process_pid:startB.pid,
+    runner_b_initial_rejected_process_pid:replacementStart.pid,
     runner_b_process_pid:takeover.pid,
     runner_a_principal_id:owner.principalId,
     runner_a_session_id:owner.sessionId,
@@ -211,6 +218,7 @@ try{
     lease_expired_by_database_clock:true,
     initial_acquire:"ACCEPTED",
     runner_b_initial_acquire:"REJECTED",
+    runner_initial_start_concurrent:true,
     task_count_for_mission:1,
     takeover:"ACCEPTED",
     stale_a_renew:staleResults.renew,
