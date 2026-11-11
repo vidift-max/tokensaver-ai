@@ -265,11 +265,15 @@ fn insert_restore_db_blob(
     if blobs.len() >= MAX_BACKUP_BLOBS {
         return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco do backup excede o número máximo de blobs."));
     }
+    // SHA-256 identifiers and their relative paths are canonical lowercase.
+    // Accepting uppercase here would normalize only the comparison map while
+    // leaving the restored SQLite row pointing at a differently-cased path.
     if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+        || sha != sha.to_ascii_lowercase()
         || len < 0 || relative != format!("blobs/{}", sha) {
         return Err(AppError::new("BACKUP_INVALID", "Metadados de blob inválidos no banco."));
     }
-    if blobs.insert(sha.to_ascii_lowercase(), len as u64).is_some() {
+    if blobs.insert(sha, len as u64).is_some() {
         return Err(AppError::new("BACKUP_INVALID", "O banco do backup contém blobs duplicados."));
     }
     Ok(())
@@ -525,6 +529,20 @@ mod tests {
         let invalid = insert_restore_db_blob(&mut blobs, "b".repeat(64), 1, "outside/blob".into())
             .expect_err("path outside blobs directory must be rejected");
         assert_eq!(invalid.code, "BACKUP_INVALID");
+    }
+
+    #[test]
+    fn restore_db_blob_map_rejects_uppercase_sha_and_path() {
+        let mut blobs = std::collections::BTreeMap::new();
+        let uppercase_sha = "A".repeat(64);
+        let error = insert_restore_db_blob(
+            &mut blobs,
+            uppercase_sha.clone(),
+            1,
+            format!("blobs/{uppercase_sha}"),
+        ).expect_err("uppercase SHA must not leave a non-canonical restored path");
+        assert_eq!(error.code, "BACKUP_INVALID");
+        assert!(blobs.is_empty());
     }
 
     #[test]
