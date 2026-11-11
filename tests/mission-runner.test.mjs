@@ -24,7 +24,7 @@ test("persists mission, checkpoint and resume across separate processes", t => {
  assert.equal(run(c,"resume").status,0);
  const s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
  const m=s.missions["M-120"];
- assert.equal(m.status,"IN_PROGRESS"); assert.equal(m.checkpoint.description,"after audit");
+ assert.equal(m.status,"IN_PROGRESS"); assert.equal(m.checkpoint.description,"automatic disconnect checkpoint"); assert.equal(m.checkpoint_history.length,2); assert.equal(m.checkpoint_history[0].description,"after audit");
  assert.equal(m.responsible_ai,"GPT-6"); assert.equal(m.blockers.length,1);
  assert.equal(m.blockers[0].kind,"DISCONNECT"); assert.equal(m.blockers[0].status,"RESUMED");
 });
