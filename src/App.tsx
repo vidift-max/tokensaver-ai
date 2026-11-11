@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import TeamRoom from "./TeamRoom";
 
 const modules = [
   {name:"Dashboard",ready:true},{name:"File Center",ready:true},{name:"Token Counter",ready:true},
@@ -7,7 +8,7 @@ const modules = [
   {name:"Claude Connection",ready:true},{name:"Template Master",ready:true},{name:"Editorial Engine",ready:true},
   {name:"Article Library",ready:true},{name:"Internal Links",ready:true},{name:"Final Page Builder",ready:true},
   {name:"OneShot Capture",ready:true},{name:"Cost Simulator",ready:true},{name:"Integrity Guardian",ready:true},{name:"Backup Center",ready:true},
-  {name:"Settings",ready:true},{name:"History",ready:true}
+  {name:"AI Team Room",ready:true},{name:"Settings",ready:true},{name:"History",ready:true}
 ];
 
 type FileRow = { id:string; logical_path:string; latest_version:number; byte_len:number; sha256:string };
@@ -219,7 +220,9 @@ export default function App() {
           <article><b>Tokens</b><strong>Estimativa explícita</strong><span>Método, modelo e limitações acompanham cada contagem.</span></article>
         </div>
 
-        {active === "Project Memory" ? (
+        {active === "AI Team Room" ? (
+          <TeamRoom />
+        ) : active === "Project Memory" ? (
           <section className="panel"><div className="panel-head"><div><h2>Project Memory</h2><p className="muted">Notas persistentes do projeto, armazenadas localmente.</p></div><button className="primary" onClick={() => void loadMemory()}>Atualizar</button></div><div className="project-row"><input value={projectId} onChange={e=>setProjectId(e.target.value)} placeholder="Projeto"/><input value={memoryKey} onChange={e=>setMemoryKey(e.target.value)} placeholder="chave"/><input value={memoryValue} onChange={e=>setMemoryValue(e.target.value)} placeholder="valor"/><button onClick={()=>void saveMemory()}>Salvar</button></div>{memory.map(m=><div className="file-row" key={m.key}><strong>{m.key}</strong><span>{m.value}</span></div>)}</section>
         ) : active === "History" ? (
           <section className="panel"><div className="panel-head"><div><h2>History</h2><p className="muted">Operações registradas pelo núcleo do projeto.</p></div><button className="primary" onClick={()=>void loadHistory()}>Atualizar</button></div>{history.length===0?<p className="muted">Nenhuma operação registrada.</p>:history.map(h=><div className="file-row" key={h.id}><strong>{h.kind}</strong><span>{h.status} · {h.progress}% · {h.created_at}</span></div>)}</section>
