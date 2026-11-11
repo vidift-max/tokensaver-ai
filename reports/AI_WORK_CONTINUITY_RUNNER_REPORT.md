@@ -1258,3 +1258,85 @@ O endpoint de presença atualiza workload heartbeat, membership e workload ident
 ## Decisão
 
 **EXECUÇÃO PARCIAL — NÃO CONCLUÍDA.** As rodadas 2 e 3 foram implementadas no Team Room, e a renovação implícita por presence heartbeat foi removida. A missão permanece NO-GO para execução distribuída porque as rodadas 4, 5, 8 e 9 estão pendentes e a rodada 10 ainda não foi validada. O critério definitivo Runner A/B não foi demonstrado.
+
+
+---
+
+# MISSÃO — RUNNER REAL SUBORDINADO AO TEAM ROOM (2026-11-11)
+
+## Controle de versão e linha de base
+
+- Branch auditada: `v2-saas-alpha`.
+- HEAD inicial desta missão: `d7b29c1c114c131237615368bb55723e0e3483ee`.
+- HEAD de código de Runner/API antes da missão: Runner ainda fabricava `lease_id` e `lease_expires_at` localmente; não havia cliente HTTP Team Room.
+- HEAD observado antes deste relatório: `b9a9ff02e5787fc0bc17014951e9cb3897ceff45`.
+- O histórico entre o HEAD inicial e o HEAD observado contém 13 commits, preservados em fast-forward. Nenhum reset, force push ou descarte de commit paralelo foi realizado.
+- Não foi possível executar baseline local nesta sessão: o acesso disponível ao repositório é por operações GitHub de leitura/escrita de arquivos, sem checkout ou shell de execução de workflow. Não afirmar que Node/Rust/Windows/PostgreSQL tests foram executados.
+- O workflow `.github/workflows/ci.yml` dispara em push para esta branch e contém Linux, Windows, Team Room PostgreSQL e Keycloak OIDC. Para o SHA `b9a9ff02e5787fc0bc17014951e9cb3897ceff45`, o status combinado consultado retornou zero checks e a consulta de workflows associada ao commit retornou lista vazia. **CI NÃO VALIDADA**; a consulta de workflow disponível filtra runs de pull request e não permite concluir se um push run está em fila ou ainda não foi indexado.
+
+## Commits desta missão (13)
+
+- `7d3d3167be834fe8bde3730fdebfd1b4d4493757` — cliente Team Room fail-closed.
+- `f814a39f09b954b0799d6ce52a3ff719122c61b2` — start/acquire remoto, resume, heartbeat, checkpoint, renew, complete e release no Runner.
+- `6814c77ac8eebe807c781de8f142235a3dbd48cb` — release remoto antes de handoff local e complete remoto em aprovação.
+- `eabda8da4d98ca80fa351f7c4a39120f3504411e` — fixture HTTP de Team Room para testes Node.
+- `510b42e38088e7ede50e5527904c398e729ff8ec` — CLI passa a aguardar operações assíncronas.
+- `7fde5e7683f090a30d8cc1b68c000269668315f1` — testes fail-closed e fluxo remoto.
+- `8c83ba956480eb023c1d56f54f18e7d349f5bb03` — Windows BAT CI espera bloqueio de start sem sessão.
+- `6b65e7ffa108c50efb216d60c91a0db52c549281` — documentação de configuração remota.
+- `b6c1010352b9c7eb59fae8f12814fab9f8f9487f` — help do Runner documenta autoridade remota.
+- `6780d8199566095629713b2d8a5b876e3a3d6753` — teste de rejeição de fencing antigo.
+- `6624f75b8e05bd57746d87c0d8fb1447e6e0e5d6` — correção da fixture do fencing sucessor.
+- `9f018892c248ada9dd0694084511ba8be6981bc3` — teste com dois diretórios de Runner e task canônica.
+- `b9a9ff02e5787fc0bc17014951e9cb3897ceff45` — teste assíncrono de lookup canônico.
+
+## Resultado por rodada
+
+| Rodada | Classificação | Evidência / limite |
+|---|---|---|
+| 1 Auditoria e baseline | VALIDADO POR INSPEÇÃO / TESTES NÃO EXECUTADOS | HEAD, branch, commits, Runner, APIs, migrations, testes e workflow inspecionados. Nenhum trabalho paralelo posterior ao HEAD inicial apareceu durante a sequência. |
+| 2 Cliente Team Room | IMPLEMENTADO / NÃO TESTADO | `scripts/team-room-client.mjs` centraliza autenticação por bearer de sessão, `/auth/me`, lookup, criação idempotente, acquire, renew, checkpoint, complete e release. Exige variáveis runtime; não grava credenciais. |
+| 3 Start remoto | IMPLEMENTADO / NÃO TESTADO | `start` autentica, resolve UUID determinístico, lookup/cria task, adquire lease e valida owner/session/execution/fencing/expiry antes de marcar IN_PROGRESS. Sem config/API/acquire, falha sem gerar lease local. |
+| 4 Resume remoto | IMPLEMENTADO / NÃO TESTADO | Consulta task remota; só retoma com owner/session/execution/fence locais iguais ao estado remoto e lease válida. Owner diferente bloqueia. Task sem owner ou expirada exige acquire explícito. |
+| 5 Lease renewal | IMPLEMENTADO / NÃO TESTADO | Novo comando `renew` chama `/lease/renew` com fencing atual. Rejeição marca `LOSS_OF_OWNERSHIP`. Presence `heartbeat` chama apenas `/team-room/heartbeat` e não altera expiry local. |
+| 6 Checkpoint remoto | IMPLEMENTADO / NÃO TESTADO | Checkpoint passa pela API com task_id, session, workload execution, fencing, missão, contexto e timestamp. Rejeição marca perda de ownership. |
+| 7 Complete / release | IMPLEMENTADO / NÃO TESTADO | `complete`, aprovação e `release` chamam endpoints remotos com fencing. Handoff local exige release remoto antes de limpar a execução. O protocolo staged autenticado no servidor não existe; handoff completo permanece PARCIAL. |
+| 8 Dois Runners | PARCIAL / TESTE HTTP ADICIONADO, NÃO EXECUTADO | Testes usam processos CLI separados e fixture HTTP para convergência em uma task e rejeição de acquire concorrente; há fixture de fencing sucessor e tentativas antigas. Não é PostgreSQL compartilhado nem dois executores com sessões autenticadas independentes; prova definitiva PENDENTE. |
+| 9 Recovery worker | PENDENTE | Não foi criado worker periódico independente, seleção de executor ou takeover automático por workers concorrentes. O endpoint manual existente não satisfaz o requisito. |
+| 10 Validação final / CI | CI NÃO VALIDADA / TESTES NÃO EXECUTADOS | Nenhum comando de build/test foi executado nesta sessão. Status API e workflow lookup disponíveis não retornaram evidência para o SHA consultado. |
+
+## Contrato do cliente e configuração
+
+O Runner usa:
+- `TEAM_ROOM_API_URL`
+- `TEAM_ROOM_SESSION_TOKEN` (opaque local bearer token emitido por `/auth/exchange`)
+- `TEAM_ROOM_ROOM_ID`
+
+O cliente exige HTTPS fora de loopback, valida `/auth/me` e rejeita room mismatch. O token não é escrito em `STATE.json`, eventos ou relatório. A identidade de missão local é convertida deterministicamente em UUID; a unicidade PostgreSQL continua sendo aplicada por `(tenant_id, room_id, mission_id)`.
+
+`STATE.json` continua guardando checkpoint/contexto e referência remota (`task_id`, fencing e expiry observada), mas essas informações não autorizam execução. A autorização vem do endpoint e da validação transacional no PostgreSQL.
+
+## Testes adicionados, não executados
+
+A fixture Node simula o contrato HTTP e inclui:
+- ausência de credenciais: start falha fechado e não transita para IN_PROGRESS;
+- start persiste task_id/fencing remoto;
+- presence heartbeat não altera expiry da task lease;
+- renew, checkpoint e release remotos;
+- fencing antigo rejeitado em renew/checkpoint/complete após takeover simulado;
+- dois diretórios/processos Runner resolvem a mesma missão/task e o segundo acquire é rejeitado enquanto a lease está ativa.
+
+Esses testes são unit/integration HTTP contra fixture in-memory, não provam transações PostgreSQL. A CI Linux/Windows/service PostgreSQL precisa executá-los.
+
+## Bloqueadores e riscos remanescentes
+
+1. **Recovery worker real ausente.** O serviço não tem processo periódico independente com claim/locking `SKIP LOCKED`, idempotência multi-worker e seleção segura de executor.
+2. **Handoff staged real ausente.** O Runner ainda registra estados locais de handoff; a autoridade Team Room não oferece as transições autenticadas completas `HANDOFF_PENDING / ACCEPTED / COMPLETED / REJECTED` e timeout exigidas.
+3. **Prova distribuída real ausente.** Fixture HTTP não equivale a dois processos autenticados independentes contra PostgreSQL compartilhado.
+4. **Testes não executados.** Não há saída de `npm run test:missions`, `cargo check`, `cargo test`, Windows BAT, Keycloak ou testes PostgreSQL nesta sessão.
+5. **CI NÃO VALIDADA.** Não há check/run observado para o HEAD consultado; a consulta de workflow associada ao commit tem limitação de filtro para PR.
+6. O Runner usa bearer de sessão local fornecido pelo ambiente; a implantação precisa injetar esse segredo via secret manager e garantir que cada executor receba sua própria sessão/workload identity. Não compartilhar a mesma sessão entre Runners em produção.
+
+## Decisão
+
+**EXECUÇÃO PARCIAL — NÃO CONCLUÍDA.** As rodadas 2 a 7 têm integração inicial no código, ainda sem execução de testes. A rodada 8 tem somente fixture HTTP e não satisfaz a prova PostgreSQL multi-executor. Rodadas 9 e 10 permanecem pendentes. O Runner agora falha fechado sem Team Room e não fabrica ownership local, mas não deve ser classificado como executor distribuído validado até recovery worker, handoff autenticado, prova A/B com PostgreSQL e CI verde no SHA exato.
