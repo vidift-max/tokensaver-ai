@@ -699,4 +699,99 @@ rYCbrUTET0soLkbXAVaf4NZm
         ).unwrap();
         assert!(matches!(verify_oidc_token(&config, &token).await, Err(AuthError::Unauthorized)));
     }
+
+
+    #[tokio::test]
+    async fn jwt_claim_security_matrix_accepts_valid_and_rejects_invalid_claims() {
+        use serde_json::Value;
+
+        fn sign_claims(claims: Value) -> String {
+            let mut header = Header::new(Algorithm::RS256);
+            header.kid = Some("test-key".into());
+            encode(&header, &claims,
+                &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap()).unwrap()
+        }
+
+        let (jwks_url, server) = test_server().await;
+        let config = OidcConfig {
+            issuer: "https://issuer.example.test".into(),
+            audience: "team-room-api".into(),
+            jwks_url,
+            require_discovery: false,
+            expected_jwks_url: None,
+            allow_http_localhost: true,
+        };
+        let now = Utc::now().timestamp() as usize;
+        let valid_claims = json!({
+            "iss": config.issuer,
+            "sub": "agent-subject",
+            "aud": config.audience,
+            "exp": now + 180,
+            "nbf": now.saturating_sub(1),
+            "iat": now,
+            "jti": Uuid::new_v4().to_string(),
+            "scope": "openid team_room:connect"
+        });
+
+        assert!(verify_oidc_token(&config, &sign_claims(valid_claims.clone())).await.is_ok(),
+            "valid RS256 claims must be accepted");
+
+        let mut invalid_cases: Vec<(&str, Value)> = Vec::new();
+
+        let mut future_nbf = valid_claims.clone();
+        future_nbf["nbf"] = json!(now + 120);
+        invalid_cases.push(("future nbf", future_nbf));
+
+        let mut future_iat = valid_claims.clone();
+        future_iat["iat"] = json!(now + 120);
+        invalid_cases.push(("future iat beyond allowed skew", future_iat));
+
+        let mut expired = valid_claims.clone();
+        expired["exp"] = json!(now.saturating_sub(120));
+        invalid_cases.push(("expired exp", expired));
+
+        let mut wrong_issuer = valid_claims.clone();
+        wrong_issuer["iss"] = json!("https://attacker.example.test");
+        invalid_cases.push(("wrong issuer", wrong_issuer));
+
+        let mut wrong_audience = valid_claims.clone();
+        wrong_audience["aud"] = json!("another-api");
+        invalid_cases.push(("wrong audience", wrong_audience));
+
+        let mut insufficient_scope = valid_claims.clone();
+        insufficient_scope["scope"] = json!("openid profile");
+        invalid_cases.push(("insufficient scope", insufficient_scope));
+
+        let mut empty_subject = valid_claims.clone();
+        empty_subject["sub"] = json!("");
+        invalid_cases.push(("empty sub", empty_subject));
+
+        let mut empty_jti = valid_claims.clone();
+        empty_jti["jti"] = json!("");
+        invalid_cases.push(("empty jti", empty_jti));
+
+        let mut missing_subject = valid_claims.clone();
+        missing_subject.as_object_mut().unwrap().remove("sub");
+        invalid_cases.push(("missing sub", missing_subject));
+
+        let mut missing_jti = valid_claims.clone();
+        missing_jti.as_object_mut().unwrap().remove("jti");
+        invalid_cases.push(("missing jti", missing_jti));
+
+        let mut missing_iat = valid_claims.clone();
+        missing_iat.as_object_mut().unwrap().remove("iat");
+        invalid_cases.push(("missing iat", missing_iat));
+
+        let mut missing_exp = valid_claims.clone();
+        missing_exp.as_object_mut().unwrap().remove("exp");
+        invalid_cases.push(("missing exp", missing_exp));
+
+        for (case, claims) in invalid_cases {
+            let signed = sign_claims(claims);
+            assert!(matches!(verify_oidc_token(&config, &signed).await, Err(AuthError::Unauthorized)),
+                "security case must reject: {case}");
+        }
+
+        server.abort();
+    }
 }
