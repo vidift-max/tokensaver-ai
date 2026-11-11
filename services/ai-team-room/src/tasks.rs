@@ -4,7 +4,7 @@ use serde_json::Value;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::auth::AuthenticatedIdentity;
+use ai_team_room_service::auth::AuthenticatedIdentity;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
@@ -249,7 +249,7 @@ pub async fn release_lease(
 #[cfg(test)]
 mod distributed_lease_tests {
     use super::*;
-    use crate::{connect_pool,migrate};
+    use ai_team_room_service::{connect_pool,migrate};
     use std::sync::Arc;
 
     async fn fixture() -> (PgPool,Uuid,Vec<AuthenticatedIdentity>) {
