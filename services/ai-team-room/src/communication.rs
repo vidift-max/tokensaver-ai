@@ -327,7 +327,7 @@ async fn create_decision(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,head
     let who=identity(&pool,&headers).await?; require_room_member(&pool,&who,room_id).await?;
     require_permission(&pool,&who,"decision.propose").await.map_err(auth_status)?;
     if input.title.trim().is_empty()||input.title.len()>300||input.decision.trim().is_empty()||input.decision.len()>12000||input.participants.len()>15{return Err(StatusCode::BAD_REQUEST);}
-    let valid:bool=sqlx::query_scalar("SELECT COALESCE(bool_and(EXISTS(SELECT 1 FROM room_memberships m WHERE m.room_id=$1 AND m.principal_id=x AND m.status='ACTIVE')),FALSE) FROM unnest($2::uuid[]) x")
+    let valid:bool=sqlx::query_scalar("SELECT cardinality($2::uuid[])=0 OR COALESCE(bool_and(EXISTS(SELECT 1 FROM room_memberships m WHERE m.room_id=$1 AND m.principal_id=x AND m.status='ACTIVE')),FALSE) FROM unnest($2::uuid[]) x")
         .bind(room_id).bind(&input.participants).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     if !valid{return Err(StatusCode::BAD_REQUEST);}
     if let Some(reference)=input.reference_message_id{
