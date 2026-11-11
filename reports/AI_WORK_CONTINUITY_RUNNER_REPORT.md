@@ -1504,3 +1504,82 @@ O teste de serviço PostgreSQL separado no mesmo workflow também executou conco
 **GO CONDITIONED para a camada de Runner distribuído comprovada pelo laboratório.** PostgreSQL compartilhado, dois processos Runner, duas sessões distintas, lease real, fencing, takeover, dois recovery workers concorrentes, rejeição do owner obsoleto, conclusão por B, artifact e CI geral estão comprovados no SHA indicado.
 
 **Não declarar produção irrestrita ainda:** a invocação periódica do Recovery Worker precisa ser integrada ao scheduler/serviço operacional; handoff staged continua fora do escopo comprovado desta camada. O próximo avanço deve tratar essa camada operacional, sem reabrir a prova A/B já validada.
+
+
+---
+
+# CONTINUATION MISSION — RECOVERY WORKER + PERMANENT A/B LAB (2026-11-11)
+
+## Integrity and branch reconciliation
+
+- SHA supplied as the prior mission HEAD: `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`.
+- The branch had advanced before this continuation's first write. The newest commit observed at inspection was `0f7a9c5e8181e333ee26830e0dc1d52025254faf`; intervening work was preserved, not reverted.
+- Final SHA written by this continuation: `d777812ad65f2b2b10a445b1c531787f6a5b87c6`.
+- Branch: `v2-saas-alpha`.
+- No GitHub token/permission failure occurred.
+
+## IMPLEMENTADO in this continuation
+
+1. `.github/workflows/distributed-runner-lab.yml` was hardened so the Rust PostgreSQL test, Team Room build, and independent-process E2E are recorded independently. A failure in an earlier stage no longer prevents evidence consolidation and artifact upload. The aggregate JSON reports each exit code and the final gate fails unless every required stage passes.
+2. The workflow still starts a real PostgreSQL 16 service container, builds and starts the real Axum Team Room process, and invokes the Node E2E against that shared database.
+3. `scripts/team-room-recovery-worker.mjs` now supports bounded `--watch` polling with configurable interval/deadline and request timeout. It uses its own authenticated `task.assign` session, records candidate selection without logging the bearer token, and never impersonates the selected executor.
+4. `scripts/distributed-runner-process-e2e.mjs` now has a deterministic sequence: Runner A acquires fence 1; Runner B is rejected while A's lease is live; the test waits for PostgreSQL's actual lease expiry; two independent Recovery Worker processes race; PostgreSQL persists exactly one recovery transition; Runner B acquires fence 2; A's renew/checkpoint/complete/release are rejected; B writes a checkpoint and completes.
+5. The E2E now asserts exactly one canonical task for the tenant/room/mission and records B's checkpoint acceptance/version in the evidence.
+6. The workflow produces `distributed-runner-evidence.json`, process evidence and service/test logs, and uploads them even when a proof stage fails. The artifact contains IDs/PIDs and outcomes, not JWTs, bearer tokens, passwords or client secrets.
+
+## TESTADO / VALIDADO — historical evidence only
+
+The previous report records a successful PostgreSQL distributed lab for code SHA `0f7a9c5e8181e333ee26830e0dc1d52025254faf`:
+- Artifact: `distributed-runner-postgres-evidence-43081541777`, artifact ID `13884202725`.
+- Artifact SHA-256: `a50a069f4dd23a843dae075cac5c4ba212d94f0e50de964ba6cad2b67579e426`.
+- CI geral run `43081542037` (run number 489), same historical code SHA, success; jobs `foundation`, `foundation-windows`, `ai-team-room-service`, and `keycloak-oidc-smoke` were recorded as successful.
+- That historical evidence covered PostgreSQL 16, the Team Room service, separate Runner processes/sessions, lease expiry, fencing 1→2, two concurrent recovery workers, stale-owner rejection and completion by the successor.
+- It does **not** validate the changed workflow, watch-mode worker, deterministic A→B rewrite, or B-checkpoint assertion committed after that SHA.
+
+## PARCIAL
+
+- The Recovery Worker is a bounded polling process for a specified task, not yet a continuously supervised room-wide scheduler that discovers all expired tasks.
+- The worker transitions expired tasks to persisted `RECOVERY_REQUIRED` and selects an eligible candidate. The candidate Runner must then authenticate independently and acquire the lease; the database's normal acquire transaction performs the owner change and fencing increment. This is intentional non-impersonation, but it is not a worker-owned atomic candidate claim.
+- A/B test sessions are seeded as opaque local session fixtures in PostgreSQL and then authenticated through the real Team Room HTTP service. The A/B test does not perform two independent OIDC token exchanges. Keycloak OIDC is a separate CI job.
+- Existing task handoff rows record takeover/resume context, but this is not the requested staged handoff protocol.
+
+## PENDENTE / BLOQUEADO
+
+- Staged authenticated handoff lifecycle with durable `PENDING`, `ACCEPTED`, `REJECTED`, `EXPIRED`, `CANCELLED`, and `COMPLETED` states, requester/recipient session binding, membership/permission checks, timeout and audit is **not implemented**. The current migration's handoff status vocabulary and routes do not provide that complete API.
+- Room-wide recovery scheduler/service installation, operational restart policy and monitoring remain pending.
+- A true recovery-worker atomic claim that chooses and assigns a candidate in one PostgreSQL transaction remains pending; current design leaves the final acquire to the candidate Runner.
+- The current final SHA `d777812ad65f2b2b10a445b1c531787f6a5b87c6` has no observed status checks or workflow-run result in the available GitHub responses. Push-triggered Actions may still be queued or not yet indexed; do not infer a pass or a failure from an empty lookup.
+
+## NÃO TESTADO on the final SHA
+
+- No local shell/checkout was available in this execution path; no local Node/Rust command is claimed.
+- The changes to the distributed workflow, recovery worker watch mode, deterministic A→B process test, and B checkpoint assertion have not yet been executed on `d777812ad65f2b2b10a445b1c531787f6a5b87c6`.
+- The aggregate artifact and final CI gate are configured for push, pull request and manual dispatch, but **CI for this exact final SHA is not validated**.
+
+## Ten-round classification for this continuation
+
+| Round | Result | Classification |
+|---|---|---|
+| 1. Audit and reconcile branch | Existing API, migrations, task ownership, worker, E2E and workflow inspected; parallel commits preserved | **CONCLUÍDA** |
+| 2. Recovery Worker | Bounded authenticated watch mode implemented; no room-wide daemon | **IMPLEMENTADO / PARCIAL** |
+| 3. Recovery model | PostgreSQL `RECOVERY_REQUIRED`, lease events and fencing history used; recovery result captured | **PARCIAL** |
+| 4. Authenticated staged handoff | Existing table is not a complete state machine/API | **PENDENTE** |
+| 5. Real PostgreSQL A/B | Real PostgreSQL 16 + Team Room + deterministic A→B E2E retained and strengthened | **IMPLEMENTADO; final SHA NÃO TESTADO** |
+| 6. Independent processes | Separate Runner and Recovery Worker processes with independent state directories/sessions in E2E | **IMPLEMENTADO; final SHA NÃO TESTADO** |
+| 7. Concurrency | Existing Rust concurrency test plus two recovery workers racing; canonical task assertion added | **IMPLEMENTADO; final SHA NÃO TESTADO** |
+| 8. Permanent GitHub Actions lab | Push/PR/manual workflow and independent stage aggregation/final fail gate | **IMPLEMENTADO; final SHA NÃO TESTADO** |
+| 9. Evidence | Sanitized JSON, process/service logs and always-run artifact upload | **IMPLEMENTADO; final artifact NÃO GERADO neste SHA** |
+| 10. Execute and close | Historical SHA passed; current SHA has no observed check/run | **NÃO VALIDADO** |
+
+## Commits created in this continuation
+
+- `41492f9a965facd0a6982bbf79f1670e9f255686` — CI stages run independently and aggregate evidence.
+- `57b9bb04d1d8522d429289c272fe47e3d53c3603` — require Runner B checkpoint before completion.
+- `3fbd920ca3d5c5391c59c2d78333cf2ec9b1b471` — bounded recovery worker watch mode.
+- `5225cd9555d2cacf1eef80287b51dec17d6c94a4` — exercise watch mode and assert persisted recovery state.
+- `9c73e62f91657bb5891cefa6021baa825f58ea93` — harden polling bounds, HTTP timeout and async error handling.
+- `d777812ad65f2b2b10a445b1c531787f6a5b87c6` — deterministic A→B takeover and canonical-task assertion.
+
+## Final decision
+
+**IMPLEMENTAÇÃO PARCIAL — NÃO VALIDADA NO SHA FINAL.** The permanent PostgreSQL/Team Room/process lab and bounded recovery worker are present and strengthened. Historical evidence proves the earlier SHA, not this updated tree. Staged authenticated handoff and room-wide scheduled recovery remain incomplete. Do not mark this continuation successful until the workflow and artifact pass on exactly `d777812ad65f2b2b10a445b1c531787f6a5b87c6`.
