@@ -240,6 +240,16 @@ async fn renew_task_lease(
     tasks::renew_lease(&state.pool,&identity,task_id,token,request.lease_seconds.unwrap_or(60)).await.map(Json).map_err(task_status)
 }
 
+async fn release_task_lease(
+    State(state): State<AppState>, Path(task_id): Path<Uuid>,
+    headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
+) -> Result<Json<tasks::TaskLease>,StatusCode> {
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    require_permission(&state.pool,&identity,"task.transition").await.map_err(auth_status)?;
+    let token=request.fencing_token.ok_or(StatusCode::BAD_REQUEST)?;
+    tasks::release_lease(&state.pool,&identity,task_id,token).await.map(Json).map_err(task_status)
+}
+
 async fn checkpoint_task(
     State(state): State<AppState>, Path(task_id): Path<Uuid>,
     headers: axum::http::HeaderMap, Json(request): Json<tasks::LeaseRequest>,
@@ -285,6 +295,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/tasks", post(create_task))
         .route("/team-room/tasks/{task_id}/lease/acquire", post(acquire_task_lease))
         .route("/team-room/tasks/{task_id}/lease/renew", post(renew_task_lease))
+        .route("/team-room/tasks/{task_id}/lease/release", post(release_task_lease))
         .route("/team-room/tasks/{task_id}/checkpoint", post(checkpoint_task))
         .route("/team-room/tasks/{task_id}/complete", post(complete_task))
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
