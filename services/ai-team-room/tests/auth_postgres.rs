@@ -140,8 +140,8 @@ async fn simultaneous_replay_exchange_has_exactly_one_winner_and_permission_is_s
     }
     assert_eq!((success, rejected), (1, 1));
 
-    // A registered but ungranted principal authenticates nowhere: no permission,
-    // no local session, and no admission.
+    // A registered workload authenticates independently of room grants; authorization
+    // is checked only when it invokes a protected room action.
     let no_grant_principal = Uuid::new_v4();
     let no_grant_subject = format!("ungranted-{}", Uuid::new_v4());
     let no_grant_participant = Uuid::new_v4();
@@ -149,8 +149,11 @@ async fn simultaneous_replay_exchange_has_exactly_one_winner_and_permission_is_s
         .bind(no_grant_principal).bind(tenant).bind(ISSUER).bind(&no_grant_subject).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES ($1,$2,$3,'ungranted')")
         .bind(no_grant_participant).bind(tenant).bind(no_grant_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES ($1,$2,$3,$4,$5,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(no_grant_principal).bind(ISSUER).bind(&no_grant_subject).execute(&pool).await.unwrap();
     let denied = token(&no_grant_subject, &Uuid::new_v4().to_string(), 300);
-    assert!(matches!(exchange_workload_token(&pool, &config, room, &denied).await, Err(AuthError::Forbidden)));
+    let authenticated_without_grant = exchange_workload_token(&pool, &config, room, &denied).await.unwrap();
+    assert!(matches!(require_permission(&pool, &authenticated_without_grant.identity, "room.join").await, Err(AuthError::Forbidden)));
 
     // Disabled identity is rejected even when the external token is cryptographically valid.
     sqlx::query("UPDATE principals SET enabled = FALSE WHERE principal_id = $1").bind(principal).execute(&pool).await.unwrap();
