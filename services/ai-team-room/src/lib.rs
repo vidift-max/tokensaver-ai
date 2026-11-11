@@ -1,3 +1,5 @@
+pub mod auth;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
