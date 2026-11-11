@@ -16,6 +16,7 @@ path = "src/main.rs"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 jsonwebtoken = "9.3"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -32,4 +33,3 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tokio-tungstenite = "0.26"
-futures-util = "0.3"
