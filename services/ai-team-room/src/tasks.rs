@@ -308,7 +308,8 @@ mod distributed_lease_tests {
     #[tokio::test]
     async fn ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection() {
         let (pool,tenant,identities)=fixture().await;
-        let mission_id=Uuid::new_v4();
+        let mission_id=Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+        let mission_label="TEST-MISSION-DISTRIBUTED-001";
         let task=create_task(&pool,&identities[0],CreateTask{mission_id,title:"distributed fencing E2E".into(),checkpoint:serde_json::json!({"progress":41,"next_action":"resume"})}).await.unwrap();
         let duplicate=create_task(&pool,&identities[0],CreateTask{mission_id,title:"duplicate request after retry".into(),checkpoint:serde_json::json!({"progress":999})}).await.unwrap();
         assert_eq!(duplicate.task_id,task.task_id,"same tenant/room/mission must resolve to one canonical task");
@@ -382,10 +383,14 @@ mod distributed_lease_tests {
             .bind(task.task_id).execute(&*pool).await;
         assert!(downgrade.is_err(),"PostgreSQL trigger must reject fencing token rollback");
 
+        let stale_renew=renew_lease(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,30).await;
+        assert!(matches!(stale_renew,Err(TaskError::Fenced)),"a previous owner must not renew after takeover");
         let stale=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"corrupt":true})).await;
         assert!(matches!(stale,Err(TaskError::Fenced)));
         let stale_complete=complete_task(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"stale_complete":true})).await;
         assert!(matches!(stale_complete,Err(TaskError::Fenced)),"a previous owner must not complete after takeover");
+        let stale_release=release_lease(&pool,&old_identity,task.task_id,old_grant.task.fencing_token).await;
+        assert!(matches!(stale_release,Err(TaskError::Fenced)),"a previous owner must not release after takeover");
         let future=write_checkpoint(&pool,&replacement,task.task_id,99,serde_json::json!({"future":true})).await;
         assert!(matches!(future,Err(TaskError::Fenced)));
 
@@ -413,6 +418,27 @@ mod distributed_lease_tests {
         let handoffs:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_handoffs WHERE task_id=$1 AND status='RESUMED' AND from_fencing_token=1 AND to_fencing_token=2")
             .bind(task.task_id).fetch_one(&*pool).await.unwrap();
         assert_eq!(handoffs,1);
+        println!("DISTRIBUTED_EVIDENCE_JSON={}",serde_json::json!({
+            "mission_label":mission_label,
+            "mission_id":mission_id,
+            "task_id":task.task_id,
+            "runner_a_principal_id":old_identity.principal_id,
+            "runner_a_session_id":old_identity.session_id,
+            "runner_a_execution_id":old_identity.execution_id,
+            "runner_b_principal_id":replacement.principal_id,
+            "runner_b_session_id":replacement.session_id,
+            "runner_b_execution_id":replacement.execution_id,
+            "fencing_a":old_grant.task.fencing_token,
+            "fencing_b":new_grant.task.fencing_token,
+            "initial_acquire":"ACCEPTED",
+            "takeover":"ACCEPTED",
+            "a_renew":"REJECTED",
+            "a_checkpoint":"REJECTED",
+            "a_complete":"REJECTED",
+            "a_release":"REJECTED",
+            "b_complete":"ACCEPTED",
+            "final_task_status":completed.status
+        }));
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&*pool).await.unwrap();
     }
 
