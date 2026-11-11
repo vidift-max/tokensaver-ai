@@ -1591,3 +1591,80 @@ A final test-message wording correction was committed after the first continuati
 - `02de2d45c177a62910307f86ad00e1cc8b74fa18` — clarifies that the deterministic Runner A/B flow asserts one canonical task; it does not claim that those two process starts are simultaneous.
 - Therefore the latest **code/test SHA** for this continuation is `02de2d45c177a62910307f86ad00e1cc8b74fa18`. The earlier `d777812ad65f2b2b10a445b1c531787f6a5b87c6` is its immediate predecessor.
 - This report update is documentation-only. Neither the code/test SHA above nor the resulting report-only branch HEAD is marked CI-validated without checks/run evidence tied to that exact SHA.
+
+
+---
+
+# FINAL ADDENDUM — CONCURRENT RUNNER A/B + BOUNDED RECOVERY WATCH VALIDATED (2026-11-11)
+
+This addendum supersedes the previous "final SHA not validated" and "deterministic sequential A→B" statements above. It records the latest completed run on the current code SHA.
+
+## Exact code SHA and GitHub Actions evidence
+
+- Repository: `vidift-max/tokensaver-ai`.
+- Branch: `v2-saas-alpha`.
+- Code SHA tested: `38c0e855ead17df9c6e88a1f5df10e09463db39b`.
+- Distributed lab workflow: **Distributed Runner PostgreSQL Lab**.
+- Run ID: `43083519201` (run number 23) — **success**.
+- Job: `PostgreSQL 16 + Team Room + independent Runner processes` — **success**.
+- Artifact ID: `13884389369`.
+- Artifact name: `distributed-runner-postgres-evidence-43083519201`.
+- Artifact digest: `sha256:94dd4800d9ed18a51588e3e19e2f65f5fa63ca5f9984d4fec08eaf2b54feb2e7`.
+- Full CI run ID: `43083519325` (run number 500) — same SHA — **success**.
+- Full CI jobs: `foundation`, `foundation-windows`, `ai-team-room-service`, `keycloak-oidc-smoke` — all **success**. Linux and Windows cargo tests, Node mission tests, build, Team Room PostgreSQL tests and Keycloak smoke all completed.
+
+Links:
+- [Distributed Runner Lab run 23](https://github.com/vidift-max/tokensaver-ai/actions/runs/43083519201)
+- [Full CI run 500](https://github.com/vidift-max/tokensaver-ai/actions/runs/43083519325)
+
+## Final process-level evidence
+
+Mission label: `TEST-MISSION-DISTRIBUTED-001`.
+
+- mission_id: `dbf45cd0-14a1-5b26-92df-aeaf640e5513`.
+- task_id: `fddd49a9-5e5f-4b2a-ae2b-1955c55972b7`.
+- Database: shared PostgreSQL 16 service container; real Team Room Axum service process; migrations and readiness checks passed.
+- Two Mission Runner processes started concurrently against the same mission and separate state directories.
+- Initial owner process PID: `6374`; rejected competing start PID: `6373`; B takeover process PID: `6478`.
+- Logical Runner A (initial winner): principal `a5822554-08ad-456a-b1fa-92a384c04948`; session `15f64ddf-6af7-45ca-b4b1-a6235d41b8ff`; execution `cf99a7b6-36c3-4740-a739-11ccd39b193c`.
+- Logical Runner B (replacement): principal `6e029662-99f9-43f8-9d38-031e51301710`; session `517bab5d-43d0-40ef-bd08-dccc9eafb121`; execution `e9fdaf0e-b511-4887-b006-272a526c460f`.
+- The two starts raced concurrently. PostgreSQL resolved one canonical task; B's initial acquire was rejected while A's lease was valid. Evidence records `task_count_for_mission=1` and `runner_initial_start_concurrent=true`.
+- A's CLI process exited. The test waited 16 seconds and confirmed expiry by PostgreSQL clock; it did not mutate `lease_expires_at`.
+- Two independent bounded-watch Recovery Worker processes ran concurrently:
+  - Worker A PID `6462`, principal `bf1d852b-556f-4b6c-8d48-a874657d825b`, session `d475a830-4568-4d7c-993a-ad122eb4648c`.
+  - Worker B PID `6463`, principal `bac8f1c3-6c6f-42b2-93be-bde6d59d5121`, session `90a0eeb0-5249-4a59-954e-8a27e06e9df8`.
+  - Both selected Runner B; the database serialized recovery to exactly one persisted transition, `RECOVERY_REQUIRED`.
+- Fencing: A = `1`; B = `2`.
+- Stale A renew/checkpoint/complete/release: all **REJECTED** by Team Room.
+- B checkpoint: **ACCEPTED**, checkpoint version `2`.
+- B complete: **ACCEPTED**.
+- Final task status: `COMPLETED`.
+- Evidence asserts distinct Runner processes and sessions. Artifact contains no bearer token, JWT, password or client secret.
+
+## Final implementation classification
+
+| Area | Status | Evidence / qualification |
+|---|---|---|
+| PostgreSQL 16 shared authority | **VALIDADO** | Lab run 23; real DB service and migrations |
+| Canonical task creation | **VALIDADO** | Concurrent A/B starts; one task |
+| Independent Runner processes and sessions | **VALIDADO** | Distinct PIDs, principals, sessions and executions |
+| Live lease exclusion | **VALIDADO** | Competing Runner receives HTTP 409 |
+| Real lease expiry | **VALIDADO** | 15-second configured lease; 16-second wall-clock wait; DB confirms expired |
+| Takeover and monotonic fencing | **VALIDADO** | Fencing 1→2 |
+| Stale-owner fencing | **VALIDADO** | Renew, checkpoint, complete and release all rejected |
+| Recovery Worker | **VALIDADO COM CONDIÇÃO** | Bounded watch mode, two independent workers, one persisted recovery transition; candidate Runner acquires its own lease |
+| B checkpoint and completion | **VALIDADO** | Checkpoint version 2; final COMPLETED |
+| Aggregate evidence and artifact | **VALIDADO** | Run 23 artifact ID and digest above |
+| Full repository CI | **VALIDADO** | Run 500, all four jobs successful |
+
+## Remaining production boundaries
+
+1. The Recovery Worker supports bounded watch/polling for a specified room/task. A continuously supervised room-wide scheduler/service, restart policy, metrics and alerting are still not installed. The candidate Runner performs the final authenticated acquire; the worker does not impersonate it.
+2. Runner A/B test sessions are opaque local-session fixtures seeded into PostgreSQL and then validated through the real Team Room session authentication and permission path. The test does not perform two independent OIDC token exchanges. The separate Keycloak smoke job passed.
+3. Staged authenticated handoff states/API (`OFFERED/ACCEPTED/REJECTED/EXPIRED/CANCELLED/COMPLETED`) remain unimplemented; the proven flow is lease expiry, persisted recovery state, candidate selection and transactional acquire/takeover.
+
+## Decision
+
+**GO CONDITIONED for the distributed Runner layer.** The requested PostgreSQL-backed concurrent A/B proof, real lease expiry, fencing, concurrent recovery workers, stale-owner rejection, B checkpoint/completion, artifact and full CI all passed on SHA `38c0e855ead17df9c6e88a1f5df10e09463db39b`.
+
+Do not describe the whole product as production-ready until room-wide recovery scheduling/operations and staged handoff are completed. The next layer should address those operational boundaries; do not repeat the already-passing A/B proof unless relevant code changes.
