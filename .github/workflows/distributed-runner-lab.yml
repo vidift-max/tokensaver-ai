@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  postgres-lease-concurrency:
-    name: PostgreSQL lease, expiry, takeover and fencing
+  postgres-distributed-runner:
+    name: PostgreSQL 16 + Team Room + independent Runner processes
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -39,100 +39,121 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Verify PostgreSQL is accepting connections
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client jq
+      - name: Wait for PostgreSQL 16
         run: |
           for attempt in $(seq 1 30); do
-            if pg_isready -h 127.0.0.1 -p 5432 -U team_room -d team_room_test; then
-              break
-            fi
+            if pg_isready -h 127.0.0.1 -p 5432 -U team_room -d team_room_test; then exit 0; fi
             sleep 2
           done
           pg_isready -h 127.0.0.1 -p 5432 -U team_room -d team_room_test
-      - name: Run real PostgreSQL distributed lease integration test
-        id: integration
+      - name: Run Rust PostgreSQL lease and fencing integration test
+        id: rust_integration
         shell: bash
         run: |
           set -uo pipefail
           mkdir -p distributed-runner-evidence
-          printf 'commit=%s\nmission=PostgreSQL integration fixture (random UUID per test)\n' "$GITHUB_SHA" > distributed-runner-evidence/test.log
+          printf 'commit=%s\ntest=Rust PostgreSQL lease concurrency\n' "$GITHUB_SHA" > distributed-runner-evidence/test.log
           set +e
           cargo test --manifest-path services/ai-team-room/Cargo.toml ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection -- --nocapture 2>&1 | tee -a distributed-runner-evidence/test.log
           result=${PIPESTATUS[0]}
           set -e
           echo "exit_code=$result" >> distributed-runner-evidence/test.log
           echo "exit_code=$result" >> "$GITHUB_OUTPUT"
-          evidence_line="$(grep '^DISTRIBUTED_EVIDENCE_JSON=' distributed-runner-evidence/test.log | tail -n 1 | cut -d= -f2- || true)"
-          if [ -n "$evidence_line" ]; then
-            test_evidence="$evidence_line"
-          else
-            test_evidence="null"
-          fi
-          jq -n \
-            --arg sha "$GITHUB_SHA" \
-            --argjson exit_code "$result" \
-            --argjson test_evidence "$test_evidence" \
-            '{
-              commit_sha:$sha,
-              workflow:"Distributed Runner PostgreSQL Lab",
-              test:"ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection",
-              database:"PostgreSQL 16 service container",
-              database_shared:true,
-              migrations_applied_by_test_fixture:true,
-              identity_count:10,
-              independent_mission_runner_processes:"not_tested",
-              http_team_room_authentication:"not_tested",
-              recovery_worker:"not_implemented",
-              exit_code:$exit_code,
-              result:(if $exit_code == 0 then "PASS" else "FAIL" end),
-              test_evidence:$test_evidence
-            }' > distributed-runner-evidence/distributed-runner-evidence.json
-          exit "$result"
-      - name: Install PostgreSQL client for authenticated Runner fixture
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-      - name: Build Team Room HTTP service
-        run: cargo build --manifest-path services/ai-team-room/Cargo.toml
-      - name: Run live Team Room and two independent Runner processes
-        shell: bash
-        run: |
-          set -euo pipefail
-          RUST_LOG=info TEAM_ROOM_BIND=127.0.0.1:8081 ./services/ai-team-room/target/debug/ai-team-room-service > distributed-runner-evidence/team-room-service.log 2>&1 &
-          SERVICE_PID=$!
-          trap 'kill "$SERVICE_PID" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:8081/health/live >/dev/null && curl --fail --silent http://127.0.0.1:8081/health/ready >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-          curl --fail --show-error http://127.0.0.1:8081/health/live
-          curl --fail --show-error http://127.0.0.1:8081/health/ready
-          echo "Team Room service ready on 127.0.0.1:8081; DATABASE_URL targets the shared PostgreSQL 16 service."
-          TEAM_ROOM_API_URL=http://127.0.0.1:8081 DISTRIBUTED_EVIDENCE_DIR=distributed-runner-evidence node scripts/distributed-runner-process-e2e.mjs 2>&1 | tee -a distributed-runner-evidence/test.log
-      - name: Consolidate distributed Runner evidence
+          exit 0
+      - name: Build real Team Room service
+        id: service_build
         if: always()
         shell: bash
         run: |
+          set +e
+          cargo build --manifest-path services/ai-team-room/Cargo.toml 2>&1 | tee -a distributed-runner-evidence/test.log
+          result=${PIPESTATUS[0]}
+          echo "exit_code=$result" >> distributed-runner-evidence/test.log
+          echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Run two independent Mission Runner processes against shared PostgreSQL
+        id: process_e2e
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ "${{ steps.service_build.outputs.exit_code }}" != "0" ] || [ ! -x services/ai-team-room/target/debug/ai-team-room-service ]; then
+            echo "Team Room binary unavailable; distributed process proof not run." | tee -a distributed-runner-evidence/test.log
+            echo "exit_code=99" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          RUST_LOG=info TEAM_ROOM_BIND=127.0.0.1:8081 ./services/ai-team-room/target/debug/ai-team-room-service > distributed-runner-evidence/team-room-service.log 2>&1 &
+          SERVICE_PID=$!
+          trap 'kill "$SERVICE_PID" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8081/health/live >/dev/null && curl --fail --silent http://127.0.0.1:8081/health/ready >/dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Team Room readiness failed." | tee -a distributed-runner-evidence/test.log
+            echo "exit_code=98" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          curl --fail --show-error http://127.0.0.1:8081/health/live
+          curl --fail --show-error http://127.0.0.1:8081/health/ready
+          set +e
+          TEAM_ROOM_API_URL=http://127.0.0.1:8081 DISTRIBUTED_EVIDENCE_DIR=distributed-runner-evidence node scripts/distributed-runner-process-e2e.mjs 2>&1 | tee -a distributed-runner-evidence/test.log
+          result=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$result" >> distributed-runner-evidence/test.log
+          echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Consolidate evidence and enforce every proof gate
+        if: always()
+        env:
+          RUST_EXIT: ${{ steps.rust_integration.outputs.exit_code }}
+          BUILD_EXIT: ${{ steps.service_build.outputs.exit_code }}
+          PROCESS_EXIT: ${{ steps.process_e2e.outputs.exit_code }}
+        shell: bash
+        run: |
           set -euo pipefail
+          process_evidence=null
           if [ -f distributed-runner-evidence/runner-process-evidence.json ]; then
             process_evidence="$(cat distributed-runner-evidence/runner-process-evidence.json)"
-          else
-            process_evidence="null"
           fi
-          jq --argjson process "$process_evidence" '
-            .independent_mission_runner_processes = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
-            .http_team_room_authentication = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
-            .recovery_worker = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS: authenticated concurrent workers serialized recovery and selected replacement" end) |
-            .runner_process_evidence = $process |
-            .result = (if $process == null then "FAIL" else "PASS" end)
-          ' distributed-runner-evidence/distributed-runner-evidence.json > distributed-runner-evidence/distributed-runner-evidence.tmp
-          mv distributed-runner-evidence/distributed-runner-evidence.tmp distributed-runner-evidence/distributed-runner-evidence.json
-      - name: Upload PostgreSQL lab evidence
+          jq -n \
+            --arg sha "$GITHUB_SHA" \
+            --argjson rust_exit "${RUST_EXIT:-99}" \
+            --argjson build_exit "${BUILD_EXIT:-99}" \
+            --argjson process_exit "${PROCESS_EXIT:-99}" \
+            --argjson process "$process_evidence" \
+            '{
+              commit_sha:$sha,
+              workflow:"Distributed Runner PostgreSQL Lab",
+              database:"PostgreSQL 16 shared service container",
+              team_room:"real Axum service process",
+              rust_postgres_integration:{exit_code:$rust_exit,result:(if $rust_exit==0 then "PASS" else "FAIL_OR_NOT_RUN" end)},
+              team_room_build:{exit_code:$build_exit,result:(if $build_exit==0 then "PASS" else "FAIL_OR_NOT_RUN" end)},
+              independent_runner_processes:{exit_code:$process_exit,result:(if $process_exit==0 and $process!=null then "PASS" else "FAIL_OR_NOT_RUN" end)},
+              runner_process_evidence:$process,
+              result:(if $rust_exit==0 and $build_exit==0 and $process_exit==0 and $process!=null and $process.result=="PASS" then "PASS" else "FAIL" end)
+            }' > distributed-runner-evidence/distributed-runner-evidence.json
+          cat distributed-runner-evidence/distributed-runner-evidence.json
+      - name: Upload PostgreSQL distributed evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: distributed-runner-postgres-evidence-${{ github.run_id }}
           path: distributed-runner-evidence/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
+      - name: Fail workflow unless every integration proof passed
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f distributed-runner-evidence/distributed-runner-evidence.json
+          jq -e '.result == "PASS"' distributed-runner-evidence/distributed-runner-evidence.json
