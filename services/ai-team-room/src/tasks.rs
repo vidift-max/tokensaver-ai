@@ -98,13 +98,29 @@ pub async fn create_task(
       "SELECT EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id AND w.execution_id=$4 JOIN room_memberships m ON m.room_id=s.room_id AND m.principal_id=s.principal_id AND m.session_id=s.session_id JOIN principals p ON p.tenant_id=s.tenant_id AND p.principal_id=s.principal_id JOIN workload_identities wi ON wi.tenant_id=p.tenant_id AND wi.principal_id=p.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND p.enabled=TRUE AND wi.status='ACTIVE')"
     ).bind(identity.session_id).bind(identity.room_id).bind(identity.principal_id).bind(identity.execution_id).fetch_one(&mut *tx).await?;
     if !actor_valid { return Err(TaskError::Fenced); }
-    sqlx::query("INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-        .bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
-        .bind(request.mission_id).bind(title).bind(checkpoint).bind(identity.principal_id)
-        .execute(&mut *tx).await?;
-    let task = lock_task(&mut tx,identity.room_id,task_id).await?;
+    // The unique database key serializes concurrent creates for the same
+    // (tenant, room, mission). The no-op conflict update returns the canonical
+    // row, including its current owner/fence/checkpoint, without resetting it.
+    let task = sqlx::query_as::<_,TaskLease>(
+        "INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,room_id,mission_id) DO UPDATE SET updated_at=team_tasks.updated_at RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+    ).bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
+     .bind(request.mission_id).bind(title).bind(checkpoint).bind(identity.principal_id)
+     .fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(task)
+}
+
+/// Read the canonical task for a mission inside the authenticated tenant/room.
+/// This is observation only: it never grants or renews ownership.
+pub async fn get_task_by_mission(
+    pool: &PgPool,
+    identity: &AuthenticatedIdentity,
+    mission_id: Uuid,
+) -> Result<TaskLease, TaskError> {
+    sqlx::query_as::<_,TaskLease>(
+        "SELECT task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE tenant_id=$1 AND room_id=$2 AND mission_id=$3"
+    ).bind(identity.tenant_id).bind(identity.room_id).bind(mission_id)
+     .fetch_optional(pool).await?.ok_or(TaskError::NotFound)
 }
 
 pub async fn acquire_lease(
@@ -292,7 +308,13 @@ mod distributed_lease_tests {
     #[tokio::test]
     async fn ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection() {
         let (pool,tenant,identities)=fixture().await;
-        let task=create_task(&pool,&identities[0],CreateTask{mission_id:Uuid::new_v4(),title:"distributed fencing E2E".into(),checkpoint:serde_json::json!({"progress":41,"next_action":"resume"})}).await.unwrap();
+        let mission_id=Uuid::new_v4();
+        let task=create_task(&pool,&identities[0],CreateTask{mission_id,title:"distributed fencing E2E".into(),checkpoint:serde_json::json!({"progress":41,"next_action":"resume"})}).await.unwrap();
+        let duplicate=create_task(&pool,&identities[0],CreateTask{mission_id,title:"duplicate request after retry".into(),checkpoint:serde_json::json!({"progress":999})}).await.unwrap();
+        assert_eq!(duplicate.task_id,task.task_id,"same tenant/room/mission must resolve to one canonical task");
+        assert_eq!(duplicate.checkpoint["progress"],41,"idempotent retry must not overwrite canonical task state");
+        let looked_up=get_task_by_mission(&pool,&identities[0],mission_id).await.unwrap();
+        assert_eq!(looked_up.task_id,task.task_id);
         let pool=Arc::new(pool);
         let mut attempts=Vec::new();
         for identity in identities.iter().cloned() {
