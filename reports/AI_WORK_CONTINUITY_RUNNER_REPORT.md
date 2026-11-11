@@ -342,3 +342,42 @@ Workflow run `43041936731`, Windows job `130595783808`:
 | External AI handoff and prompt dispatch | PENDENTE | No provider message integration |
 
 **Updated decision remains NO-GO for full mission acceptance and automatic AI continuity.** The local runner and BAT are implemented, and the BAT smoke step passed on Windows. Full test-suite acceptance and all remote orchestration requirements remain open.
+
+
+---
+
+## Addendum 2 — State validation and recovery hardening (2026-11-11)
+
+### Code commit
+- `70aea0f7a3bf5d583767234ac6b5f4960e062580` — hardened the local runner and expanded automated coverage.
+
+### Changes in this increment
+- Added structural validation for the versioned state document, current mission pointer, mission record identity, status, mission number, and required collections/objects. Invalid state now fails closed instead of being accepted as a superficially valid object.
+- Distinguished a real open blocker (`kind: BLOCKER`) from a recorded disconnect (`kind: DISCONNECT`).
+- A successful resume from `DISCONNECTED` now marks the latest recorded disconnect as `RESUMED` and stores `resumed_at`; it no longer leaves the disconnect represented as an open blocker.
+- Handoff creation is restricted to active, disconnected, or review-pending missions.
+- Successor prompt preparation is restricted to a completed (`DONE`) current mission and rejects using the current mission ID as its successor ID.
+- Expanded `tests/mission-runner.test.mjs` from 8 to 12 tests. Added coverage for missing state/nonexistent mission selection, duplicate start, held lock/no-write behavior, malformed state structure, and prompt readiness gating; updated disconnect and prompt lifecycle tests.
+
+### Latest code validation
+- Code HEAD under test: `70aea0f7a3bf5d583767234ac6b5f4960e062580`.
+- Workflow run `43042612186`: **IN_PROGRESS** at the time this addendum was committed.
+- The workflow had started all four jobs. The Windows BAT smoke step was not yet re-executed on this code HEAD at the time of observation.
+- The mission-runner test step had not yet run on this code HEAD. No pass is claimed for the 12-test suite.
+- Prior run `43042246183` was cancelled after a newer push. Its Keycloak OIDC live federation job and AI Team Room service PostgreSQL job both completed **SUCCESS**; its Linux foundation cargo check completed **SUCCESS**, but its Linux cargo test was cancelled, and the Windows foundation job was cancelled after its BAT smoke step succeeded. This does not constitute full CI success.
+
+### Updated classifications
+| Item | Classification | Evidence / limitation |
+|---|---|---|
+| State schema validation | IMPLEMENTADO | Code in commit 70aea0f; CI pending |
+| Disconnect vs blocker semantics | IMPLEMENTADO | Distinct event records and resume recovery fields; CI pending |
+| Handoff creation lifecycle gate | IMPLEMENTADO | Guard in runner; CI pending |
+| Prompt readiness completion gate | IMPLEMENTADO | Guard plus negative test; CI pending |
+| Expanded mission runner suite | IMPLEMENTADO | 12 tests authored; execution pending |
+| Windows BAT smoke on earlier commit | TESTADO | Run 43041936731 smoke step SUCCESS |
+| Windows BAT smoke on latest code HEAD | PENDENTE | Run 43042612186 pending at addendum time |
+| Keycloak live OIDC federation | TESTADO | Run 43042246183 job SUCCESS; prior commit 18ceb9c |
+| AI Team Room PostgreSQL service tests | TESTADO | Run 43042246183 job SUCCESS; prior commit 18ceb9c |
+| Full CI for latest code | PENDENTE | Run 43042612186 not completed |
+
+**Decision:** GO CONDICIONADO for continued local runner development. NO-GO for full acceptance, remote AI handoff, or automatic prompt delivery. The code hardening is committed; the latest CI result must be checked before claiming test validation.
