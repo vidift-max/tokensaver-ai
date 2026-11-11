@@ -265,6 +265,10 @@ jobs:
                 -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
                 -d "$ACCOUNT_ROLES"
             fi
+            # The ephemeral test realm does not need the built-in account application.
+            curl --fail --silent --show-error -o /dev/null \
+              -X DELETE "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$ACCOUNT_CLIENT_ID" \
+              -H "Authorization: Bearer $ADMIN_TOKEN"
           fi
 
           STAGE="client-credentials-token"
