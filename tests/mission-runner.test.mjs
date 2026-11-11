@@ -36,6 +36,7 @@ test("handoff requires explicit acceptance and records lifecycle", t => {
  assert.equal(run(c,"handoff-create","AI-B").status,0);
  assert.equal(run(c,"handoff-complete").status,2);
  assert.equal(run(c,"handoff-accept","p-b").status,0);
+ assert.equal(run(c,"resume","AI-B","p-b").status,0);
  assert.equal(run(c,"handoff-complete").status,0);
  const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-121"];
  assert.equal(m.handoff.status,"HANDOFF_COMPLETED"); assert.equal(m.responsible_ai,"AI-B");
@@ -143,4 +144,63 @@ test("requires a completed mission before preparing a successor prompt", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-133","133","Prompt gate");
  assert.equal(run(c,"prompt-ready","M-134","Do next mission").status,2);
+});
+
+
+test("heartbeat presence timeout requires missed heartbeats, not a long-running task", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-134","134","Heartbeat");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
+ assert.equal(run(c,"heartbeat","session-a").status,0);
+ let s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(s.missions["M-134"].presence.state,"ACTIVE");
+ s.missions["M-134"].presence.last_seen=new Date(Date.now()-500).toISOString();
+ fs.writeFileSync(path.join(c.dir,"STATE.json"),JSON.stringify(s));
+ assert.equal(run(c,"presence","1000").status,0);
+ s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(s.missions["M-134"].presence.state,"IDLE");
+ assert.equal(s.missions["M-134"].status,"IN_PROGRESS");
+ s.missions["M-134"].presence.last_seen=new Date(Date.now()-3000).toISOString();
+ fs.writeFileSync(path.join(c.dir,"STATE.json"),JSON.stringify(s));
+ assert.equal(run(c,"presence","1000").status,0);
+ s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(s.missions["M-134"].presence.state,"DISCONNECTED");
+ assert.equal(s.missions["M-134"].status,"RECOVERY_REQUIRED");
+});
+
+test("recovery preserves checkpoint and handoff blocks the previous executor", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-135","135","Recovery handoff");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
+ run(c,"set-task","implement feature"); run(c,"record-file","src/feature.rs");
+ run(c,"record-commit","abc123"); run(c,"record-test","unit tests pending");
+ run(c,"checkpoint","saved before disconnect");
+ run(c,"disconnect","heartbeat timeout");
+ assert.equal(run(c,"recover").status,0);
+ assert.equal(run(c,"handoff-create","AI-B").status,0);
+ assert.equal(run(c,"handoff-create","AI-C").status,2);
+ assert.equal(run(c,"handoff-accept","p-b").status,0);
+ assert.equal(run(c,"resume").status,2);
+ assert.equal(run(c,"resume","AI-A","p-a").status,2);
+ assert.equal(run(c,"resume","AI-B","p-b").status,0);
+ assert.equal(run(c,"handoff-complete").status,0);
+ const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-135"];
+ assert.equal(m.status,"IN_PROGRESS");
+ assert.equal(m.responsible_ai,"AI-B");
+ assert.equal(m.checkpoint.task_id,"implement feature");
+ assert.deepEqual(m.checkpoint.files_changed,["src/feature.rs"]);
+ assert.deepEqual(m.checkpoint.commits,["abc123"]);
+ assert.equal(m.handoff.context.mission_id,"M-135");
+ assert.equal(m.handoff.context.checkpoint.checkpoint_id,m.checkpoint.checkpoint_id);
+ assert.equal(m.reassignment_queue[0].status,"COMPLETED");
+});
+
+test("legacy state is upgraded in memory with continuity fields", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-136","136","Legacy compatibility");
+ const p=path.join(c.dir,"STATE.json"), s=JSON.parse(fs.readFileSync(p,"utf8"));
+ delete s.missions["M-136"].presence; delete s.missions["M-136"].execution;
+ delete s.missions["M-136"].reassignment_queue; delete s.missions["M-136"].checkpoint_history;
+ fs.writeFileSync(p,JSON.stringify(s));
+ assert.equal(run(c,"status").status,0);
 });
