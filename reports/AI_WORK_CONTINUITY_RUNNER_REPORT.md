@@ -1093,3 +1093,105 @@ Therefore:
 - The current branch still has branch protection disabled. The observed freeze is valid at this audit point, but GitHub does not enforce it against a future push.
 
 This final evidence update is also documentation-only. Its new commit must receive its own four-job CI before that new SHA is described as validated. Do not infer that result from runs `43053560701` or `43055057136`.
+
+---
+
+# MISSÃO CRÍTICA — RUNNER → TEAM ROOM → POSTGRESQL (AUDITORIA INICIAL, 2026-11-11)
+
+## Estado real antes de qualquer alteração
+
+- Branch confirmada: v2-saas-alpha.
+- HEAD inicial observado: a65a07bc8844ac7502694b723c61ec9e992cbf32.
+- Commit imediatamente anterior: 5e1ca8a5bceccc0e9c42a20c99e2ef85aa9387ed.
+- HEAD a65a07b altera somente este relatório; não há commit de código posterior ao código HEAD a360a3ea751c6dc5b32cb865201a81b4b2845ece.
+- A consulta de status checks do SHA a65a07b retornou statuses vazios; consulta de workflow runs por commit também retornou lista vazia. CI do HEAD inicial a65a07b: PENDENTE / NÃO OBSERVADA nesta auditoria. Não inferir execução.
+- Nenhum arquivo de código foi modificado nesta missão até este registro.
+
+## Rodada 1 — auditoria detalhada do Runner
+
+Arquivos inspecionados no branch:
+
+- scripts/mission-runner.mjs
+- tests/mission-runner.test.mjs
+- services/ai-team-room/src/main.rs
+- services/ai-team-room/src/tasks.rs
+- services/ai-team-room/README.md
+- reports/AI_WORK_CONTINUITY_RUNNER_REPORT.md
+
+Fluxo atual observado em scripts/mission-runner.mjs:
+
+1. init cria STATE.json com execution.lease_id, owner_ai, participant_id e lease_expires_at nulos.
+2. assign grava responsible_ai e participant_id localmente.
+3. acknowledge altera status localmente.
+4. start muda status para IN_PROGRESS e cria crypto.randomUUID() como lease_id; owner e expiração são derivados do STATE local/relógio local. Nenhuma chamada HTTP é feita.
+5. checkpoint cria e grava checkpoint localmente sem fencing remoto.
+6. heartbeat altera presence.session_id e last_seen localmente e estende execution.lease_expires_at localmente.
+7. presence calcula ACTIVE/IDLE/SUSPECTED_DISCONNECTED/DISCONNECTED com Date.now local e pode gravar RECOVERY_REQUIRED e fila local.
+8. recover só altera status e fila local.
+9. resume verifica status/checkpoint/handoff locais, muda para IN_PROGRESS e cria outro lease_id local.
+10. handoff-create/accept/complete altera owner e status no JSON local; não chama o Team Room.
+11. complete/submission/review/approve fecha tarefa localmente sem pedir conclusão ao PostgreSQL.
+12. writeState persiste STATE.json e events.ndjson; o lock local apenas serializa processos que compartilham o mesmo diretório/FS.
+
+**Conclusão R1:** IMPLEMENTADO como orquestrador local; NÃO IMPLEMENTADO como executor distribuído. STATE.json ainda concede autoridade operacional local.
+
+## Contrato remoto disponível no Team Room
+
+Inspeção de main.rs confirmou rotas existentes:
+
+- GET /auth/me — identidade autenticada da sessão.
+- POST /team-room/heartbeat — renova heartbeat do workload e membership.
+- POST /team-room/tasks — cria task (requer task.write; body CreateTask: mission_id UUID, title, checkpoint).
+- POST /team-room/tasks/{task_id}/lease/acquire — acquire (task.transition; lease_seconds opcional).
+- POST /team-room/tasks/{task_id}/lease/renew — renew (fencing_token obrigatório).
+- POST /team-room/tasks/{task_id}/lease/release — release (fencing_token obrigatório).
+- POST /team-room/tasks/{task_id}/checkpoint — checkpoint (fencing_token + checkpoint obrigatórios).
+- POST /team-room/tasks/{task_id}/complete — complete (fencing_token + checkpoint).
+
+Os métodos de tasks.rs validam transacionalmente principal, participant, session, execution, membership, workload identity, estado e expiração. O fencing token é comparado exatamente com o valor atual.
+
+Limitações do contrato atual relevantes ao Runner:
+
+- Não existe GET task por mission_id nem endpoint de leitura/validação de lease. Para retomar após perda do STATE local, não há descoberta idempotente de task por mission_id.
+- CreateTask exige mission_id UUID; o mission_id do Runner é string local como M-120. É necessário mapear IDs de forma estável ou adicionar API de lookup com unicidade/índice, sem duplicar task.
+- O Team Room não fornece um lease_id separado no retorno; fencing_token + task_id + owner/session/execution + lease_expires_at são a identidade de autoridade efetiva.
+- /team-room/heartbeat mantém presence do workload, mas não substitui renew da task lease.
+- O endpoint acquire já rejeita um owner com lease viva; o takeover só pode ocorrer após expiração/recovery.
+
+## Classificação das dez rodadas
+
+| Rodada | Estado nesta execução | Evidência / bloqueio |
+|---|---|---|
+| 1 Auditoria | VALIDADA | Código real do Runner e rotas Team Room inspecionados; fluxo acima |
+| 2 Contrato | ESPECIFICADO / PARCIAL | Rotas e payloads existentes mapeados; falta lookup idempotente por mission_id e leitura remota de lease |
+| 3 Remover ownership local | PENDENTE | Nenhuma alteração de código nesta missão |
+| 4 Start/resume distribuído | PENDENTE | Nenhuma integração HTTP implementada |
+| 5 Heartbeat remoto | PENDENTE | Heartbeat e renew existem no servidor, mas Runner não os chama |
+| 6 Checkpoint com fencing | PENDENTE no Runner | Servidor exige fencing; Runner ainda grava localmente |
+| 7 Complete seguro | PENDENTE no Runner | Servidor exige fencing; Runner ainda conclui localmente |
+| 8 Recovery worker | PENDENTE | Serviço só expõe endpoint manual; README confirma ausência de scheduler |
+| 9 Handoff + multiprocesso | PENDENTE | Handoff do Runner é local; não há protocolo staged no Team Room nem teste multi-processo PostgreSQL |
+| 10 Validação final | BLOQUEADA pelas rodadas de implementação não executadas | Não há código novo para validar nem CI final desta missão |
+
+## Decisão técnica da auditoria
+
+**Não é seguro alterar start/resume apenas para fazer chamadas HTTP superficiais.** A integração precisa ser fail-closed e manter consistência nos casos de crash entre create/acquire e persistência local. O contrato atual não oferece lookup idempotente de task por mission_id, o que deixa uma janela de criação duplicada se o processo cair depois do POST /tasks e antes de persistir task_id em STATE.json. A missão deve resolver esse contrato primeiro, ou exigir um task_id previamente provisionado e confiável como etapa temporária explícita.
+
+Uma implementação que preserve start/resume locais como fallback, ou permita bypass via flag de produção, não satisfaz o objetivo. Não foi introduzido esse tipo de fallback.
+
+## Estado desta execução
+
+- R1: concluída por inspeção e documentada.
+- R2: contrato existente especificado; lacunas de idempotência identificadas.
+- R3–R10: não executadas como implementação.
+- Commits de código: nenhum.
+- Testes novos: nenhum.
+- CI nova: nenhuma.
+- HEAD de código permanece a360a3ea751c6dc5b32cb865201a81b4b2845ece.
+- HEAD documental inicial desta missão: a65a07bc8844ac7502694b723c61ec9e992cbf32.
+
+**Resultado: EXECUÇÃO PARCIAL — NÃO CONCLUÍDA.** Não declarar Runner distribuído. O maior risco permanece: STATE.json permite iniciar, renovar, checkpointar e concluir sem autoridade PostgreSQL.
+
+## Próxima ação necessária
+
+Primeiro evoluir o contrato Team Room com identidade idempotente para task (chave estável tenant/room/mission_id e constraint correspondente) e leitura autenticada da task/lease. Em seguida integrar Runner fail-closed: start/resume devem adquirir lease antes de IN_PROGRESS; heartbeat deve renovar a task lease; checkpoint/complete/release devem enviar fencing; qualquer falha remota deve marcar LOST_AUTHORITY e bloquear novas escritas. Só depois implementar recovery worker e handoff staged, com testes PostgreSQL e subprocessos do Runner.
