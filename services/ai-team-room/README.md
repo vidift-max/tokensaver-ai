@@ -85,7 +85,7 @@ In the Keycloak admin console at `http://localhost:8080`:
 2. Create confidential client `team-room-workload`; enable Service Accounts; disable Standard Flow and Direct Access Grants unless independently required.
 3. Create/attach an audience mapper that emits exact audience `team-room-api` in access tokens.
 4. Configure the client scope `team_room:connect` so the access token contains that scope.
-5. Generate the client secret in Keycloak and inject it only into the workload's local environment/secret store. Never commit it.
+5. Generate the client secret in Keycloak and inject it only into the workload's local environment/secret store. Never commit it. This client-secret flow is a local development bootstrap, not passwordless workload federation.
 6. Register the service-account subject in `principals`, create its participant and an ACTIVE `workload_identities` row with exact issuer `http://localhost:8080/realms/team-room` and the service-account user's exact `sub`. Grant only the required room permissions through the controlled database administration path.
 
 Configure the service:
@@ -102,7 +102,7 @@ The service resolves `/.well-known/openid-configuration` from the configured iss
 - OIDC discovery metadata and JWKS are cached in-process for up to 5 minutes.
 - Unknown `kid` triggers one forced metadata/JWKS refresh before rejection.
 - HTTP redirects are disabled; requests time out after 5 seconds; JSON metadata/JWKS bodies are capped at 1 MiB.
-- RSA + RS256 only; `kid`, `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `team_room:connect` are required; `nbf` is validated when present.
+- RSA-2048 minimum + RS256 only; `kid`, `iss`, `sub`, exactly one `aud`, `exp`, `iat`, `jti`, and `team_room:connect` are required; `nbf` is validated when present. RSA exponent must be 65537, duplicate matching `kid` values are rejected, and optional `key_ops` must permit `verify`.
 - Upstream token maximum is 16 KiB. No token-supplied issuer, JWKS URI, or public key is trusted.
 - A new key must be published by the trusted IdP under its JWKS. The service refreshes once when a `kid` is not cached.
 
@@ -131,3 +131,12 @@ The token exchange has a process-local limit of 10 attempts per peer IP per roll
 - Upstream token revocation is not continuously introspected; local sessions remain capped at 15 minutes. Use short-lived upstream tokens and disable the workload registry entry for immediate local denial.
 
 **Trust statement:** this federation proves that the configured Keycloak issuer signed an assertion for its service-account subject and that the subject maps to a pre-registered workload principal. It does not prove which AI model, binary, process, host or hardware produced the request. `ATTESTATION REAL — PENDENTE`. No Claude, Kimi or GPT-6 connection is claimed.
+
+
+### Federation trust boundary
+
+The local Keycloak service-account example uses OAuth 2.0 Client Credentials with a secret. This proves possession of a client credential to Keycloak, not attestation of the workload runtime. For production Kubernetes deployments, prefer a brokered workload assertion such as a projected Kubernetes service-account token validated by Keycloak's Kubernetes identity provider, or the cloud platform's equivalent workload federation. Use a dedicated service account per workload, short token lifetimes and an exact issuer/subject allowlist. Do not use the namespace's default service account. For workloads outside a supported federation environment, provision a separate managed identity adapter rather than treating a model name or shared static secret as proof.
+
+The HTTP token exchange is limited to 10 attempts per peer address per 60 seconds in one service process. This is not a distributed quota; the ingress/API gateway must enforce the authoritative fleet-wide limit. Requests do not trust `X-Forwarded-For`. The exchange body is capped at 20 KiB and the upstream token at 16 KiB.
+
+Private-chat authorization is only prepared in the permission vocabulary. A future private channel must enforce a server-side channel-member ACL on every read, write, search, notification, attachment, and realtime subscription. A broad `private_chat` grant alone must never disclose a channel. No private-chat, task, message, audio, or invitation endpoint exists in this service yet.
