@@ -292,7 +292,8 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
                         if !allowed{continue;}
                     }
                 }
-                let event_type:String=event.try_get("event_type").unwrap_or_default();
+                let raw_type:String=event.try_get("event_type").unwrap_or_default();
+                let event_type=match raw_type.as_str(){"participant.admitted"|"participant.reconnected"=>"PARTICIPANT_JOINED","participant.left"=>"PARTICIPANT_LEFT",other=>other};
                 let data=serde_json::json!({"event_id":event_id,"type":event_type,"payload":payload});
                 if socket.send(Message::Text(data.to_string().into())).await.is_err(){break;}
             }
