@@ -94,6 +94,15 @@ async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<St
     if !algorithms.iter().any(|v| v.as_str() == Some("RS256")) {
         return Err(AuthError::ProviderUnavailable);
     }
+    let secure_endpoint = |value: Option<&str>| value.is_some_and(|url| url.starts_with("https://")
+        || (config.allow_http_localhost && (url.starts_with("http://localhost")
+            || url.starts_with("http://127.0.0.1"))));
+    if !secure_endpoint(metadata.get("token_endpoint").and_then(Value::as_str)) {
+        return Err(AuthError::ProviderUnavailable);
+    }
+    if let Some(auth_endpoint) = metadata.get("authorization_endpoint").and_then(Value::as_str) {
+        if !secure_endpoint(Some(auth_endpoint)) { return Err(AuthError::ProviderUnavailable); }
+    }
     let jwks_url = metadata.get("jwks_uri").and_then(Value::as_str)
         .filter(|url| url.starts_with("https://")
             || (config.allow_http_localhost && (url.starts_with("http://localhost")
@@ -514,6 +523,54 @@ a93ROy+abL98Yf/fSAlNg3Lw
         let mut invalid_signature = valid.clone();
         invalid_signature.push('x');
         assert!(matches!(verify_oidc_token(&config, &invalid_signature).await, Err(AuthError::Unauthorized)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn discovery_pins_issuer_and_refreshes_jwks_for_rotated_kid() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let jwks_state = Arc::new(RwLock::new(json!({"keys":[{"kty":"RSA","kid":"old-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]})));
+        let metadata_state = Arc::new(RwLock::new(json!({})));
+        let jwks_for_route = jwks_state.clone();
+        let metadata_for_route = metadata_state.clone();
+        let app = Router::new()
+            .route("/realms/rotation/.well-known/openid-configuration", get(move || {
+                let state = metadata_for_route.clone();
+                async move { Json(state.read().await.clone()) }
+            }))
+            .route("/jwks", get(move || {
+                let state = jwks_for_route.clone();
+                async move { Json(state.read().await.clone()) }
+            }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let issuer = format!("http://127.0.0.1:{}/realms/rotation", address.port());
+        *metadata_state.write().await = json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("http://127.0.0.1:{}/auth", address.port()),
+            "token_endpoint": format!("http://127.0.0.1:{}/token", address.port()),
+            "jwks_uri": format!("http://127.0.0.1:{}/jwks", address.port()),
+            "id_token_signing_alg_values_supported": ["RS256"]
+        });
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let config = OidcConfig {
+            issuer,
+            audience: "team-room-api".into(),
+            jwks_url: String::new(),
+            require_discovery: true,
+            expected_jwks_url: None,
+            allow_http_localhost: true,
+        };
+        let old_token = signed_token(&config.issuer, &config.audience,
+            (Utc::now() + Duration::minutes(2)).timestamp() as usize, "old-key");
+        assert!(verify_oidc_token(&config, &old_token).await.is_ok());
+
+        *jwks_state.write().await = json!({"keys":[{"kty":"RSA","kid":"new-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
+        let new_token = signed_token(&config.issuer, &config.audience,
+            (Utc::now() + Duration::minutes(2)).timestamp() as usize, "new-key");
+        assert!(verify_oidc_token(&config, &new_token).await.is_ok());
         server.abort();
     }
 
