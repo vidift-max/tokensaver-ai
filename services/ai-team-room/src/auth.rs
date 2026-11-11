@@ -207,14 +207,24 @@ async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaim
         jwks = fetch_cached_json(&refreshed_url, true).await?;
     }
     let keys = jwks.get("keys").and_then(Value::as_array).ok_or(AuthError::ProviderUnavailable)?;
-    let jwk = keys.iter().find(|key| {
+    if keys.len() > 128 { return Err(AuthError::ProviderUnavailable); }
+    let matching: Vec<&Value> = keys.iter().filter(|key| {
         key.get("kid").and_then(Value::as_str) == Some(kid.as_str())
             && key.get("kty").and_then(Value::as_str) == Some("RSA")
             && key.get("alg").and_then(Value::as_str) == Some("RS256")
             && key.get("use").and_then(Value::as_str).map(|v| v == "sig").unwrap_or(true)
-    }).ok_or(AuthError::Unauthorized)?;
+            && key.get("key_ops").and_then(Value::as_array)
+                .map(|ops| ops.iter().any(|op| op.as_str() == Some("verify"))).unwrap_or(true)
+    }).collect();
+    if matching.len() != 1 { return Err(AuthError::Unauthorized); }
+    let jwk = matching[0];
     let n = jwk.get("n").and_then(Value::as_str).ok_or(AuthError::Unauthorized)?;
     let e = jwk.get("e").and_then(Value::as_str).ok_or(AuthError::Unauthorized)?;
+    let modulus = URL_SAFE_NO_PAD.decode(n).map_err(|_| AuthError::Unauthorized)?;
+    let exponent = URL_SAFE_NO_PAD.decode(e).map_err(|_| AuthError::Unauthorized)?;
+    if modulus.len() < 256 || exponent != [1, 0, 1] {
+        return Err(AuthError::Unauthorized);
+    }
     let key = DecodingKey::from_rsa_components(n, e).map_err(|_| AuthError::Unauthorized)?;
 
     let mut validation = Validation::new(Algorithm::RS256);
