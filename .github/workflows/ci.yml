@@ -245,8 +245,13 @@ jobs:
           TOKEN_SUB="$(echo "$TOKEN_CLAIMS" | jq -r .sub)"
           TOKEN_AUD="$(echo "$TOKEN_CLAIMS" | jq -r '.aud | if type=="array" then join(",") else . end')"
           TOKEN_SCOPE="$(echo "$TOKEN_CLAIMS" | jq -r .scope)"
+          echo "Keycloak token audience claim: $TOKEN_AUD"
+          echo "Keycloak token scope claim: $TOKEN_SCOPE"
+          STAGE="assert-keycloak-service-account-subject"
           test "$TOKEN_SUB" = "$SERVICE_ACCOUNT_SUB"
+          STAGE="assert-keycloak-api-audience"
           test "$TOKEN_AUD" = "team-room-api"
+          STAGE="assert-keycloak-workload-scope"
           echo "$TOKEN_SCOPE" | tr ' ' '\n' | grep -Fxq 'team_room:connect'
 
           STAGE="service-startup"
