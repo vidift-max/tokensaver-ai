@@ -279,6 +279,9 @@ mod http_security_tests {
                 .body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(read_denied.status(), StatusCode::FORBIDDEN);
+        let permission_audit: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM security_audit_events WHERE principal_id=$1 AND action='authorization.denied' AND reason_code='permission_not_granted'")
+            .bind(principal).fetch_one(&pool).await.unwrap();
+        assert_eq!(permission_audit, 1);
 
         let cross_room = app.clone().oneshot(
             axum::http::Request::builder().method("POST")
@@ -287,6 +290,9 @@ mod http_security_tests {
                 .body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(cross_room.status(), StatusCode::FORBIDDEN);
+        let room_audit: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM security_audit_events WHERE principal_id=$1 AND action='authorization.room_scope_denied' AND reason_code='session_room_mismatch'")
+            .bind(principal).fetch_one(&pool).await.unwrap();
+        assert_eq!(room_audit, 1);
 
         let joined = app.clone().oneshot(
             axum::http::Request::builder().method("POST")
@@ -304,6 +310,17 @@ mod http_security_tests {
                 .body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        sqlx::query("UPDATE workload_identities SET status='ACTIVE', revoked_at=NULL WHERE workload_id=$1")
+            .bind(workload).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE sessions SET status='REVOKED', revoked_at=NOW() WHERE session_id=$1")
+            .bind(session).execute(&pool).await.unwrap();
+        let revoked_session = app.oneshot(
+            axum::http::Request::builder().uri("/auth/me")
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(revoked_session.status(), StatusCode::UNAUTHORIZED);
 
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
