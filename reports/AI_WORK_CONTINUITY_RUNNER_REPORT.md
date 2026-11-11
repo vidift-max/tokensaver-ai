@@ -1525,7 +1525,7 @@ O teste de serviço PostgreSQL separado no mesmo workflow também executou conco
 3. `scripts/team-room-recovery-worker.mjs` now supports bounded `--watch` polling with configurable interval/deadline and request timeout. It uses its own authenticated `task.assign` session, records candidate selection without logging the bearer token, and never impersonates the selected executor.
 4. `scripts/distributed-runner-process-e2e.mjs` now has a deterministic sequence: Runner A acquires fence 1; Runner B is rejected while A's lease is live; the test waits for PostgreSQL's actual lease expiry; two independent Recovery Worker processes race; PostgreSQL persists exactly one recovery transition; Runner B acquires fence 2; A's renew/checkpoint/complete/release are rejected; B writes a checkpoint and completes.
 5. The E2E now asserts exactly one canonical task for the tenant/room/mission and records B's checkpoint acceptance/version in the evidence.
-6. The workflow produces `distributed-runner-evidence.json`, process evidence and service/test logs, and uploads them even when a proof stage fails. The artifact contains IDs/PIDs and outcomes, not JWTs, bearer tokens, passwords or client secrets.
+6. The workflow produces `distributed-runner-evidence.json`, process evidence and service/test logs, and uploads them even when a proof stage fails. The first artifact review missed a credential exposure: test.log included four ephemeral local session bearer values because the harness printed GitHub ::add-mask:: directives. Treat that historical artifact as credential-exposed; see the security correction below.
 
 ## TESTADO / VALIDADO — historical evidence only
 
@@ -1736,7 +1736,7 @@ These are exact-HEAD results, not inherited results from an earlier SHA. Links:
 
 ## Security/log review boundary
 
-The Keycloak smoke job exercised live discovery, client-credentials token issuance, JWKS retrieval, RS256 validation, `/auth/exchange`, PostgreSQL session digest binding, permission denial, room admission and replay rejection. The current run logs were scanned for compact JWT-shaped credentials and literal Bearer credential values; none were found by those patterns. This is a scoped scan of these run logs, not a retroactive scan of every historical repository/log artifact. The previously documented historical secret-redaction incident remains part of the security record and is not erased.
+The Keycloak smoke job exercised live discovery, client-credentials token issuance, JWKS retrieval, RS256 validation, `/auth/exchange`, PostgreSQL session digest binding, permission denial, room admission and replay rejection. The current workflow console logs were scanned for compact JWT-shaped credentials and literal Bearer values; none were found by those patterns. That scan did not inspect the uploaded ZIP. ZIP inspection subsequently found four ephemeral local session bearer values in test.log, emitted by ::add-mask:: directives from the process E2E harness. The values were generated with crypto.randomBytes(32), seeded only into the disposable PostgreSQL service container, and had a ten-minute session expiry; the container was destroyed at job end, so these credentials are no longer usable against a live service. The old artifact remains a historical exposure and must not be described as token-free. The harness has now been changed not to emit credentials or mask directives; the replacement artifact must be inspected before any token-free claim. The earlier historical client-secret redaction incident also remains in the security record.
 
 ## Remaining limitations — not blockers for this bounded layer
 
@@ -1766,3 +1766,13 @@ The Keycloak smoke job exercised live discovery, client-credentials token issuan
 **GO CONDICIONADO — reconciled distributed Runner / Team Room ownership layer.**
 
 The branch has one coherent remote HEAD with full CI and the dedicated PostgreSQL distributed lab both green on that exact SHA. No later unvalidated push was observed at closure. This is not a claim that the entire product is production-ready: room-wide supervised recovery and staged authenticated handoff remain explicit follow-up boundaries. Do not mark those pending capabilities as implemented.
+
+
+## Security correction — distributed evidence artifact credential exposure
+
+- Artifact `distributed-runner-postgres-evidence-43084296441` (run 24, tested code SHA `8e39b8c7db3d5d9a8dd07497c663b7a1699333f9`) was downloaded and inspected.
+- Its `test.log` contained four ephemeral local Team Room session bearer values on `::add-mask::` directive lines. The mask directives were emitted by `scripts/distributed-runner-process-e2e.mjs`; because stdout/stderr was tee'd to the artifact log, the directive arguments were captured verbatim. The values are intentionally not reproduced here.
+- The values were random 32-byte local fixture credentials, inserted only into the job's disposable PostgreSQL 16 container, with ten-minute session expiry. The Team Room service and database container were job-local and terminated after the run. No Keycloak client secret or signed Keycloak JWT was found in the downloaded artifact.
+- This is still classified as an artifact credential exposure. The artifact must not be described as credential-free. The connected GitHub toolset does not expose artifact deletion; it remains in Actions retention unless a repository administrator deletes it through GitHub.
+- Corrective code change: the process E2E harness no longer prints `::add-mask::` directives or raw fixture tokens. Tokens remain in process memory and are used only in HTTP requests; they are not serialized to the evidence JSON.
+- A fresh distributed lab and full CI are required on the corrected HEAD. The new ZIP must be downloaded and scanned before asserting the replacement artifact is free of credentials.

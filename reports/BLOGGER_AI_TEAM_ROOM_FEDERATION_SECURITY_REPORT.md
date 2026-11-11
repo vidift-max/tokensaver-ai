@@ -695,3 +695,14 @@ Important validation boundary:
 - Background lease-expiry recovery, staged database handoff acceptance, automatic candidate scheduling, provider delivery receipts and runtime attestation remain incomplete.
 
 The full CI run `43053560701` completed 4/4 SUCCESS on code HEAD `a360a3ea751c6dc5b32cb865201a81b4b2845ece`. This result must not be interpreted as proof of external AI execution or as a real-Keycloak E2E for the task endpoints.
+
+
+---
+
+# SECURITY ADDENDUM — CI ARTIFACT FIXTURE TOKEN EXPOSURE (2026-11-11)
+
+The distributed Runner evidence ZIP for run `43084296441` was inspected after the initial report and found to contain four ephemeral local Team Room session bearer values in `test.log`. They were printed as arguments to GitHub `::add-mask::` workflow commands by the process E2E harness; the log capture preserved those directive arguments.
+
+These were not Keycloak JWTs or long-lived provider credentials. They were random 32-byte session fixture tokens created for a disposable PostgreSQL 16 service container, with ten-minute expiry. The database and service were destroyed when the GitHub Actions job ended. The values are not reproduced in this report. Nevertheless, the historical artifact is classified as credential-exposed and must not be described as token-free.
+
+The E2E harness is corrected to stop emitting mask directives or raw tokens to stdout. A new artifact on the corrected HEAD must be downloaded and inspected before declaring the replacement artifact credential-free. The GitHub connector used for this audit does not provide artifact deletion; deletion of the old retained artifact requires repository administrator action in GitHub Actions. This incident is distinct from, and does not erase, the previously documented client-secret log-redaction incident.

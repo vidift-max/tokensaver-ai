@@ -27,7 +27,8 @@ const identities=roles.map(role=>({
   token:crypto.randomBytes(32).toString("hex")
 }));
 const runnerA=identities[0],runnerB=identities[1],recoveryWorkerA=identities[2],recoveryWorkerB=identities[3];
-for(const identity of identities) process.stdout.write("::add-mask::"+identity.token+"\n");
+// Session tokens are ephemeral local fixtures. Never emit credentials or GitHub mask directives
+// into stdout: this process output is captured verbatim in the CI evidence artifact.
 
 function psql(sql){
   return spawnSync("psql",[databaseUrl,"-v","ON_ERROR_STOP=1","-At","-c",sql],{encoding:"utf8",timeout:20000});
