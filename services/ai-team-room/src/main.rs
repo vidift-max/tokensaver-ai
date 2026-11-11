@@ -141,6 +141,8 @@ async fn room_presence(
     let identity = authenticate_session(&state.pool, &headers).await.map_err(auth_status)?;
     if identity.room_id != room_id { return Err(StatusCode::FORBIDDEN); }
     require_permission(&state.pool, &identity, "room.read").await.map_err(auth_status)?;
+    let member:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_memberships WHERE room_id=$1 AND principal_id=$2 AND session_id=$3 AND status='ACTIVE')").bind(room_id).bind(identity.principal_id).bind(identity.session_id).fetch_one(&state.pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !member{return Err(StatusCode::FORBIDDEN);}
     let rows = sqlx::query_as::<_, PresenceRow>(
         "SELECT m.participant_id,m.principal_id,m.session_id,p.display_name,pr.provider,m.last_seen_at,w.heartbeat_at,m.presence_state,(SELECT t.task_id FROM team_tasks t WHERE t.room_id=m.room_id AND t.owner_principal_id=m.principal_id AND t.status IN ('OWNED','REASSIGNED') AND t.lease_expires_at>NOW() ORDER BY t.updated_at DESC LIMIT 1) AS current_task_id FROM room_memberships m JOIN participants p ON p.participant_id=m.participant_id JOIN principals pr ON pr.principal_id=m.principal_id LEFT JOIN workload_executions w ON w.session_id=m.session_id AND w.status='ACTIVE' AND w.revoked_at IS NULL WHERE m.room_id=$1 AND m.status='ACTIVE' ORDER BY m.joined_at"
     ).bind(room_id).fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -530,7 +532,7 @@ mod http_security_tests {
         assert_eq!(presence.status(), StatusCode::OK);
         let presence_body = axum::body::to_bytes(presence.into_body(), 4096).await.unwrap();
         let presence_json: serde_json::Value = serde_json::from_slice(&presence_body).unwrap();
-        assert_eq!(presence_json[0]["state"], "ACTIVE");
+        assert_eq!(presence_json[0]["state"], "ONLINE");
 
         sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '2 minutes' WHERE execution_id=$1")
             .bind(execution).execute(&pool).await.unwrap();
