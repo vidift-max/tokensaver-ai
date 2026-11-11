@@ -431,7 +431,14 @@ pub async fn require_permission(
              AND revoked_at IS NULL AND (room_id IS NULL OR room_id = $4))"#
     ).bind(identity.tenant_id).bind(identity.principal_id).bind(permission).bind(identity.room_id)
         .fetch_one(pool).await?;
-    if allowed { Ok(()) } else { Err(AuthError::Forbidden) }
+    if allowed {
+        Ok(())
+    } else {
+        let _ = sqlx::query("INSERT INTO security_audit_events (security_event_id, tenant_id, room_id, principal_id, action, outcome, reason_code, metadata) VALUES ($1,$2,$3,$4,'authorization.denied','DENIED','permission_not_granted',$5)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id).bind(identity.principal_id)
+            .bind(serde_json::json!({"permission": permission})).execute(pool).await;
+        Err(AuthError::Forbidden)
+    }
 }
 
 pub async fn close_session(pool: &PgPool, identity: &AuthenticatedIdentity) -> Result<(), AuthError> {
