@@ -239,3 +239,30 @@ fn read_blob_integrity_detects_same_size_corruption() {
     assert_eq!(err.code, "STORAGE_ERROR");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+
+#[test]
+fn concurrent_blob_publication_is_no_replace_and_deduplicated() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let dir = std::env::temp_dir().join(format!("tokensaver-blob-race-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("blobs")).expect("storage");
+    let root = Arc::new(dir.clone());
+    let bytes: &'static [u8] = b"same immutable content";
+    let sha = hash::sha256_bytes(bytes);
+    let workers: Vec<_> = (0..8).map(|_| {
+        let root = Arc::clone(&root);
+        let sha = sha.clone();
+        thread::spawn(move || ensure_blob_with_status(&root, &sha, bytes))
+    }).collect();
+
+    let mut created = 0;
+    for worker in workers {
+        let (_, was_created) = worker.join().expect("worker thread").expect("blob publication");
+        if was_created { created += 1; }
+    }
+    assert_eq!(created, 1, "exactly one caller should publish the immutable blob");
+    assert_eq!(std::fs::read(dir.join("blobs").join(&sha)).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(dir);
+}
