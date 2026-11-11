@@ -84,3 +84,7 @@ INSERT INTO permission_catalog(permission, description, privileged) VALUES
  ('audit.read', 'Read security and room audit records', TRUE),
  ('github.publish', 'Publish approved artifacts through a separately scoped GitHub integration', TRUE)
 ON CONFLICT (permission) DO NOTHING;
+
+-- One registered principal maps to one room participant identity per tenant.
+CREATE UNIQUE INDEX participants_one_participant_per_principal
+    ON participants(tenant_id, principal_id);
