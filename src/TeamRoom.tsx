@@ -18,6 +18,7 @@ export default function TeamRoom() {
   const [decisions,setDecisions]=useState<Decision[]>([]);
   const [attachments,setAttachments]=useState<Attachment[]>([]);
   const [draft,setDraft]=useState("");
+  const [replyTo,setReplyTo]=useState<string|null>(null);
   const [privatePrincipal,setPrivatePrincipal]=useState("");
   const [privateMode,setPrivateMode]=useState(false);
   const [missionId,setMissionId]=useState("");
@@ -33,7 +34,8 @@ export default function TeamRoom() {
   const socketRef=useRef<WebSocket|null>(null);
 
   const request=useCallback(async(path:string,init:RequestInit={})=>{
-    const response=await fetch(apiUrl.replace(/\/$/,"")+path,{...init,headers:{"content-type":"application/json","authorization":"Bearer "+token,...(init.headers||{})}});
+    const headers=new Headers(init.headers);headers.set("content-type","application/json");headers.set("authorization","Bearer "+token);
+    const response=await fetch(apiUrl.replace(/\/$/,"")+path,{...init,headers});
     if(!response.ok) throw new Error("Team Room HTTP "+response.status);
     if(response.status===204)return null;
     return response.json();
@@ -42,7 +44,7 @@ export default function TeamRoom() {
   const refresh=useCallback(async()=>{
     if(!roomId||!token)return;
     const [history,presence,taskRows,decisionRows,attachmentRows]=await Promise.all([
-      request("/team-room/"+roomId+"/messages"),
+      request(privateMode&&privatePrincipal?"/team-room/"+roomId+"/private/"+privatePrincipal+"/messages":"/team-room/"+roomId+"/messages"),
       request("/team-room/"+roomId+"/presence"),
       request("/team-room/"+roomId+"/tasks"),
       request("/team-room/"+roomId+"/decisions"),
@@ -50,7 +52,7 @@ export default function TeamRoom() {
     ]);
     setMessages(history.items||[]);setChannelId(history.channel_id||"");
     setParticipants(presence||[]);setTasks(taskRows||[]);setDecisions(decisionRows||[]);setAttachments(attachmentRows||[]);
-  },[request,roomId,token]);
+  },[request,roomId,token,privateMode,privatePrincipal]);
 
   const connect=useCallback(async()=>{
     setError("");setBusy(true);
@@ -72,7 +74,7 @@ export default function TeamRoom() {
         const wsUrl=apiUrl.replace(/^http/,"ws").replace(/\/$/,"")+"/team-room/"+roomId+"/ws?ticket="+encodeURIComponent(issued.ticket);
         const socket=new WebSocket(wsUrl,["team-room.v1"]);socketRef.current=socket;
         socket.onopen=()=>{retry=0;setConnection("CONNECTED");void refresh().catch(()=>{});};
-        socket.onmessage=event=>{try{const data=JSON.parse(event.data);if(["MESSAGE_CREATED","TASK_CREATED","TASK_UPDATED","PRESENCE_CHANGED","DECISION_CREATED","ATTACHMENT_CREATED","participant.admitted","participant.left"].includes(data.type))void refresh().catch(()=>{});}catch{/* Ignore malformed event frames. */}};
+        socket.onmessage=event=>{try{const data=JSON.parse(event.data);if(["MESSAGE_CREATED","TASK_CREATED","TASK_UPDATED","PRESENCE_CHANGED","DECISION_CREATED","ATTACHMENT_CREATED","PARTICIPANT_JOINED","PARTICIPANT_LEFT"].includes(data.type))void refresh().catch(()=>{});}catch{/* Ignore malformed event frames. */}};
         socket.onerror=()=>setConnection("RECONNECTING");
         socket.onclose=()=>{socketRef.current=null;if(!stopped){setConnection("RECONNECTING");const delay=Math.min(30000,500*Math.pow(2,retry++));timer=window.setTimeout(()=>void open(),delay);}};
       }catch{if(!stopped){setConnection("RECONNECTING");timer=window.setTimeout(()=>void open(),Math.min(30000,1000*Math.pow(2,retry++)));}}
@@ -86,8 +88,8 @@ export default function TeamRoom() {
     setError("");
     try{
       const path=privateMode?"/team-room/"+roomId+"/private/"+privatePrincipal+"/messages":"/team-room/"+roomId+"/messages";
-      await request(path,{method:"POST",body:JSON.stringify({client_message_id:crypto.randomUUID(),body:draft.trim(),parent_message_id:null})});
-      setDraft("");await refresh();
+      await request(path,{method:"POST",body:JSON.stringify({client_message_id:crypto.randomUUID(),body:draft.trim(),parent_message_id:replyTo})});
+      setDraft("");setReplyTo(null);await refresh();
     }catch(e){setError(e instanceof Error?e.message:"Message failed");}
   }
   async function createTask(){
@@ -128,7 +130,7 @@ export default function TeamRoom() {
       </aside>
       <div className="team-room-main">
         <section className="panel" id="room-chat"><div className="panel-head"><div><h2>Chat</h2><p className="muted">Histórico persistente · eventos via PostgreSQL outbox + WebSocket autenticado</p></div><button onClick={()=>void refresh()}>Atualizar</button></div>
-          <div className="team-room-messages">{messages.map(m=><article key={m.message_id}><small>{m.sender_principal_id.slice(0,8)} · {new Date(m.created_at).toLocaleString()}</small><p>{m.body}</p></article>)}</div>
+          <div className="team-room-messages">{messages.map(m=><article key={m.message_id}><small>{m.sender_principal_id.slice(0,8)} · {new Date(m.created_at).toLocaleString()}</small><p>{m.body}</p><button onClick={()=>setReplyTo(m.message_id)}>Responder nesta thread</button></article>)}</div>\n          {replyTo&&<p className="muted">Respondendo à mensagem {replyTo.slice(0,8)} <button onClick={()=>setReplyTo(null)}>Cancelar</button></p>}
           <textarea value={draft} onChange={e=>setDraft(e.target.value)} rows={3} placeholder="Escreva uma mensagem..."/>
           <button className="primary" onClick={()=>void sendMessage()} disabled={!connected||!draft.trim()}>Enviar mensagem</button>
         </section>
