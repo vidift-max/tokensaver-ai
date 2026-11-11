@@ -191,7 +191,7 @@ async fn local_session_expiry_rotation_and_unknown_subject_are_enforced() {
     new_headers.insert("authorization", format!("Bearer {}", second.access_token).parse().unwrap());
     assert!(authenticate_session(&pool, &new_headers).await.is_ok());
 
-    sqlx::query("UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE session_id = $1")
+    sqlx::query("UPDATE sessions SET issued_at = NOW() - INTERVAL '2 seconds', expires_at = NOW() - INTERVAL '1 second' WHERE session_id = $1")
         .bind(second.identity.session_id).execute(&pool).await.unwrap();
     assert!(matches!(authenticate_session(&pool, &new_headers).await, Err(AuthError::Unauthorized)));
     let expired_status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
