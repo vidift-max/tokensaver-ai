@@ -595,6 +595,15 @@ mod http_security_tests {
         let stale_json: serde_json::Value = serde_json::from_slice(&stale_body).unwrap();
         assert_eq!(stale_json[0]["state"], "DISCONNECTED");
 
+        let leave=app.clone().oneshot(
+            axum::http::Request::builder().method("POST").uri(format!("/team-room/{room}/leave"))
+                .header("authorization",format!("Bearer {raw_token}")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(leave.status(),StatusCode::NO_CONTENT);
+        let membership_state:String=sqlx::query_scalar("SELECT status FROM room_memberships WHERE room_id=$1 AND principal_id=$2")
+            .bind(room).bind(principal).fetch_one(&pool).await.unwrap();
+        assert_eq!(membership_state,"LEFT");
+
         sqlx::query("UPDATE workload_identities SET status='REVOKED', revoked_at=NOW() WHERE workload_id=$1")
             .bind(workload).execute(&pool).await.unwrap();
         let revoked = app.clone().oneshot(
