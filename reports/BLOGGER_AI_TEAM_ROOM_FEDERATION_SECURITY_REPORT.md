@@ -167,7 +167,7 @@ Migration `0004_federation_security_hardening.sql` adds `workload_identities`:
 - created_at, last_seen_at, revoked_at;
 - non-sensitive JSON metadata.
 
-Existing AI principals are backfilled into the registry. New workload exchanges require an ACTIVE matching registry row and enabled principal/participant. Local session authentication rechecks workload status on every request, so disabling/revoking the workload blocks existing sessions at the next request.
+Existing AI principals are backfilled into the registry. A unique index enforces one participant mapping per principal per tenant. New workload exchanges require an ACTIVE matching registry row and enabled principal/participant. Local session authentication rechecks workload status on every request, so disabling/revoking the workload blocks existing sessions at the next request.
 
 Identity layers remain distinct: external issuer/subject, principal, participant, session and workload execution. A display name or model label is never used to select a principal.
 
@@ -297,7 +297,7 @@ Tests added or retained:
 - Mission 110 discovery/JWKS rotation test with two distinct synthetic RSA keypairs.
 - Mission 110 HTTP router tests for authentication, authorization, rate/body limits, room isolation, admission and revocation.
 
-The most recent workflow attempts visible during report creation were still queued/in progress; therefore the latest source state is **NOT YET VALIDATED**. Do not treat tests as passing until the workflow for the final branch head completes successfully.
+The most recent workflow attempts visible during report creation were still queued/in progress; therefore the latest source state is **NOT YET VALIDATED**. Workflow-level concurrency with cancel-in-progress was added to stop spending CI capacity on superseded commits; the final head still requires a completed successful run. Do not treat tests as passing until the workflow for the final branch head completes successfully.
 
 ## S. Results and evidence
 
