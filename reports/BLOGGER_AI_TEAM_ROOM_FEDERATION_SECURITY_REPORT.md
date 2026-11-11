@@ -416,7 +416,7 @@ The test path demonstrates protocol behavior through signature validation. It do
 
 ## Z. GO / NO-GO
 
-**NO-GO PARA MISSÃO 111 / PRODUÇÃO.** O job do serviço e os testes críticos de serviço passaram no run `42975578184`, mas a CI Linux/Windows completa ainda estava em andamento no momento deste registro. O ambiente local não possui Docker, impedindo o teste real de Keycloak. Permanecem lacunas de cobertura para cache expiry, chave RSA fraca/ambígua, `nbf` futuro/claims ausentes, concorrência/distribuição do rate limit, isolamento de recursos sem API e auditoria de todos os eventos.
+**NO-GO PARA MISSÃO 111 / PRODUÇÃO.** A CI completa para o código da branch foi concluída com sucesso no run `42975951887` (commit `87854354d4a8de3ee555d0f083d82c0cc1f62f97`): Linux foundation, Windows foundation e ai-team-room-service passaram. O ambiente local não possui Docker, impedindo o teste real de Keycloak. Permanecem lacunas de cobertura para cache expiry, chave RSA fraca/ambígua, `nbf` futuro/claims ausentes, concorrência/distribuição do rate limit, isolamento de recursos sem API e auditoria de todos os eventos.
 
 **GO limitado apenas para continuar a validação da Missão 110**, não para avançar à Missão 111. Produção, convites, chat privado e onboarding de IA continuam NO-GO.
 
@@ -442,7 +442,7 @@ No Claude, Kimi, GPT-6 or other AI agent is connected. A controlled synthetic is
 | Audit | TESTED / PARTIAL | Permission denial and cross-room denial audit rows are asserted; replay and session lifecycle paths create audit events in code. Full event matrix and redaction/secret-leak automated scan are pending. |
 | Keycloak | BLOCKED | Docker is absent in the local execution environment. Compose exists, but container health, realm/client setup, token issuance and live exchange were not run. |
 | Real AI federation / runtime attestation | PENDING | No Claude, Kimi, GPT-6 or actual AI workload is connected or attested. |
-| Full CI | PARTIAL | Service job succeeded in run `42975578184`; Linux and Windows foundation jobs had not completed at report update. The report commit starts another CI run. |
+| Full CI | VALIDATED | Run `42975951887` completed SUCCESS: `ai-team-room-service`, Linux `foundation`, and `foundation-windows` all passed. The following commit changed only this report file; no code changed after the validated CI head. |
 
 ### CI corrections discovered during closure
 
@@ -453,4 +453,4 @@ No Claude, Kimi, GPT-6 or other AI agent is connected. A controlled synthetic is
 
 ### Environment and final decision
 
-`docker` is not installed in the local runner, and `cargo` is also unavailable locally; Rust compilation and tests were executed by GitHub Actions. The full Linux/Windows/service CI is objectively green on report-current commit `87854354d4a8de3ee555d0f083d82c0cc1f62f97` (run `42975951887`). Live Keycloak validation remains outstanding. **Final decision: NO-GO for Mission 111.** Do not interpret this as a failed service implementation; it is a deliberately conservative acceptance decision because the mission's full acceptance criteria are not yet met.
+`docker` is not installed in the local runner, and `cargo` is also unavailable locally; Rust compilation and tests were executed by GitHub Actions. The full Linux/Windows/service CI is objectively green on code commit `87854354d4a8de3ee555d0f083d82c0cc1f62f97` (run `42975951887`). The report-only commit `edcea18ae3da50406942f03e4c6c9e1a3f3b3369` changed no source code or workflow files. Live Keycloak validation remains outstanding. **Final decision: NO-GO for Mission 111.** Do not interpret this as a failed service implementation; it is a deliberately conservative acceptance decision because the mission's full acceptance criteria are not yet met.
