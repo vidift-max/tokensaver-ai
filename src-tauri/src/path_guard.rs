@@ -132,11 +132,33 @@ impl Drop for RootsLock {
     }
 }
 
+fn open_roots_lock_file(path: &Path) -> AppResult<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível abrir o bloqueio das áreas de importação."))?;
+    let metadata = file.metadata()
+        .map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível verificar o bloqueio das áreas de importação."))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(AppError::new("PATH_NOT_ALLOWED", "O arquivo de bloqueio não pode ser um link ou diretório."));
+    }
+    Ok(file)
+}
+
 fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
     let path=config_path(app)?.with_file_name("import_roots.lock");
     if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar as configurações do aplicativo."))?;}
-    let file=OpenOptions::new().read(true).write(true).create(true).open(&path)
-        .map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível abrir o bloqueio das áreas de importação."))?;
+    let file = open_roots_lock_file(&path)?;
     #[cfg(unix)] {
         use std::os::unix::io::AsRawFd;
         let deadline=Instant::now()+Duration::from_secs(5);
@@ -323,6 +345,22 @@ mod tests {
         let path = "a".repeat(MAX_IMPORT_ROOT_PATH_BYTES + 1);
         let json = serde_json::to_vec(&vec![ImportRoot { path }]).unwrap();
         assert!(parse_roots_json(&json).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn roots_lock_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("tokensaver-lock-link-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target");
+        let link = root.join("import_roots.lock");
+        fs::write(&target, b"do not lock through a link").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(open_roots_lock_file(&link).is_err());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
