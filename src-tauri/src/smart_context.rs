@@ -34,9 +34,9 @@ fn read_context_blob<R: Read>(
     reader: R,
     max_file_bytes: u64,
     remaining_batch_bytes: u64,
-) -> std::io::Result<(Vec<u8>, bool, bool)> {
+) -> std::io::Result<(Vec<u8>, bool, bool, bool)> {
     if remaining_batch_bytes == 0 {
-        return Ok((Vec::new(), true, false));
+        return Ok((Vec::new(), true, false, false));
     }
 
     // When the aggregate budget is the tighter limit, never read beyond it.
@@ -48,14 +48,19 @@ fn read_context_blob<R: Read>(
     };
 
     let mut raw = Vec::new();
-    reader.take(read_limit).read_to_end(&mut raw)?;
+    let read_failed = reader.take(read_limit).read_to_end(&mut raw).is_err();
+    if read_failed {
+        // read_to_end may have consumed bytes before returning an error.
+        // Return those bytes and force the scan to stop to preserve accounting.
+        return Ok((raw, true, false, true));
+    }
 
     let aggregate_budget_exhausted =
         remaining_batch_bytes <= max_file_bytes && raw.len() as u64 == remaining_batch_bytes;
     let file_too_large =
         remaining_batch_bytes > max_file_bytes && raw.len() as u64 > max_file_bytes;
 
-    Ok((raw, aggregate_budget_exhausted, file_too_large))
+    Ok((raw, aggregate_budget_exhausted, file_too_large, false))
 }
 
 
@@ -96,13 +101,13 @@ pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, m
             Err(_) => continue,
         };
         let remaining = limits::MAX_BATCH_BYTES.saturating_sub(bytes_read);
-        let (raw, batch_exhausted, file_too_large) =
+        let (raw, batch_exhausted, file_too_large, read_failed) =
             match read_context_blob(file, limits::MAX_FILE_BYTES, remaining) {
                 Ok(result) => result,
                 Err(_) => continue,
             };
         bytes_read = bytes_read.saturating_add(raw.len() as u64);
-        if batch_exhausted {
+        if batch_exhausted || read_failed {
             // The last read may be a prefix of this file. Do not rank partial content.
             break;
         }
@@ -159,7 +164,8 @@ mod tests {
     #[test]
     fn context_read_never_exceeds_remaining_aggregate_budget() {
         let source = Cursor::new(b"abcdefgh".to_vec());
-        let (bytes, exhausted, too_large) = read_context_blob(source, 6, 3).unwrap();
+        let (bytes, exhausted, too_large, read_failed) = read_context_blob(source, 6, 3).unwrap();
+        assert!(!read_failed);
 
         assert_eq!(bytes, b"abc");
         assert!(exhausted);
@@ -169,7 +175,8 @@ mod tests {
     #[test]
     fn context_read_detects_per_file_overflow_within_aggregate_budget() {
         let source = Cursor::new(b"abcde".to_vec());
-        let (bytes, exhausted, too_large) = read_context_blob(source, 4, 8).unwrap();
+        let (bytes, exhausted, too_large, read_failed) = read_context_blob(source, 4, 8).unwrap();
+        assert!(!read_failed);
 
         assert_eq!(bytes, b"abcde");
         assert!(!exhausted);
@@ -184,5 +191,29 @@ mod tests {
         assert_eq!(bytes, b"abc");
         assert!(!exhausted);
         assert!(!too_large);
+
+    struct FailsAfterPrefix(bool);
+
+    impl std::io::Read for FailsAfterPrefix {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "injected read failure"));
+            }
+            self.0 = true;
+            buffer[..2].copy_from_slice(b"ab");
+            Ok(2)
+        }
+    }
+
+    #[test]
+    fn context_read_accounts_for_partial_bytes_before_io_failure() {
+        let (bytes, exhausted, too_large, read_failed) =
+            read_context_blob(FailsAfterPrefix(false), 8, 16).unwrap();
+
+        assert_eq!(bytes, b"ab");
+        assert!(exhausted);
+        assert!(!too_large);
+        assert!(read_failed);
+    }
     }
 }
