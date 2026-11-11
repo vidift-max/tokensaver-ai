@@ -5,6 +5,8 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use crate::tasks;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -221,7 +223,7 @@ async fn issue_ws_ticket(State(pool):State<PgPool>,Path(room_id):Path<Uuid>,head
     require_room_member(&pool,&who,room_id).await?;
     require_permission(&pool,&who,"room.read").await.map_err(auth_status)?;
     let mut raw=[0u8;32]; rand::rngs::OsRng.fill_bytes(&mut raw);
-    let ticket=base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD,raw);
+    let ticket=URL_SAFE_NO_PAD.encode(raw);
     let digest=Sha256::digest(ticket.as_bytes()).to_vec();
     let expires=Utc::now()+chrono::Duration::seconds(30);
     sqlx::query("INSERT INTO team_room_ws_tickets(ticket_hash,tenant_id,room_id,principal_id,session_id,expires_at) VALUES($1,$2,$3,$4,$5,$6)")
