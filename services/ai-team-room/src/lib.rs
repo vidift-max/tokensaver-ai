@@ -198,6 +198,7 @@ pub async fn admit_authenticated_participant(
     let event_id = Uuid::new_v4();
     let action = if reconnected { "participant.reconnected" } else { "participant.admitted" };
     let metadata = serde_json::json!({
+        "room_id": room_id,
         "participant_id": participant_id,
         "principal_id": principal_id,
         "session_id": session_id,
@@ -268,7 +269,7 @@ pub async fn leave_participant(
     sqlx::query("UPDATE room_memberships SET status = 'LEFT', left_at = NOW(), last_seen_at = NOW() WHERE membership_id = $1")
         .bind(membership.membership_id).execute(&mut *tx).await?;
 
-    let metadata = serde_json::json!({"principal_id": principal_id, "membership_id": membership.membership_id});
+    let metadata = serde_json::json!({"room_id": room_id, "principal_id": principal_id, "membership_id": membership.membership_id});
     sqlx::query(
         "INSERT INTO audit_events (audit_event_id, tenant_id, room_id, actor_principal_id, action, resource_type, resource_id, outcome, metadata) VALUES ($1, $2, $3, $4, 'participant.left', 'room_membership', $5, 'SUCCESS', $6)",
     )
