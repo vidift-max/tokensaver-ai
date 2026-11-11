@@ -71,7 +71,7 @@ CREATE INDEX task_lease_events_task_time_idx ON task_lease_events(task_id,create
 CREATE TABLE task_handoffs (
     handoff_id UUID PRIMARY KEY,
     task_id UUID NOT NULL REFERENCES team_tasks(task_id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL,
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
     from_principal_id UUID,
     to_principal_id UUID,
     from_fencing_token BIGINT NOT NULL,
