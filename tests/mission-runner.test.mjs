@@ -325,8 +325,8 @@ test("stale fencing is rejected remotely for renew, checkpoint and complete afte
   assert.equal(result.status,2);
   assert.match(result.stderr,/HTTP 412/);
  }
- const current=JSON.parse(fs.readFileSync(statePath,"utf8")).missions["M-203"].execution;
- current.fencing_token=token1+1;current.ownership_state="OWNED";
+ original.missions["M-203"].execution.fencing_token=token1+1;
+ original.missions["M-203"].execution.ownership_state="OWNED";
  fs.writeFileSync(statePath,JSON.stringify(original));
  assert.equal(run(c,"complete","new owner completion").status,0);
 });
