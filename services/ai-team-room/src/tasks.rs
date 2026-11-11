@@ -191,7 +191,7 @@ pub async fn write_checkpoint(
     checkpoint: Value,
 ) -> Result<TaskLease, TaskError> {
     let mut tx=pool.begin().await?;
-    let _task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
+    let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
       "UPDATE team_tasks SET checkpoint=$3,checkpoint_version=checkpoint_version+1,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(checkpoint).fetch_one(&mut *tx).await?;
