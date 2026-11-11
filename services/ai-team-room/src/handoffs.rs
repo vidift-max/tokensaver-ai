@@ -84,7 +84,6 @@ struct TaskOwner {
     owner_execution_id: Option<Uuid>,
     fencing_token: i64,
     lease_expires_at: Option<DateTime<Utc>>,
-    checkpoint: Value,
     checkpoint_version: i64,
 }
 
@@ -94,7 +93,7 @@ async fn lock_task(
     task_id: Uuid,
 ) -> Result<TaskOwner, HandoffError> {
     sqlx::query_as::<_, TaskOwner>(
-        "SELECT task_id,tenant_id,room_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE task_id=$1 AND tenant_id=$2 AND room_id=$3 FOR UPDATE"
+        "SELECT task_id,tenant_id,room_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint_version FROM team_tasks WHERE task_id=$1 AND tenant_id=$2 AND room_id=$3 FOR UPDATE"
     )
     .bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
     .fetch_optional(&mut **tx).await?.ok_or(HandoffError::NotFound)
@@ -494,11 +493,7 @@ pub async fn get(
     Ok(handoff)
 }
 
-pub async fn expire_pending(pool: &PgPool, room_id: Uuid) -> Result<u64,HandoffError> {
-    let result=sqlx::query("UPDATE task_handoffs SET status='EXPIRED' WHERE room_id=$1 AND status='PENDING' AND expires_at<=NOW()")
-        .bind(room_id).execute(pool).await?;
-    Ok(result.rows_affected())
-}
+
 
 #[cfg(test)]
 mod postgres_tests {
