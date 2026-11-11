@@ -151,9 +151,10 @@ PostgreSQL is the authority for shared task ownership. The local Mission Runner 
 - `team_tasks` stores mission/task identity, owner principal/participant/session/execution, lease timestamps, monotonically increasing `fencing_token`, checkpoint JSON and checkpoint version.
 - Every acquire locks the task row with `SELECT ... FOR UPDATE`, validates the caller's current active session, workload execution and room membership against PostgreSQL, then increments the fencing token and commits the new owner and lease atomically.
 - Lease durations are constrained to 15–300 seconds. All issue/expiry/renewal timestamps use PostgreSQL `NOW()`; client clocks are not authoritative.
-- Authenticated `POST /team-room/heartbeat` renews only leases which have not already expired. A late heartbeat cannot resurrect an expired lease.
+- Authenticated `POST /team-room/heartbeat` updates presence/workload liveness only. It does not renew task leases. Only `POST /lease/renew` extends a task lease, with the current fencing token; a late renewal cannot resurrect an expired lease.
 - `POST /team-room/{room_id}/tasks/recover` moves expired leases to `RECOVERY_REQUIRED`. It is permission-gated by `task.assign`.
-- `POST /team-room/tasks` creates a task (`task.write`).
+- `POST /team-room/tasks` creates or idempotently returns the canonical task for the same `(tenant_id, room_id, mission_id)` (`task.write`). PostgreSQL unique index `team_tasks_tenant_room_mission_uidx` is the concurrency authority; a retry does not reset owner, fencing token, or checkpoint.
+- `GET /team-room/tasks/by-mission/{mission_id}` returns the authenticated room's task state (status, owner principal/participant/session/execution, lease expiry, fencing token and checkpoint) under `task.read`; it never grants ownership.
 - `POST /team-room/tasks/{task_id}/lease/acquire` acquires/reassigns a task (`task.transition`); response includes the fencing token.
 - `POST /team-room/tasks/{task_id}/lease/renew`, `.../lease/release`, `.../checkpoint`, and `.../complete` require the current fencing token and the same authenticated principal, participant, session and workload execution.
 - `GET /team-room/{room_id}/tasks/{task_id}/candidates` returns only currently connected, active, permitted room members with a live workload session and fewer than three active task leases. It is discovery only; selection remains an explicit acquire by the chosen authenticated participant.
