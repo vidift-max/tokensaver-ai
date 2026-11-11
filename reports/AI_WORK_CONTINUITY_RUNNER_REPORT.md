@@ -844,3 +844,99 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - Windows BAT smoke and Windows `cargo check`: **SUCCESS**.
 - At the time of this evidence update, Windows `cargo test` and Linux foundation `cargo check` were still running; Linux/Windows npm mission tests and build were not yet observed. Overall workflow must not be marked SUCCESS until all four jobs complete.
 - This supersedes the earlier `PENDENTE` classification for the Team Room PostgreSQL lease E2E test only; whole-workflow CI remains `PENDENTE`.
+
+
+
+
+# BRANCH RECONCILIATION AND VALIDATION
+Updated: 2026-11-11
+
+## 1. Branch graph and baseline
+
+- Last previously validated security/E2E baseline: `ac49251f950a97d8592f3b0c38a627bbf20d7ab4`, CI run `43040086676` (4/4 SUCCESS). That evidence applies only to that commit.
+- Parallel work was preserved from the former branch tip `4ff21adabf073c606a71da0900bdf3b5f01ad7db`; no reset, force push, squash, cherry-pick, automatic revert, or history rewrite was used.
+- At code-validation time, the branch was `a360a3ea751c6dc5b32cb865201a81b4b2845ece`, 68 commits ahead of the `ac492...` baseline and not behind it.
+- The graph is a linear parent chain: no merge commits were found in the audited range. The audited commits are authored by `vidift-max`.
+- The comparison from `ac492...` to the code HEAD contains 13 changed paths: 4 additions and 9 modifications; no deleted paths. The additions are the local Runner/BAT/tests, task ownership module, and migrations 0005/0006; the remaining paths extend CI, docs, and the existing Team Room service.
+- Branch protection is disabled (`protected=false`). The HEAD can be observed and validated, but the freeze is not enforced by a GitHub branch rule.
+
+## 2. Commit-to-work map and classification
+
+All 68 commits were preserved. The commits form these coherent groups:
+
+| Commit group | Mission/objective | Main files | Classification |
+|---|---|---|---|
+| `e2316a65` through `15550675` | Persistent local Mission Runner, BAT entrypoint, mission listing/successor registration, review gate, checkpoint/recovery/handoff/presence and prompt-delivery safety | `scripts/mission-runner.mjs`, `CONTINUE_MISSION.bat`, `tests/mission-runner.test.mjs`, `package.json`, `.gitignore`, CI | VÁLIDA; preserved |
+| `0811414d` through `096442e9` | PostgreSQL task ownership schema, transactional lease acquisition/renewal/release, fencing, authenticated APIs, recovery and candidate discovery | migration 0005, `src/tasks.rs`, `src/main.rs`, Team Room README | VÁLIDA; preserved |
+| `d60dab61`, `4ff21ada`, `76ee6134`, `4a05c185` | Mission 110.2 E2E evidence, owner/workload execution binding, and transaction-time authorization revalidation | security report, migration 0005, task service | VÁLIDA; preserved |
+| `07d144a1`, `897237dd`, `60cb8923`, `aca0f6a2`, `2acbad03` | CI-driven SQL predicate and Rust binding corrections | `src/tasks.rs` | CORREÇÃO NECESSÁRIA; preserved as forward fixes |
+| `02991c6d` | Tenant-scoped lifecycle cascade for durable handoff records, fixing fixture cleanup without weakening owner/fencing checks | migration 0005 | CORREÇÃO NECESSÁRIA; preserved |
+| `a360a3ea` | Permit repeated lease renewals/checkpoints, test competing takeovers/releases, and checkpoint local Runner recovery on heartbeat timeout | migration 0006, `src/tasks.rs`, Runner and tests | CORREÇÃO NECESSÁRIA; validated by CI run 43053560701 |
+
+No commit was discarded as merely “out of mission.” No duplicate implementation was added alongside the existing Runner or task service. No commit was reverted.
+
+## 3. Integration findings
+
+- The local Runner persists mission state, presence, checkpoints, review and handoff transitions. It remains a local orchestration tool and does not call the shared Team Room task APIs.
+- The Team Room task service is PostgreSQL-backed. Its API routes use `task.write`, `task.transition`, and `task.assign` permissions.
+- Task lease mutations revalidate active session, workload execution, membership, principal and registered workload identity in the database transaction.
+- Migration 0005 creates task, lease-event and handoff records, the monotonic fencing trigger, and owner/workload binding. Migration 0006 removes the incorrect uniqueness rule that prevented repeated `RENEWED` and `CHECKPOINTED` events within one fencing generation.
+- The Keycloak E2E workflow proves OIDC trust, JWT exchange, opaque session, authorization denial, PostgreSQL membership admission and replay rejection. It does not call the task ownership HTTP endpoints.
+- The PostgreSQL task test uses authenticated identity fixtures created in the test database; it is separate from the real-Keycloak room-admission E2E.
+
+## 4. Corrections made during reconciliation
+
+1. Closed the missing outer SQL predicate in current-lease validation.
+2. Corrected the task-creation `SELECT EXISTS` predicate.
+3. Corrected Rust local bindings found by compilation.
+4. Added tenant-scoped cascade for durable handoff rows so isolated tenant fixtures can be deleted.
+5. Added migration 0006 to permit repeated renewal/checkpoint audit events with the same fencing token.
+6. Changed local heartbeat-timeout recovery to persist an automatic checkpoint before queuing reassignment.
+
+Failed CI attempts remain recorded as failures, not passes:
+- `43050666142`: PostgreSQL syntax error in lease validation.
+- `43051089646`: Rust name-resolution error after the first SQL correction.
+- `43051426578`: extra closing parenthesis in task-creation validation.
+- `43051841915`: tenant cleanup blocked by the handoff foreign key.
+- `43052264884` and `43052877855`: cancelled after subsequent pushes; partial job successes from these runs are not treated as full CI passes.
+
+## 5. Regression and concurrency evidence
+
+CI run `43053560701` validated code HEAD `a360a3ea751c6dc5b32cb865201a81b4b2845ece` with all four jobs SUCCESS.
+
+- Team Room service: 19 passed, 0 failed (library 6, binary 6, PostgreSQL admission 3, PostgreSQL auth 4; doc tests 0).
+- Task ownership PostgreSQL test passed. It covers ten initial contenders with exactly one owner; two concurrent takeover attempts with exactly one winner; repeated lease renewals and checkpoints under one fencing token; expiry and recovery; fencing token 1 to 2; stale and future token rejection; database rollback-trigger rejection; completion; and two concurrent releases with exactly one successful release.
+- Linux foundation: Rust 86 passed, 0 failed; Mission Runner Node tests 15/15; npm install and build passed; source ZIP packaged and uploaded.
+- Windows foundation: BAT smoke passed; Rust 83 passed, 0 failed; Mission Runner Node tests 15/15; npm install and build passed.
+- Keycloak OIDC smoke: SUCCESS. Real Keycloak discovery, client-credentials token, JWKS/RS256 validation, service exchange, session digest, authorization denial, room admission and replay rejection passed.
+- Overall workflow: 4/4 SUCCESS on the exact code HEAD above.
+
+## 6. Secret and artifact review
+
+- Scanned all 13 changed paths for high-confidence private-key, GitHub/OpenAI/AWS/Slack token and compact-JWT patterns: no matches.
+- The Keycloak workflow creates a temporary client secret, masks it immediately, and checks that the service log does not contain the bearer tokens or client secret. The observed job log showed `CLIENT_SECRET: ***`.
+- The historical incident documented in the security report remains intact. This was a scan of changed files and the current smoke logs, not a complete retrospective scan of every historical log.
+- The GitHub connector exposes committed tree state, not a developer's local working tree. CI used fresh checkouts of the exact commit SHA.
+
+## 7. Ownership, lease and operational status
+
+| Capability | Status | Evidence / limitation |
+|---|---|---|
+| Ownership | IMPLEMENTADO / TESTADO / VALIDADO | PostgreSQL row-lock acquisition; ten contenders, one winner |
+| Lease acquire/renew/release | IMPLEMENTADO / TESTADO / VALIDADO | repeated renew, expiry, two concurrent releases |
+| Fencing | IMPLEMENTADO / TESTADO / VALIDADO | monotonic database trigger; old/future token rejected |
+| Heartbeat | IMPLEMENTADO / PARCIAL | service endpoint and local Runner; server heartbeat-driven lease extension does not yet emit a distinct durable renewal event for each task |
+| Recovery | IMPLEMENTADO / PARCIAL | explicit API and local heartbeat-timeout checkpoint; no background expiry/recovery worker |
+| Handoff | PARCIAL | durable takeover record and local explicit accept; no database staged offer/accept/timeout/cancel protocol |
+| Candidate discovery | IMPLEMENTADO / TESTADO | permission-filtered and task-scoped query; automatic candidate selection is absent |
+| Runner-to-Team-Room bridge | PENDENTE | local mission/task/checkpoint commands do not call shared task APIs |
+| Real AI provider execution | NÃO IMPLEMENTADO | no Claude/Kimi/GPT-6 provider dispatch or verified delivery receipt |
+| Runtime attestation | PENDENTE | model runtime identity is not attested |
+
+## 8. Decision
+
+**GO CONDICIONADO** for continued internal development and integration of the ownership/lease foundation. The tested PostgreSQL concurrency and fencing core is suitable for the next controlled integration stage.
+
+**NO-GO for production multi-agent orchestration** until the recovery scheduler/outbox worker, staged handoff protocol, Runner-to-Team-Room bridge, provider adapters/delivery receipts, production deployment controls, and multi-process/multi-host stress evidence are complete.
+
+The code HEAD CI above is green. This report update is documentation-only; its own new branch HEAD must also complete the full four-job workflow before the branch is described as finally frozen.

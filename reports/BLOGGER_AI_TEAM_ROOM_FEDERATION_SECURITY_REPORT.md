@@ -677,3 +677,21 @@ A sequência Keycloak real → JWT real → `/auth/exchange` → identidade/work
 O NO-GO permanece por lacunas residuais de segurança (JWKS edge cases, rate limit concorrente/multirréplica, auditoria/redaction integral), recursos futuros inexistentes e, principalmente, porque o branch avançou após o commit validado com alterações fora do escopo e sem CI verde para o HEAD posterior.
 
 **Recomendação:** preservar a evidência E2E, interromper novas implementações de escopo da Missão 111, reconciliar os commits concorrentes no branch e executar CI completa no HEAD aprovado antes de qualquer reavaliação. Não afirmar federação Claude/Kimi/GPT-6 nem runtime attestation.
+
+
+
+
+## Post-Mission 110.2 update — distributed task ownership scope (2026-11-11)
+
+The Mission 110.2 E2E section above records the architecture at the time of that proof. Subsequent commits added PostgreSQL-backed task ownership, leases, fencing, authenticated task APIs, durable takeover records and eligibility-filtered candidate discovery.
+
+Important validation boundary:
+
+- The real-Keycloak smoke test still proves the OIDC/JWT/session/authorization/room-admission path. It does **not** call the task ownership HTTP endpoints.
+- Task ownership behavior is tested separately by a PostgreSQL integration test using authenticated identity fixtures. Its current CI run validates ten-way initial acquisition, two-way takeover race, repeated renewal/checkpoint events, expiry/recovery, stale/future fencing rejection, database fencing rollback protection, completion and concurrent release.
+- Task API permission scopes are `task.write`, `task.transition`, and `task.assign`.
+- Migration 0005 adds the task/lease/handoff schema and fencing trigger; migration 0006 removes the incorrect uniqueness constraint that blocked repeated renewal/checkpoint events in one fencing generation.
+- The local Mission Runner remains separate from the Team Room task APIs. No prompt dispatch to Claude, Kimi, GPT-6 or another external provider is implemented or proven.
+- Background lease-expiry recovery, staged database handoff acceptance, automatic candidate scheduling, provider delivery receipts and runtime attestation remain incomplete.
+
+The full CI run `43053560701` completed 4/4 SUCCESS on code HEAD `a360a3ea751c6dc5b32cb865201a81b4b2845ece`. This result must not be interpreted as proof of external AI execution or as a real-Keycloak E2E for the task endpoints.
