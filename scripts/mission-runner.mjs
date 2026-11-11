@@ -267,6 +267,19 @@ async function main(args) {
       const grant=await new TeamRoomClient().acceptHandoff(a[0]);
       if (grant.task.mission_id!==new TeamRoomClient().missionUuid(m.mission_id)) throw new Error("handoff task mission_id does not match the current local mission");
       m.handoff={...m.handoff,status:"ACCEPTED",handoff_id:grant.handoff.handoff_id,from_principal_id:grant.handoff.from_principal_id,to_principal_id:grant.handoff.to_principal_id,to_participant_id:grant.handoff.to_participant_id,to_session_id:grant.handoff.to_session_id,to_execution_id:grant.handoff.to_execution_id,accepted_at:grant.handoff.accepted_at,checkpoint_reference:grant.handoff.checkpoint_reference};
+      const remoteCheckpoint=grant.task.checkpoint;
+      if (remoteCheckpoint && typeof remoteCheckpoint==="object" && !Array.isArray(remoteCheckpoint)) {
+        m.checkpoint=remoteCheckpoint;
+        m.progress=Number.isFinite(remoteCheckpoint.progress)?remoteCheckpoint.progress:m.progress;
+        m.current_task=remoteCheckpoint.task||m.current_task;
+        m.files_changed=Array.isArray(remoteCheckpoint.files_changed)?[...remoteCheckpoint.files_changed]:m.files_changed;
+        m.commits=Array.isArray(remoteCheckpoint.commits)?[...remoteCheckpoint.commits]:m.commits;
+        m.tests=Array.isArray(remoteCheckpoint.tests)?[...remoteCheckpoint.tests]:m.tests;
+        m.last_result=remoteCheckpoint.last_result??m.last_result;
+        m.blockers=Array.isArray(remoteCheckpoint.blockers)?JSON.parse(JSON.stringify(remoteCheckpoint.blockers)):m.blockers;
+        m.checkpoint_history.push(remoteCheckpoint);
+      }
+      m.checkpoint_version=grant.task.checkpoint_version;
       m.responsible_ai=grant.identity.principal_id; m.participant_id=grant.identity.participant_id;
       m.presence.session_id=grant.identity.session_id; m.presence.state="ACTIVE"; m.presence.last_seen=now();
       m.execution={task_id:grant.task.task_id,fencing_token:grant.fencing_token,owner_principal_id:grant.identity.principal_id,owner_participant_id:grant.identity.participant_id,owner_session_id:grant.identity.session_id,owner_execution_id:grant.identity.execution_id,lease_expires_at:grant.task.lease_expires_at,ownership_state:"OWNED"};

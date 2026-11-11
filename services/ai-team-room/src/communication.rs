@@ -548,14 +548,14 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
         server.abort();
 
-        let bad_ws_url=format!("ws://{address}/team-room/{room}/ws?ticket=invalid");
-        let mut bad_ws_request=bad_ws_url.into_client_request().unwrap();
-        bad_ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
-        match tokio_tungstenite::connect_async(bad_ws_request).await {
-            Err(tokio_tungstenite::tungstenite::Error::Http(response)) =>
-                assert_eq!(response.status(),StatusCode::UNAUTHORIZED,"a valid websocket upgrade with an invalid ticket must be rejected by authentication"),
-            other => panic!("invalid websocket ticket must return HTTP 401, got {other:?}"),
-        }
+        let bad_ws_request=axum::http::Request::builder().method("GET")
+            .uri(format!("/team-room/{room}/ws?ticket=invalid"))
+            .header("connection","Upgrade").header("upgrade","websocket")
+            .header("sec-websocket-key","dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version","13").header("sec-websocket-protocol","team-room.v1")
+            .body(Body::empty()).unwrap();
+        let bad_ws=app.clone().oneshot(bad_ws_request).await.unwrap();
+        assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED,"a valid websocket upgrade with an invalid ticket must be rejected by authentication");
 
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);

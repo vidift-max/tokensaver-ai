@@ -244,6 +244,7 @@ try{
     mustRun(identity,stateDir,"acknowledge");
   }
   mustRun(owner,ownerHandoffA,"start");
+  mustRun(owner,ownerHandoffA,"checkpoint","owner checkpoint before authenticated transfer");
   const ownerHandoffTask=stateForMission(ownerHandoffA,ownerHandoffMission).execution.task_id;
   assert.equal(stateForMission(ownerHandoffA,ownerHandoffMission).execution.fencing_token,1);
   for(const [identity,age] of [[owner,40],[replacement,5],[recoveryWorkerA,15],[recoveryWorkerB,25]]){
@@ -269,6 +270,8 @@ try{
   assert.equal(JSON.parse(ownerHandoffCompetitor.stdout.trim()).status,403);
   const ownerHandoffFenceB=stateForMission(ownerHandoffB,ownerHandoffMission).execution.fencing_token;
   assert.equal(ownerHandoffFenceB,2);
+  assert.equal(stateForMission(ownerHandoffB,ownerHandoffMission).checkpoint.description,"owner checkpoint before authenticated transfer","recipient must restore the exact server checkpoint before continuing");
+  assert.equal(stateForMission(ownerHandoffB,ownerHandoffMission).checkpoint_version,1);
   const ownerHandoffStale={};
   for(const [key,args] of [["renew",["renew"]],["checkpoint",["checkpoint","stale owner handoff checkpoint"]],["complete",["complete","stale owner handoff complete"]],["release",["release"]]]){
     const isolated=fs.mkdtempSync(path.join(os.tmpdir(),"owner-handoff-stale-"));dirs.push(isolated);
@@ -343,6 +346,7 @@ try{
     owner_initiated_handoff_status:ownerHandoffFinal.status,
     owner_initiated_handoff_fencing_a:1,
     owner_initiated_handoff_fencing_b:ownerHandoffFenceB,
+    owner_initiated_checkpoint_preserved:true,
     owner_initiated_competing_candidate:"REJECTED_HTTP_403",
     owner_initiated_competing_candidate_was_eligible:true,
     owner_initiated_stale_a:ownerHandoffStale,
