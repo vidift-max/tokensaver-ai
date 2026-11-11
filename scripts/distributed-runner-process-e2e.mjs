@@ -160,6 +160,8 @@ try{
   console.log("Runner A process exited; waiting for the real 15-second PostgreSQL lease to expire.");
   await new Promise(resolve=>setTimeout(resolve,16000));
   assert.equal(sqlOk(`SELECT CASE WHEN lease_expires_at<=NOW() THEN 'EXPIRED' ELSE 'LIVE' END FROM team_tasks WHERE task_id=${quote(taskId)}`),"EXPIRED","the initial lease must expire by database time, without mutating its expiry timestamp");
+  const recoveryStateResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/recover`,{method:"POST",headers:{authorization:"Bearer "+recoveryWorkerA.token}});
+  assert.equal(recoveryStateResponse.status,200,"authenticated recovery coordinator must persist RECOVERY_REQUIRED before candidate discovery");
   // Make B the first live candidate and recovery worker A a second live,
   // independently authorized contender. The previous owner remains last.
   for(const [identity,age] of [[owner,60],[replacement,5],[recoveryWorkerA,25],[recoveryWorkerB,35]]){
