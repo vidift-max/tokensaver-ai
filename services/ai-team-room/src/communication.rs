@@ -283,8 +283,9 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
                 if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
                 let channel_id:Option<Uuid>=event.try_get("aggregate_id").ok();
                 if let Some(channel)=channel_id{
-                    let channel_type=payload.get("channel_type").and_then(|v|v.as_str()).unwrap_or("GENERAL");
-                    if channel_type=="PRIVATE"{
+                    let channel_type:Option<String>=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1")
+                        .bind(channel).fetch_optional(&pool).await.unwrap_or(None);
+                    if channel_type.as_deref()==Some("PRIVATE"){
                         let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members WHERE channel_id=$1 AND principal_id=$2)")
                             .bind(channel).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                         if !allowed{continue;}
