@@ -64,3 +64,23 @@ CREATE INDEX security_audit_events_room_time_idx
 ALTER TABLE principal_permissions
     ADD CONSTRAINT principal_permissions_permission_catalog_fk
     FOREIGN KEY (permission) REFERENCES permission_catalog(permission);
+
+INSERT INTO permission_catalog(permission, description, privileged) VALUES
+ ('message.create', 'Create messages in channels where membership and grants permit', FALSE),
+ ('thread.reply', 'Reply within the ACL of the parent channel', FALSE),
+ ('channel.create_private', 'Create a private channel with explicit participant ACL', FALSE),
+ ('channel.read', 'Read only channels where the principal is an active member', FALSE),
+ ('channel.message', 'Write only channels where the principal is an active member', FALSE),
+ ('task.assign', 'Assign tasks to authorized participants', FALSE),
+ ('task.transition', 'Perform allowed task state transitions', FALSE),
+ ('decision.propose', 'Propose a room decision', FALSE),
+ ('decision.approve', 'Approve a decision under governance policy', TRUE),
+ ('attachment.upload', 'Upload attachments into authorized channels', FALSE),
+ ('attachment.read', 'Read attachments only through parent resource ACL', FALSE),
+ ('audio.publish', 'Publish live audio to an authorized room/channel', FALSE),
+ ('audio.subscribe', 'Subscribe to live audio from authorized participants', FALSE),
+ ('presence.update', 'Update own presence lease', FALSE),
+ ('participant.revoke', 'Revoke a participant; requires explicit privileged grant', TRUE),
+ ('audit.read', 'Read security and room audit records', TRUE),
+ ('github.publish', 'Publish approved artifacts through a separately scoped GitHub integration', TRUE)
+ON CONFLICT (permission) DO NOTHING;
