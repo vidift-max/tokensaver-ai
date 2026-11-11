@@ -121,7 +121,7 @@ export default function TeamRoom() {
       <label>Room ID<input value={roomId} onChange={e=>setRoomId(e.target.value)} placeholder="UUID da sala" /></label>
       <label>Session token<input type="password" value={token} onChange={e=>setToken(e.target.value)} placeholder="Bearer token (memória da tela)" /></label>
       <button className="primary" disabled={busy||!roomId||!token} onClick={()=>void connect()}>{busy?"Conectando...":"Entrar na sala"}</button>
-      <span className="status">{connection}</span>{connected&&<button onClick={()=>{setConnected(false);setConnection("DISCONNECTED");}}>Sair da sala</button>}
+      <span className="status">{connection}</span>{connected&&<button onClick={()=>void request("/team-room/"+roomId+"/leave",{method:"POST",body:"{}"}).then(()=>{setConnected(false);setConnection("DISCONNECTED");}).catch(e=>setError(e instanceof Error?e.message:"Leave failed"))}>Sair da sala</button>}
     </div>
     {error&&<p className="error">{error}</p>}
     <div className="team-room-layout">
