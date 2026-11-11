@@ -87,6 +87,46 @@ jobs:
               test_evidence:$test_evidence
             }' > distributed-runner-evidence/distributed-runner-evidence.json
           exit "$result"
+      - name: Install PostgreSQL client for authenticated Runner fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Build Team Room HTTP service
+        run: cargo build --manifest-path services/ai-team-room/Cargo.toml
+      - name: Run live Team Room and two independent Runner processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_LOG=info TEAM_ROOM_BIND=127.0.0.1:8081 ./services/ai-team-room/target/debug/ai-team-room-service > distributed-runner-evidence/team-room-service.log 2>&1 &
+          SERVICE_PID=$!
+          trap 'kill "$SERVICE_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8081/health/live >/dev/null && curl --fail --silent http://127.0.0.1:8081/health/ready >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --show-error http://127.0.0.1:8081/health/live
+          curl --fail --show-error http://127.0.0.1:8081/health/ready
+          echo "Team Room service ready on 127.0.0.1:8081; DATABASE_URL targets the shared PostgreSQL 16 service."
+          TEAM_ROOM_API_URL=http://127.0.0.1:8081 DISTRIBUTED_EVIDENCE_DIR=distributed-runner-evidence node scripts/distributed-runner-process-e2e.mjs 2>&1 | tee -a distributed-runner-evidence/test.log
+      - name: Consolidate distributed Runner evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f distributed-runner-evidence/runner-process-evidence.json ]; then
+            process_evidence="$(cat distributed-runner-evidence/runner-process-evidence.json)"
+          else
+            process_evidence="null"
+          fi
+          jq --argjson process "$process_evidence" '
+            .independent_mission_runner_processes = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
+            .http_team_room_authentication = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
+            .recovery_worker = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS: authenticated one-shot worker selected replacement" end) |
+            .runner_process_evidence = $process
+          ' distributed-runner-evidence/distributed-runner-evidence.json > distributed-runner-evidence/distributed-runner-evidence.tmp
+          mv distributed-runner-evidence/distributed-runner-evidence.tmp distributed-runner-evidence/distributed-runner-evidence.json
       - name: Upload PostgreSQL lab evidence
         if: always()
         uses: actions/upload-artifact@v4
