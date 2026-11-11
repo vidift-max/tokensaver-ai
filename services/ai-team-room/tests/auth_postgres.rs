@@ -74,6 +74,8 @@ async fn setup() -> (PgPool, OidcConfig, Uuid, Uuid, Uuid, String, tokio::task::
         .bind(principal).bind(tenant).bind(ISSUER).bind(&subject).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES ($1,$2,$3,'declarative display name')")
         .bind(participant).bind(tenant).bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES ($1,$2,$3,$4,$5,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(ISSUER).bind(&subject).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.join'),($5,$2,$3,$4,'room.read')")
         .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
 
