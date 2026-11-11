@@ -259,3 +259,40 @@ test("legacy state is upgraded in memory with continuity fields", t => {
  fs.writeFileSync(p,JSON.stringify(s));
  assert.equal(run(c,"status").status,0);
 });
+
+
+test("start fails closed without Team Room credentials and never creates local ownership", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-201","201","Fail closed");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge");
+ delete c.env.TEAM_ROOM_SESSION_TOKEN;
+ const result=run(c,"start");
+ assert.equal(result.status,2);
+ assert.match(result.stderr,/TEAM_ROOM_API_URL/);
+ const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-201"];
+ assert.equal(m.status,"ACKNOWLEDGED");
+ assert.equal(m.execution.lease_id,null);
+ assert.equal(m.execution.fencing_token,undefined);
+});
+
+test("start persists only the remote task and fencing reference; presence does not renew lease", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-202","202","Remote authority");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge");
+ assert.equal(run(c,"start").status,0);
+ let m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-202"];
+ assert.ok(m.execution.task_id);
+ assert.equal(m.execution.fencing_token,1);
+ assert.equal(m.execution.ownership_state,"OWNED");
+ const expires=m.execution.lease_expires_at;
+ assert.equal(run(c,"heartbeat").status,0);
+ m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-202"];
+ assert.equal(m.execution.lease_expires_at,expires);
+ assert.equal(run(c,"renew").status,0);
+ m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-202"];
+ assert.equal(m.execution.ownership_state,"OWNED");
+ assert.equal(run(c,"checkpoint","remote checkpoint").status,0);
+ assert.equal(run(c,"release").status,0);
+ m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-202"];
+ assert.equal(m.execution.ownership_state,"RELEASED");
+});
