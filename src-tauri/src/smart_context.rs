@@ -198,7 +198,8 @@ mod tests {
     #[test]
     fn context_read_accepts_file_smaller_than_remaining_budget() {
         let source = Cursor::new(b"abc".to_vec());
-        let (bytes, exhausted, too_large) = read_context_blob(source, 4, 8).unwrap();
+        let (bytes, exhausted, too_large, read_failed) = read_context_blob(source, 4, 8).unwrap();
+        assert!(!read_failed);
 
         assert_eq!(bytes, b"abc");
         assert!(!exhausted);
