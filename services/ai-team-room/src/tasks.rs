@@ -79,7 +79,11 @@ async fn record_event(
     sqlx::query("INSERT INTO task_lease_events (lease_event_id,tenant_id,room_id,task_id,principal_id,participant_id,session_id,fencing_token,event_type,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
         .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id)
         .bind(task.task_id).bind(identity.principal_id).bind(identity.participant_id)
-        .bind(identity.session_id).bind(task.fencing_token).bind(event_type).bind(metadata)
+        .bind(identity.session_id).bind(task.fencing_token).bind(event_type).bind(metadata.clone())
+        .execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_task',$3,'TASK_UPDATED',$4)")
+        .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(task.task_id)
+        .bind(serde_json::json!({"room_id":identity.room_id,"task_id":task.task_id,"mission_id":task.mission_id,"status":task.status,"fencing_token":task.fencing_token,"checkpoint_version":task.checkpoint_version,"lease_event":event_type}))
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -101,11 +105,22 @@ pub async fn create_task(
     // The unique database key serializes concurrent creates for the same
     // (tenant, room, mission). The no-op conflict update returns the canonical
     // row, including its current owner/fence/checkpoint, without resetting it.
-    let task = sqlx::query_as::<_,TaskLease>(
-        "INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,room_id,mission_id) DO UPDATE SET updated_at=team_tasks.updated_at RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+    let inserted = sqlx::query_as::<_,TaskLease>(
+        "INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id,room_id,mission_id) DO NOTHING RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
      .bind(request.mission_id).bind(title).bind(checkpoint).bind(identity.principal_id)
-     .fetch_one(&mut *tx).await?;
+     .fetch_optional(&mut *tx).await?;
+    let (task,created)=if let Some(task)=inserted{(task,true)}else{
+      let task=sqlx::query_as::<_,TaskLease>("SELECT task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE tenant_id=$1 AND room_id=$2 AND mission_id=$3")
+        .bind(identity.tenant_id).bind(identity.room_id).bind(request.mission_id).fetch_one(&mut *tx).await?;
+      (task,false)
+    };
+    if created{
+      sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_task',$3,'TASK_CREATED',$4)")
+        .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(task.task_id)
+        .bind(serde_json::json!({"room_id":identity.room_id,"task_id":task.task_id,"mission_id":task.mission_id,"status":task.status,"created_by_principal_id":identity.principal_id}))
+        .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(task)
 }
@@ -243,6 +258,11 @@ pub async fn recover_expired(pool: &PgPool, room_id: Uuid) -> Result<u64, TaskEr
         .bind(Uuid::new_v4()).bind(task.task_id).bind(room_id).bind(task.owner_principal_id)
         .bind(task.owner_participant_id).bind(task.owner_session_id).bind(task.fencing_token)
         .bind(serde_json::json!({"checkpoint_version":task.checkpoint_version})).execute(&mut *tx).await?;
+      let tenant:Uuid=sqlx::query_scalar("SELECT tenant_id FROM team_tasks WHERE task_id=$1").bind(task.task_id).fetch_one(&mut *tx).await?;
+      sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_task',$3,'TASK_UPDATED',$4)")
+        .bind(Uuid::new_v4()).bind(tenant).bind(task.task_id)
+        .bind(serde_json::json!({"room_id":room_id,"task_id":task.task_id,"mission_id":task.mission_id,"status":"RECOVERY_REQUIRED","fencing_token":task.fencing_token,"lease_event":"EXPIRED"}))
+        .execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(expired.len() as u64)
