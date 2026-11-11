@@ -272,13 +272,13 @@ async fn complete_task(
 
 async fn task_candidates(
     State(state): State<AppState>,
-    Path((room_id, _task_id)): Path<(Uuid,Uuid)>,
+    Path((room_id, task_id)): Path<(Uuid,Uuid)>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<tasks::TaskCandidate>>,StatusCode> {
     let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
     if identity.room_id!=room_id { return Err(StatusCode::FORBIDDEN); }
     require_permission(&state.pool,&identity,"task.assign").await.map_err(auth_status)?;
-    tasks::list_candidates(&state.pool,identity.tenant_id,room_id).await.map(Json).map_err(task_status)
+    tasks::list_candidates(&state.pool,identity.tenant_id,room_id,task_id).await.map(Json).map_err(task_status)
 }
 
 async fn recover_room_tasks(
