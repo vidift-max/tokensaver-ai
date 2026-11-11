@@ -75,3 +75,92 @@ jobs:
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Run service unit and PostgreSQL integration tests
         run: cargo test --manifest-path services/ai-team-room/Cargo.toml
+
+  keycloak-oidc-smoke:
+    runs-on: ubuntu-latest
+    services:
+      keycloak:
+        image: quay.io/keycloak/keycloak:26.3.5
+        env:
+          KC_BOOTSTRAP_ADMIN_USERNAME: ci-admin
+          KC_BOOTSTRAP_ADMIN_PASSWORD: ci-only-bootstrap-password
+          KC_HEALTH_ENABLED: "true"
+        ports:
+          - 8080:8080
+        options: >-
+          --health-cmd "bash -c '</dev/tcp/127.0.0.1/8080'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for Keycloak readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          curl --fail --show-error http://127.0.0.1:8080/health/ready
+      - name: Create ephemeral realm and confidential client
+        id: provision
+        shell: bash
+        run: |
+          set -euo pipefail
+          ADMIN_TOKEN="$(curl --fail --silent --show-error \
+            -d 'client_id=admin-cli' -d 'username=ci-admin' \
+            -d 'password=ci-only-bootstrap-password' -d 'grant_type=password' \
+            http://127.0.0.1:8080/realms/master/protocol/openid-connect/token | jq -r .access_token)"
+          test -n "$ADMIN_TOKEN" && test "$ADMIN_TOKEN" != "null"
+          curl --fail --silent --show-error -o /dev/null -w '%{http_code}' \
+            -X POST http://127.0.0.1:8080/admin/realms \
+            -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"realm":"team-room-ci","enabled":true}' | grep -q '^201$'
+          CLIENT_SECRET="$(openssl rand -hex 32)"
+          curl --fail --silent --show-error -o /dev/null -w '%{http_code}' \
+            -X POST http://127.0.0.1:8080/admin/realms/team-room-ci/clients \
+            -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg secret "$CLIENT_SECRET" \
+              '{clientId:"team-room-ci",name:"Ephemeral CI OIDC client",enabled:true,protocol:"openid-connect",publicClient:false,clientAuthenticatorType:"client-secret",secret:$secret,serviceAccountsEnabled:true,standardFlowEnabled:false,directAccessGrantsEnabled:false}')" | grep -q '^201$'
+          echo "client_secret=$CLIENT_SECRET" >> "$GITHUB_OUTPUT"
+      - name: Verify real OIDC discovery, client-credentials token and JWKS signature
+        env:
+          CLIENT_SECRET: ${{ steps.provision.outputs.client_secret }}
+        run: |
+          set -euo pipefail
+          ISSUER="http://127.0.0.1:8080/realms/team-room-ci"
+          DISCOVERY="$(curl --fail --silent --show-error "$ISSUER/.well-known/openid-configuration")"
+          test "$(echo "$DISCOVERY" | jq -r .issuer)" = "$ISSUER"
+          TOKEN_ENDPOINT="$(echo "$DISCOVERY" | jq -r .token_endpoint)"
+          JWKS_URI="$(echo "$DISCOVERY" | jq -r .jwks_uri)"
+          TOKEN_RESPONSE="$(curl --fail --silent --show-error \
+            -u "team-room-ci:$CLIENT_SECRET" -d 'grant_type=client_credentials' "$TOKEN_ENDPOINT")"
+          ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r .access_token)"
+          test -n "$ACCESS_TOKEN" && test "$ACCESS_TOKEN" != "null"
+          export ISSUER ACCESS_TOKEN JWKS_URI
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const decode = value => JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+          (async () => {
+            const [headerPart, payloadPart, signaturePart] = process.env.ACCESS_TOKEN.split('.');
+            if (!headerPart || !payloadPart || !signaturePart) throw new Error('Malformed JWT');
+            const header = decode(headerPart);
+            const claims = decode(payloadPart);
+            if (header.alg !== 'RS256' || !header.kid) throw new Error('Unexpected JWT header');
+            if (claims.iss !== process.env.ISSUER || !claims.sub || !claims.jti || !claims.exp) {
+              throw new Error('Required issuer/sub/jti/exp claims missing or invalid');
+            }
+            if (claims.exp <= Math.floor(Date.now() / 1000)) throw new Error('Expired token');
+            const response = await fetch(process.env.JWKS_URI);
+            if (!response.ok) throw new Error('JWKS fetch failed: ' + response.status);
+            const jwks = await response.json();
+            const matches = jwks.keys.filter(key => key.kid === header.kid && key.kty === 'RSA' && key.alg === 'RS256');
+            if (matches.length !== 1) throw new Error('Expected exactly one matching RSA signing key');
+            const key = crypto.createPublicKey({ key: matches[0], format: 'jwk' });
+            const valid = crypto.verify('RSA-SHA256', Buffer.from(headerPart + '.' + payloadPart),
+              key, Buffer.from(signaturePart, 'base64url'));
+            if (!valid) throw new Error('JWT signature verification failed');
+            console.log('PASS: live Keycloak discovery, client_credentials token, JWKS lookup and RS256 signature');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
