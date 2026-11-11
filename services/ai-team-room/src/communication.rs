@@ -495,6 +495,7 @@ mod postgres_tests {
         let mut ws_request=ws_url.into_client_request().unwrap();
         ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
         let (mut ws,_)=tokio_tungstenite::connect_async(ws_request).await.expect("authenticated websocket handshake");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let client=reqwest::Client::new();
         let ws_message=json!({"client_message_id":Uuid::new_v4(),"body":"websocket live delivery","parent_message_id":null});
         let response=client.post(format!("http://{address}/team-room/{room}/messages")).bearer_auth(&a.token).json(&ws_message).send().await.unwrap();
