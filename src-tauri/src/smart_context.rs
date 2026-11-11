@@ -204,6 +204,7 @@ mod tests {
         assert_eq!(bytes, b"abc");
         assert!(!exhausted);
         assert!(!too_large);
+    }
 
     struct FailsAfterPrefix(bool);
 
@@ -227,6 +228,5 @@ mod tests {
         assert!(exhausted);
         assert!(!too_large);
         assert!(read_failed);
-    }
     }
 }
