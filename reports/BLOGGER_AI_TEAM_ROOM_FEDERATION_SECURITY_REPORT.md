@@ -4,7 +4,7 @@
 **Branch:** `v2-saas-alpha`  
 **Service:** `services/ai-team-room`  
 **Report date:** 2026-11-11  
-**Status:** PARTIAL IMPLEMENTATION — CI VALIDATION PENDING — EXTERNAL IDP NOT PROVISIONED  
+**Status:** PARTIAL — SERVICE CI PASS — DESKTOP CI PENDING — KEYCLOAK NOT RUN  
 **Production decision:** NO-GO  
 **Real AI connection:** NONE CLAIMED
 
@@ -108,7 +108,7 @@ The service is a resource server and token-exchange consumer. It does not issue 
 
 ## F. OIDC Discovery
 
-**IMPLEMENTED; TEST VALIDATION PENDING.**
+**IMPLEMENTED; PARTIALLY TESTED.**
 
 - Discovery URL is derived from the deployment-configured exact issuer: `{issuer}/.well-known/openid-configuration`.
 - No issuer or discovery URL is accepted from the request/token as a trust source.
@@ -122,7 +122,7 @@ The service is a resource server and token-exchange consumer. It does not issue 
 
 ## G. JWKS
 
-**IMPLEMENTED; ROTATION TEST ADDED; CI PENDING.**
+**IMPLEMENTED; ROTATION TESTED; CACHE-EXPIRY/WEAK-KEY/OVERSIZE TESTS PENDING.**
 
 - Discovery metadata and JWKS are cached in-process for 300 seconds.
 - Unknown `kid` forces one metadata/JWKS refresh, then fails closed if still unknown.
@@ -138,7 +138,7 @@ Residual: a removed signing key may remain accepted from a previously cached JWK
 
 ## H. JWT hardening
 
-**IMPLEMENTED; AUTOMATED TEST VALIDATION PENDING.**
+**IMPLEMENTED; CORE NEGATIVE TESTS PASSED; CLAIM-EDGE TESTS PENDING.**
 
 Accepted algorithm: RS256 only. Required claims: `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, `scope`; `nbf` is validated when present.
 
@@ -157,7 +157,7 @@ Rejected: `alg=none`, non-RS256, bad signature, wrong issuer/audience, expired/n
 
 ## I. Workload identity
 
-**SCHEMA + ENFORCEMENT IMPLEMENTED; REAL FEDERATION PENDING.**
+**IMPLEMENTED; ACTIVE/DISABLED/REVOKED/EXPIRED EXCHANGE STATES TESTED; REAL FEDERATION PENDING.**
 
 Migration `0004_federation_security_hardening.sql` adds `workload_identities`:
 - workload_id;
@@ -188,7 +188,7 @@ Mission 109 opaque session design is retained:
 
 ## K. Authorization
 
-**IMPLEMENTED, WITH RESOURCE APIs STILL PENDING.**
+**PARTIALLY TESTED; RESOURCE APIs AND ADMIN OPERATIONS PENDING.**
 
 Authentication is now separate from room grants: a registered workload can obtain a local session without receiving `room.join`. Every protected action must separately check explicit permissions.
 
@@ -203,7 +203,7 @@ The catalog is a vocabulary for future endpoints; it does not mean task, DM, aud
 
 ## L. Room isolation and private resources
 
-**PARTIAL.**
+**PARTIAL — ROOM JOIN ISOLATION TESTED; RESOURCE-LEVEL ISOLATION NOT IMPLEMENTED.**
 
 - Local sessions are room-scoped.
 - Join rejects a path room different from the authenticated session room.
@@ -232,7 +232,7 @@ The rate limiter is process-local, not distributed. A production ingress/API gat
 
 ## N. HTTP security tests
 
-**IMPLEMENTED; CI VALIDATION PENDING.**
+**IMPLEMENTED; SERVICE CI TESTS PASSED ON 2026-11-11.**
 
 New router tests cover:
 - public liveness route without authentication;
@@ -297,12 +297,14 @@ Tests added or retained:
 - Mission 110 discovery/JWKS rotation test with two distinct synthetic RSA keypairs.
 - Mission 110 HTTP router tests for authentication, authorization, rate/body limits, room isolation, admission and revocation.
 
-The most recent workflow attempts visible during report creation were still queued/in progress; therefore the latest source state is **NOT YET VALIDATED**. Workflow-level concurrency with cancel-in-progress was added to stop spending CI capacity on superseded commits; the final head still requires a completed successful run. Do not treat tests as passing until the workflow for the final branch head completes successfully.
+The service-specific job passed on commit `874fe6dddf5ff7a31efba488d510f841da47edce` in run `42975578184`. Its four suites reported 5/5 unit OIDC/JWT tests, 5/5 HTTP security tests, 3/3 PostgreSQL admission tests and 4/4 PostgreSQL auth/session tests; doc-tests had zero failures. The Linux and Windows foundation jobs were still in progress at the time of this report update. The report commit itself triggers a new CI run and must be checked separately. Thus service tests are **TESTED**, but full branch-head CI is not yet **VALIDATED**.
 
 ## S. Results and evidence
 
-- Latest code workflow attempt observed: https://github.com/vidift-max/tokensaver-ai/actions/runs/42973967661 (commit `1192297b14119e182cbbd0275e6490fcc04e75fc`) — QUEUED at report creation.
-- Latest branch-head documentation/code workflow attempt observed: https://github.com/vidift-max/tokensaver-ai/actions/runs/42973967661 is not guaranteed to cover the final report commit; final-head CI must be rechecked after this report commit.
+- CI `42974242735` for prior report commit `9a1431905d22255eeaf1405843eb5fde7ed1c5c8` was cancelled after concurrency replacement; its service job had exposed Axum `Handler` compile error `E0277` in `exchange`.
+- CI `42975311859` for `667c37665aea4bd8df549056fecde51a2ee8d9e9` passed service `cargo check` but failed compiling test code: ambiguous `SocketAddr::parse` inference (`E0284`) and a moved `Router` (`E0382`). Both were fixed in `92b9cad404f7f8584dcfe53e7105da90a49371fd`.
+- CI `42975578184` for `874fe6dddf5ff7a31efba488d510f841da47edce`: **ai-team-room-service SUCCESS** with all PostgreSQL/unit/HTTP test suites passing; Linux and Windows foundation jobs were still in progress at report update. https://github.com/vidift-max/tokensaver-ai/actions/runs/42975578184
+- The report update creates a new commit and a new workflow; its head CI is not assumed to pass.
 - Earlier Mission 109 validated run: https://github.com/vidift-max/tokensaver-ai/actions/runs/42972106698 — SUCCESS, including PostgreSQL service tests and Linux desktop foundation; Windows job was still in progress at the last recorded inspection.
 - Intermediate Mission 110 attempt https://github.com/vidift-max/tokensaver-ai/actions/runs/42973080791 failed at compilation because the first rate-limit middleware signature did not satisfy Axum's `Service` bounds. It was replaced with a typed handler-level peer check in commit `595b913ac341b22abc5870a43a69618ed86ca0a3`. The final replacement still requires a successful CI run.
 
@@ -331,7 +333,11 @@ Mission 110 code/documentation commits on `v2-saas-alpha` include:
 - `6d3ae5af022a9fcae003f79cca84f0b90af64ed3` — cross-room denial audit;
 - `395ca495cd4bbc804f3a0888b722d9629a9c2d9c` — assert audit and revoked-session HTTP behavior;
 - `22c635c180bc5cfb50343664790cce5c641c78ae` — Keycloak image pin;
-- `7297f48ccb7acf73f069a3f03080d6e27e7fc1a5` — federation trust-boundary and ACL documentation.
+- `7297f48ccb7acf73f069a3f03080d6e27e7fc1a5` — federation trust-boundary and ACL documentation;
+- `9c46b8bb94137dcca47e76da923ec1575c3fd3fa` — reject lookalike localhost OIDC token/authorization endpoints;
+- `667c37665aea4bd8df549056fecde51a2ee8d9e9` — replace unsupported optional `ConnectInfo` extractor with request-extension lookup;
+- `92b9cad404f7f8584dcfe53e7105da90a49371fd` — fix HTTP test type inference and clone router before repeated `oneshot`;
+- `874fe6dddf5ff7a31efba488d510f841da47edce` — test all non-active workload registry states and default-deny grants.
 
 Additional fixture and README commits are present in the branch history. This report does not claim a live IdP configuration or production deployment.
 
@@ -345,7 +351,7 @@ The test path demonstrates protocol behavior through signature validation. It do
 
 ## V. Limitations
 
-- Keycloak container has not been started or configured; no realm/client/secret is provisioned.
+- Keycloak container has not been started or configured; no realm/client/secret is provisioned. Local validation environment has no Docker executable (`docker: command not found`), so compose/health/token/discovery/service exchange cannot be executed here.
 - No real workload federation credential has been issued by an external IdP.
 - Local development client-secret flow is not secretless federation.
 - No Claude/Kimi/GPT model adapter, process identity, runtime attestation or hardware attestation.
@@ -409,10 +415,41 @@ The test path demonstrates protocol behavior through signature validation. It do
 
 ## Z. GO / NO-GO
 
-**GO, CONDITIONAL — next engineering step:** complete CI validation, provision the local Keycloak realm and execute a real external-IdP integration drill, then validate a brokered workload federation source.
+**NO-GO PARA MISSÃO 111 / PRODUÇÃO.** O job do serviço e os testes críticos de serviço passaram no run `42975578184`, mas a CI Linux/Windows completa ainda estava em andamento no momento deste registro. O ambiente local não possui Docker, impedindo o teste real de Keycloak. Permanecem lacunas de cobertura para cache expiry, chave RSA fraca/ambígua, `nbf` futuro/claims ausentes, concorrência/distribuição do rate limit, isolamento de recursos sem API e auditoria de todos os eventos.
 
-**NO-GO — production, invitations, private chat, or real AI onboarding:** the external IdP has not been provisioned or exercised; production infrastructure is absent; workload/runtime attestation is not available; the latest CI run is pending.
+**GO limitado apenas para continuar a validação da Missão 110**, não para avançar à Missão 111. Produção, convites, chat privado e onboarding de IA continuam NO-GO.
 
 **ATTESTATION REAL — PENDENTE.**
 
 No Claude, Kimi, GPT-6 or other AI agent is connected. A controlled synthetic issuer test is not a real AI connection.
+
+## AA. Mission 110 closure verification addendum — 2026-11-11
+
+### Evidence classification
+
+| Area | Classification | Evidence / gap |
+|---|---|---|
+| OIDC Discovery | TESTED / PARTIAL | Exact issuer mismatch and insecure lookalike HTTP endpoint rejection tests pass; discovery timeout, malformed JSON, redirect and every endpoint shape are not separately tested. |
+| JWKS cache | IMPLEMENTED / PARTIAL | Cache and unknown-kid forced refresh exercised by rotation test; 300-second expiry, oversize response, timeout and malformed JWKS tests remain pending. |
+| Key rotation | TESTED | Test signs with two distinct RSA-2048 keypairs, accepts new kid after refresh and rejects old kid. |
+| RSA/JWT hardening | TESTED / PARTIAL | RS256 success, non-RS256 rejection, issuer, audience, expiry, invalid signature, unknown kid and replay are tested; weak/ambiguous JWK, future nbf and missing/extra claim matrix remains incomplete. |
+| Workload registry | TESTED | ACTIVE exchange succeeds; DISABLED, REVOKED and EXPIRED exchange states reject. Existing-session denial is covered for REVOKED; complete per-state session regression matrix remains pending. |
+| Permissions | TESTED / PARTIAL | Explicit room.join/read work; absent admin, task.write, private_chat and audio.publish grants are denied by permission helper. No admin/task/DM/audio resource endpoints exist, so no operation-level privilege-escalation test is possible yet. |
+| Room isolation | TESTED / PARTIAL | Cross-room join is denied and audited. Cross-room message/task/private-chat/audio/admin operations cannot be tested because those APIs do not exist. |
+| Admission capacity 15 | TESTED | PostgreSQL integration tests: 15 sequential accepted, 16th rejected; 16 concurrent requests yield exactly 15 accepted; leave, re-entry, reconnect and duplicate active session tested. |
+| Rate limiting | TESTED / PARTIAL | HTTP test confirms 11th sequential exchange attempt from same peer gets 429. Concurrent load and multiple processes/replicas are not tested; limiter remains process-local and bypassable across processes. |
+| Audit | TESTED / PARTIAL | Permission denial and cross-room denial audit rows are asserted; replay and session lifecycle paths create audit events in code. Full event matrix and redaction/secret-leak automated scan are pending. |
+| Keycloak | BLOCKED | Docker is absent in the local execution environment. Compose exists, but container health, realm/client setup, token issuance and live exchange were not run. |
+| Real AI federation / runtime attestation | PENDING | No Claude, Kimi, GPT-6 or actual AI workload is connected or attested. |
+| Full CI | PARTIAL | Service job succeeded in run `42975578184`; Linux and Windows foundation jobs had not completed at report update. The report commit starts another CI run. |
+
+### CI corrections discovered during closure
+
+- `E0277` in the Axum exchange handler was fixed by reading `ConnectInfo<SocketAddr>` from request extensions and parsing the bounded request body explicitly.
+- `E0284` in HTTP tests was fixed with explicit `parse::<SocketAddr>()` annotations.
+- `E0382` in the HTTP test router was fixed by cloning the router before the second `oneshot` call.
+- The endpoint-validation bug allowing `localhost.*` lookalike HTTP hosts was fixed by applying the strict loopback parser to token and authorization endpoints.
+
+### Environment and final decision
+
+`docker` is not installed in the local runner, and `cargo` is also unavailable locally; Rust compilation and tests were executed by GitHub Actions. The service CI job is objectively green, but full desktop CI and live Keycloak validation remain outstanding. **Final decision: NO-GO for Mission 111.** Do not interpret this as a failed service implementation; it is a deliberately conservative acceptance decision because the mission's full acceptance criteria are not yet met.
