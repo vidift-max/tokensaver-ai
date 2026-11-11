@@ -628,6 +628,9 @@ mod postgres_tests {
         let accepted_cancel_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"accepted cancel transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
         let accepted_cancel_lease=tasks::acquire_lease(&pool,&ids[0],accepted_cancel_task.task_id,60).await.unwrap();
         let accepted_cancel=create(&pool,&ids[0],accepted_cancel_task.task_id,request(&ids[1],accepted_cancel_lease.task.fencing_token)).await.unwrap();
+        sqlx::query("UPDATE sessions SET expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
+        assert!(matches!(accept(&pool,&ids[1],accepted_cancel.handoff_id,60).await,Err(HandoffError::Forbidden)),"an expired recipient session cannot accept");
+        sqlx::query("UPDATE sessions SET expires_at=NOW()+INTERVAL '1 hour' WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
         sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
         assert!(matches!(accept(&pool,&ids[1],accepted_cancel.handoff_id,60).await,Err(HandoffError::Forbidden)),"a revoked recipient session cannot accept");
         sqlx::query("UPDATE sessions SET status='ACTIVE',revoked_at=NULL WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
