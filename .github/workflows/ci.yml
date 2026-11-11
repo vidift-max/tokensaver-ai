@@ -43,3 +43,32 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run build
+
+
+  ai-team-room-service:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: team_room
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: team_room_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U team_room -d team_room_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://team_room:ci-only-password@localhost:5432/team_room_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check service formatting
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+      - name: Check independent service
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Run service unit and PostgreSQL integration tests
+        run: cargo test --manifest-path services/ai-team-room/Cargo.toml
