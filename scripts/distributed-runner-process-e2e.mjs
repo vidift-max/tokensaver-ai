@@ -140,7 +140,7 @@ try{
 
   console.log("Runner A process exited; waiting for the real 15-second PostgreSQL lease to expire.");
   await new Promise(resolve=>setTimeout(resolve,16000));
-  assert.equal(sqlOk(`SELECT (lease_expires_at<=NOW())::text FROM team_tasks WHERE task_id=${quote(taskId)}`),"t","the initial lease must expire by database time, without mutating its expiry timestamp");
+  assert.equal(sqlOk(`SELECT CASE WHEN lease_expires_at<=NOW() THEN 'EXPIRED' ELSE 'LIVE' END FROM team_tasks WHERE task_id=${quote(taskId)}`),"EXPIRED","the initial lease must expire by database time, without mutating its expiry timestamp");
   const [recoveryResultA,recoveryResultB]=await Promise.all([
     runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId),
     runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId)
@@ -206,6 +206,8 @@ try{
     recovery_worker_selected_b:recoveryEvidenceA.selected_candidate_principal_id,
     fencing_a:fencingA,
     fencing_b:fencingB,
+    lease_expiry_wait_seconds:16,
+    lease_expired_by_database_clock:true,
     initial_acquire:"ACCEPTED",
     concurrent_second_acquire:"REJECTED",
     takeover:"ACCEPTED",
