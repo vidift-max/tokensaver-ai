@@ -152,6 +152,7 @@ struct RegisteredIdentity {
     tenant_id: Uuid,
     principal_id: Uuid,
     participant_id: Uuid,
+    workload_id: Uuid,
 }
 
 #[derive(FromRow)]
@@ -243,13 +244,15 @@ pub async fn exchange_workload_token(
     if replay.rows_affected() != 1 { return Err(AuthError::Unauthorized); }
 
     let registered = sqlx::query_as::<_, RegisteredIdentity>(
-        r#"SELECT pr.tenant_id, pr.principal_id, p.participant_id
+        r#"SELECT pr.tenant_id, pr.principal_id, p.participant_id, wi.workload_id
            FROM principals pr
            JOIN participants p ON p.tenant_id = pr.tenant_id AND p.principal_id = pr.principal_id
+           JOIN workload_identities wi ON wi.tenant_id = pr.tenant_id AND wi.principal_id = pr.principal_id
+                AND wi.issuer = pr.provider AND wi.subject = pr.external_subject AND wi.status = 'ACTIVE'
            JOIN rooms r ON r.tenant_id = pr.tenant_id AND r.room_id = $3 AND r.status = 'ACTIVE'
            WHERE pr.provider = $1 AND pr.external_subject = $2
              AND pr.principal_kind = 'AI' AND pr.enabled = TRUE AND p.enabled = TRUE
-           ORDER BY p.created_at ASC LIMIT 1 FOR UPDATE OF pr, p"#
+           ORDER BY p.created_at ASC LIMIT 1 FOR UPDATE OF pr, p, wi"#
     ).bind(&claims.iss).bind(&claims.sub).bind(room_id)
         .fetch_optional(&mut *tx).await?.ok_or(AuthError::IdentityUnavailable)?;
 
@@ -286,6 +289,14 @@ pub async fn exchange_workload_token(
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE')"#
     ).bind(execution_id).bind(registered.tenant_id).bind(room_id).bind(registered.participant_id)
         .bind(registered.principal_id).bind(session_id).bind(worker_subject).bind(now).bind(expires_at)
+        .execute(&mut *tx).await?;
+
+    sqlx::query("UPDATE workload_identities SET last_seen_at = NOW() WHERE workload_id = $1")
+        .bind(registered.workload_id).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO security_audit_events (security_event_id, tenant_id, room_id, principal_id, action, outcome, reason_code, metadata) VALUES ($1,$2,$3,$4,'auth.session.created','SUCCESS','verified_oidc_exchange',$5)"
+    ).bind(Uuid::new_v4()).bind(registered.tenant_id).bind(room_id).bind(registered.principal_id)
+        .bind(serde_json::json!({"workload_id": registered.workload_id, "session_id": session_id, "execution_id": execution_id}))
         .execute(&mut *tx).await?;
 
     tx.commit().await?;
