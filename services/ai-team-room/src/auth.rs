@@ -21,14 +21,21 @@ pub struct OidcConfig {
     pub allow_http_localhost: bool,
 }
 
+fn is_loopback_http_url(value: &str) -> bool {
+    let Some(authority_and_path) = value.strip_prefix("http://") else { return false; };
+    let authority = authority_and_path.split(|ch| ch == '/' || ch == '?' || ch == '#').next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') { return false; }
+    let host = authority.split(':').next().unwrap_or("");
+    host == "localhost" || host == "127.0.0.1"
+}
+
 impl OidcConfig {
     pub fn from_env() -> Result<Self, String> {
         let issuer = std::env::var("OIDC_ISSUER").map_err(|_| "OIDC_ISSUER is required")?;
         let audience = std::env::var("OIDC_AUDIENCE").map_err(|_| "OIDC_AUDIENCE is required")?;
         let expected_jwks_url = std::env::var("OIDC_JWKS_URL").ok();
         let allow_http_localhost = std::env::var("OIDC_ALLOW_HTTP_LOCALHOST").ok().as_deref() == Some("true");
-        let local_http = allow_http_localhost && (issuer.starts_with("http://localhost")
-            || issuer.starts_with("http://127.0.0.1"));
+        let local_http = allow_http_localhost && is_loopback_http_url(&issuer);
         if (!issuer.starts_with("https://") && !local_http) || issuer.contains('#') || issuer.contains('?')
             || audience.trim().is_empty() {
             return Err("OIDC issuer must use HTTPS (HTTP is allowed only for explicit localhost development) and audience must be non-empty".into());
@@ -37,7 +44,7 @@ impl OidcConfig {
             return Err("OIDC_JWKS_URL pin must use HTTPS".into());
         }
         Ok(Self {
-            issuer: issuer.trim_end_matches('/').to_string(),
+            issuer,
             audience,
             jwks_url: String::new(),
             require_discovery: true,
@@ -79,12 +86,12 @@ async fn fetch_cached_json(url: &str, force_refresh: bool) -> Result<Value, Auth
 async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<String, AuthError> {
     if !config.require_discovery {
         if !config.jwks_url.starts_with("https://")
-            && !(config.allow_http_localhost && (config.jwks_url.starts_with("http://127.0.0.1") || config.jwks_url.starts_with("http://localhost"))) {
+            && !(config.allow_http_localhost && is_loopback_http_url(&config.jwks_url)) {
             return Err(AuthError::ProviderUnavailable);
         }
         return Ok(config.jwks_url.clone());
     }
-    let discovery_url = format!("{}/.well-known/openid-configuration", config.issuer);
+    let discovery_url = format!("{}/.well-known/openid-configuration", config.issuer.trim_end_matches('/'));
     let metadata = fetch_cached_json(&discovery_url, force_refresh).await?;
     if metadata.get("issuer").and_then(Value::as_str) != Some(config.issuer.as_str()) {
         return Err(AuthError::ProviderUnavailable);
@@ -105,8 +112,7 @@ async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<St
     }
     let jwks_url = metadata.get("jwks_uri").and_then(Value::as_str)
         .filter(|url| url.starts_with("https://")
-            || (config.allow_http_localhost && (url.starts_with("http://localhost")
-                || url.starts_with("http://127.0.0.1"))))
+            || (config.allow_http_localhost && is_loopback_http_url(url)))
         .ok_or(AuthError::ProviderUnavailable)?;
     if config.expected_jwks_url.as_deref().is_some_and(|expected| expected != jwks_url) {
         return Err(AuthError::ProviderUnavailable);
