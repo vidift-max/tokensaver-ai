@@ -344,6 +344,8 @@ pub async fn authenticate_session(pool: &PgPool, headers: &HeaderMap) -> Result<
            FROM sessions s
            JOIN principals pr ON pr.tenant_id = s.tenant_id AND pr.principal_id = s.principal_id
            JOIN participants p ON p.tenant_id = s.tenant_id AND p.principal_id = s.principal_id AND p.enabled = TRUE
+           JOIN workload_identities wi ON wi.tenant_id = s.tenant_id AND wi.principal_id = s.principal_id
+                AND wi.status = 'ACTIVE' AND wi.issuer = pr.provider AND wi.subject = pr.external_subject
            JOIN workload_executions w ON w.tenant_id = s.tenant_id AND w.room_id = s.room_id
                 AND w.participant_id = p.participant_id AND w.principal_id = s.principal_id
                 AND w.session_id = s.session_id
@@ -351,7 +353,15 @@ pub async fn authenticate_session(pool: &PgPool, headers: &HeaderMap) -> Result<
              AND s.expires_at > NOW() AND pr.enabled = TRUE
              AND w.status = 'ACTIVE' AND w.revoked_at IS NULL AND w.expires_at > NOW()
            LIMIT 1"#
-    ).bind(digest).fetch_optional(pool).await?.ok_or(AuthError::Unauthorized)?;
+    ).bind(digest).fetch_optional(pool).await?;
+    let row = match row {
+        Some(row) => row,
+        None => {
+            let _ = sqlx::query("INSERT INTO security_audit_events (security_event_id, action, outcome, reason_code) VALUES ($1,'auth.session.denied','DENIED','invalid_expired_revoked_or_disabled')")
+                .bind(Uuid::new_v4()).execute(pool).await;
+            return Err(AuthError::Unauthorized);
+        }
+    };
     Ok(AuthenticatedIdentity {
         tenant_id: row.tenant_id, participant_id: row.participant_id, principal_id: row.principal_id,
         session_id: row.session_id, execution_id: row.execution_id, room_id: row.room_id,
@@ -379,6 +389,10 @@ pub async fn close_session(pool: &PgPool, identity: &AuthenticatedIdentity) -> R
         .bind(identity.session_id).bind(identity.principal_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE workload_executions SET status = 'CLOSED', revoked_at = COALESCE(revoked_at, NOW()) WHERE execution_id = $1 AND session_id = $2")
         .bind(identity.execution_id).bind(identity.session_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO security_audit_events (security_event_id, tenant_id, room_id, principal_id, action, outcome, reason_code, metadata) VALUES ($1,$2,$3,$4,'auth.session.closed','SUCCESS','logout',$5)")
+        .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id).bind(identity.principal_id)
+        .bind(serde_json::json!({"session_id": identity.session_id, "execution_id": identity.execution_id}))
+        .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
