@@ -556,8 +556,8 @@ mod tests {
             fs::read(target.join("winner")).unwrap(),
             if result_a.is_ok() { b"a" } else { b"b" }
         );
-        assert_eq!(stage_a.exists(), result_a.is_ok());
-        assert_eq!(stage_b.exists(), result_b.is_ok());
+        assert!(!stage_a.exists(), "winning stage is renamed and losing stage is cleaned");
+        assert!(!stage_b.exists(), "winning stage is renamed and losing stage is cleaned");
 
         let _ = fs::remove_dir_all(base);
     }
