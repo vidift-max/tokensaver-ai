@@ -454,3 +454,140 @@ No Claude, Kimi, GPT-6 or other AI agent is connected. A controlled synthetic is
 ### Environment and final decision
 
 `docker` is not installed in the local runner, and `cargo` is also unavailable locally; Rust compilation and tests were executed by GitHub Actions. The full Linux/Windows/service CI is objectively green on code commit `87854354d4a8de3ee555d0f083d82c0cc1f62f97` (run `42975951887`). The report-only commit `edcea18ae3da50406942f03e4c6c9e1a3f3b3369` changed no source code or workflow files. Live Keycloak validation remains outstanding. **Final decision: NO-GO for Mission 111.** Do not interpret this as a failed service implementation; it is a deliberately conservative acceptance decision because the mission's full acceptance criteria are not yet met.
+## AB. MISSÃO 110.1 — FECHAMENTO (2026-11-11)
+
+Esta seção atualiza o estado da Missão 110.1 e prevalece sobre estados anteriores deste relatório quando houver diferença.
+
+### 1. Resultado executivo
+
+**NO-GO PARA MISSÃO 111.** O CI completo e o smoke test de Keycloak real passaram, mas ainda existem lacunas de aceitação: não foi executado o token real do Keycloak através do endpoint de exchange do AI Team Room até a admissão PostgreSQL; parte da matriz JWKS permanece sem teste; rate limiting continua por processo; auditoria/redaction não tem matriz e varredura completas; e as APIs futuras de recursos não existem.
+
+### 2. Keycloak real e infraestrutura
+
+| Item | Estado | Evidência |
+|---|---|---|
+| Runtime de containers no runner local desta sessão | NÃO DISPONÍVEL | Docker/Podman/containerd/cargo não encontrados no ambiente local |
+| Runtime de containers no GitHub Actions | VALIDADO | Runner Ubuntu executou docker run com quay.io/keycloak/keycloak:26.3.5 |
+| Keycloak health/readiness | TESTADO | GET http://127.0.0.1:9000/health/ready respondeu UP |
+| Realm e client confidencial temporários | TESTADO | Realm team-room-ci e client de CI criados via Admin REST |
+| Client credentials | TESTADO | Token real emitido pelo endpoint de token do Keycloak |
+| OIDC Discovery | TESTADO | issuer, token_endpoint e jwks_uri lidos do documento de Discovery; issuer comparado exatamente |
+| JWKS real | TESTADO | JWKS obtido do endpoint publicado pelo Keycloak; exatamente uma chave RSA correspondente ao kid |
+| Assinatura real RS256 | VALIDADO | Node crypto.verify validou a assinatura do token emitido pelo Keycloak |
+| Token real → exchange do serviço → sessão → admissão PostgreSQL | PENDENTE | O smoke test do Keycloak não invoca o serviço; a integração end-to-end com issuer real não foi executada |
+
+**KEYCLOAK REAL — PARCIALMENTE VALIDADO.** A indisponibilidade de containers no ambiente local foi contornada legitimamente pelo runner de CI. Não classificar o smoke test do provedor como integração end-to-end do serviço.
+
+### 3. JWKS — estado da matriz
+
+| Caso | Esperado | Resultado |
+|---|---|---|
+| JWKS Discovery/issuer exato | aceitar | PASS |
+| kid desconhecido | rejeitar token / atualizar JWKS conforme fluxo | PASS — coberto pela suíte de assinatura/kid |
+| Rotação entre duas chaves RSA-2048 distintas | aceitar nova chave após refresh; rejeitar antiga | PASS — teste de rotação existente |
+| Cache expira após 300 segundos | atualizar cache | PENDENTE — sem teste de relógio/TTL |
+| Refresh após expiração do cache | buscar JWKS atualizado | PENDENTE — refresh por expiração não foi isolado em teste |
+| Resposta JWKS excessivamente grande | rejeitar | PENDENTE — limite implementado, teste de resposta oversized não adicionado |
+| RSA menor que 2048 bits | rejeitar | PARCIAL — validação de tamanho implementada; teste negativo específico pendente |
+| kid ambíguo/duplicado | rejeitar | PARCIAL — unicidade é exigida no código; fixture de duplicidade pendente |
+| JWKS JSON malformado / timeout | rejeitar com segurança | PENDENTE — matriz específica pendente |
+
+### 4. JWT — matriz de segurança executada
+
+Foi adicionado jwt_claim_security_matrix_accepts_valid_and_rejects_invalid_claims. A execução CI confirmou ok.
+
+| Teste | Esperado | Resultado |
+|---|---|---|
+| RS256 válido | aceitar | PASS |
+| Algoritmo proibido | rejeitar | PASS |
+| Issuer errado | rejeitar | PASS |
+| Audience errada | rejeitar | PASS |
+| exp expirado | rejeitar | PASS |
+| nbf futuro | rejeitar | PASS |
+| iat futuro além do skew | rejeitar | PASS |
+| jti ausente | rejeitar | PASS |
+| sub ausente | rejeitar | PASS |
+| Scope insuficiente | rejeitar | PASS |
+| Replay | rejeitar | PASS — suíte PostgreSQL de replay |
+| iat ausente / exp ausente | rejeitar | PASS — matrix test |
+| sub vazio / jti vazio | rejeitar | PASS — matrix test |
+
+A matriz não equivale a fuzzing nem cobre todas as combinações de claims, formatos extremos e falhas de rede.
+
+### 5. Testes de serviço e admissão
+
+**VALIDADO — CI run 42999592144, commit a8e42c4c366a734213724b8d4746b73ae7e9b236.**
+
+| Suíte | Resultado |
+|---|---|
+| src/lib.rs — JWT/OIDC unit tests | 6/6 PASS |
+| src/main.rs — HTTP security tests | 5/5 PASS |
+| tests/admission_postgres.rs | 3/3 PASS |
+| tests/auth_postgres.rs | 4/4 PASS |
+| Doc-tests | 0 falhas |
+
+O log de admissão confirmou:
+- sixteen_simultaneous_admissions_never_exceed_fifteen — PASS;
+- admission_enforces_15_exit_reentry_reconnect_and_duplicate_session — PASS;
+- exatamente 15 aceitos / 16 tentativas, com a tentativa excedente rejeitada;
+- saída, reentrada, reconexão e sessão ativa duplicada cobertas.
+
+### 6. Rate limiting
+
+| Verificação | Estado |
+|---|---|
+| Limite por peer IP | TESTADO — 10 tentativas por janela |
+| Janela | IMPLEMENTADO — 60 segundos |
+| 11ª tentativa sequencial | TESTADO — HTTP 429 |
+| Múltiplas conexões TCP do mesmo peer | PARCIAL — não há teste concorrente específico |
+| Concorrência sob carga | PENDENTE |
+| Headers de retry/rate-limit | PENDENTE — não há assertion completa |
+| Compartilhamento entre processos/réplicas | PENDENTE |
+
+**RATE LIMITING DISTRIBUÍDO — PENDENTE.** O mecanismo continua em memória e por processo. Não declarar proteção distribuída nem resistência a bypass entre réplicas.
+
+### 7. Auditoria e redaction
+
+| Evento/controle | Estado |
+|---|---|
+| Permission denial audit | TESTADO — assertion existente |
+| Cross-room denial audit | TESTADO — assertion existente |
+| Replay e lifecycle de sessão | TESTADO / PARCIAL — caminhos cobertos; matriz de todos os eventos não está completa |
+| Autenticação aceita/rejeitada, encerramento e revogação — matriz integral de eventos | PARCIAL — implementação e testes distribuídos; assertions de todos os eventos ainda pendentes |
+| Scan automatizado de JWT/access token/senha/client secret nos logs da aplicação | PENDENTE |
+
+**Ocorrência de log de CI:** no primeiro smoke run 42998969403, o client secret efêmero gerado para o Keycloak de teste apareceu sem máscara no bloco de ambiente de uma etapa. O segredo pertencia apenas ao container temporário de CI, que foi destruído ao fim do job; não foi reutilizado em ambiente persistente. A correção foi aplicada em a8e42c4: ::add-mask:: é executado imediatamente após gerar o segredo e antes de exportá-lo como output. No run 42999592144, o log mostrou CLIENT_SECRET: ***; varredura dos logs mais recentes de serviço e Keycloak não encontrou client secret sem máscara nem JWT compacto. O log histórico do primeiro run continua sendo um registro histórico e não foi retroativamente apagado; não afirmar que ele foi redigido.
+
+### 8. Isolamento e APIs inexistentes
+
+- **TESTADO:** tentativa de ingresso cruzado entre rooms é negada e auditada.
+- **NÃO IMPLEMENTADO — NÃO TESTÁVEL NESTA FASE:** chat geral, chat privado, mensagens, tarefas, áudio, WebRTC, convites e endpoints administrativos de recursos.
+- Não declarar isolamento de mensagens, DMs, tasks, áudio ou administração enquanto as respectivas APIs/ACLs não existirem.
+- **FEDERAÇÃO REAL DE IA — PENDENTE.** Nenhum Claude, Kimi, GPT-6 ou workload real de IA está conectado.
+- **ATTESTATION REAL DE RUNTIME — PENDENTE.**
+
+### 9. CI completo
+
+https://github.com/vidift-max/tokensaver-ai/actions/runs/42999592144
+
+https://github.com/vidift-max/tokensaver-ai/commit/a8e42c4c366a734213724b8d4746b73ae7e9b236
+
+**VALIDADO — run 42999592144 SUCCESS, quatro jobs:**
+- ai-team-room-service — cargo check e cargo test PASS;
+- keycloak-oidc-smoke — container Keycloak real, readiness, realm/client, client credentials, Discovery, JWKS e assinatura RS256 PASS;
+- foundation Linux — cargo check, cargo test, npm install, npm run build, package ZIP e upload PASS;
+- foundation-windows — cargo check, cargo test, npm install e npm run build PASS.
+
+### 10. Decisão e pendências obrigatórias
+
+**NO-GO PARA MISSÃO 111.** A aprovação do CI não elimina as lacunas de segurança e integração abaixo.
+
+Antes de reavaliar o GO:
+1. Exercitar token Keycloak real através do exchange do serviço, persistência de sessão e admissão PostgreSQL.
+2. Completar testes JWKS para expiração/refresh de cache, oversized response, RSA fraca, kid duplicado, timeout e JSON malformado.
+3. Testar rate limit sob concorrência e conexões múltiplas; manter documentado que é por processo até existir mecanismo compartilhado.
+4. Completar assertions da matriz de auditoria e automatizar redaction/secret scan.
+5. Manter recursos inexistentes classificados como **NÃO IMPLEMENTADO — NÃO TESTÁVEL NESTA FASE**.
+6. Manter federação real de IA e attestation como **PENDENTE**.
+
+**Recomendação:** não iniciar a Missão 111. Continuar exclusivamente o fechamento dos itens acima dentro do escopo da Missão 110.1. Preservar o limite transacional de 15 participantes.
