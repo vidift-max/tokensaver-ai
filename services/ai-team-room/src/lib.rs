@@ -45,6 +45,7 @@ struct RoomRow {
 struct MembershipRow {
     membership_id: Uuid,
     session_id: Uuid,
+    status: String,
 }
 
 pub async fn connect_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -106,7 +107,7 @@ pub async fn admit_authenticated_participant(
     }
 
     let existing = sqlx::query_as::<_, MembershipRow>(
-        "SELECT membership_id, session_id FROM room_memberships WHERE room_id = $1 AND principal_id = $2 FOR UPDATE",
+        "SELECT membership_id, session_id, status FROM room_memberships WHERE room_id = $1 AND principal_id = $2 FOR UPDATE",
     )
     .bind(room_id)
     .bind(principal_id)
@@ -114,17 +115,35 @@ pub async fn admit_authenticated_participant(
     .await?;
 
     let (membership_id, reconnected) = if let Some(existing) = existing {
-        if existing.session_id == session_id {
+        if existing.status == "REVOKED" {
+            return Err(RoomServiceError::ParticipantNotAuthorized);
+        }
+        if existing.status == "ACTIVE" && existing.session_id == session_id {
             return Err(RoomServiceError::DuplicateActiveSession);
         }
-        sqlx::query(
-            "UPDATE sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE room_id = $1 AND session_id = $2 AND session_id <> $3",
-        )
-        .bind(room_id)
-        .bind(existing.session_id)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await?;
+        if existing.status != "ACTIVE" {
+            let active_ai_count: i64 = sqlx::query_scalar(
+                r#"SELECT COUNT(*)
+                   FROM room_memberships m
+                   JOIN principals p ON p.tenant_id = m.tenant_id AND p.principal_id = m.principal_id
+                   WHERE m.room_id = $1 AND m.status = 'ACTIVE' AND p.principal_kind = 'AI'"#,
+            )
+            .bind(room_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if active_ai_count >= MAX_AI_PARTICIPANTS {
+                return Err(RoomServiceError::RoomCapacityReached);
+            }
+        } else {
+            sqlx::query(
+                "UPDATE sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE room_id = $1 AND session_id = $2 AND session_id <> $3",
+            )
+            .bind(room_id)
+            .bind(existing.session_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(
             "UPDATE room_memberships SET participant_id = $1, session_id = $2, status = 'ACTIVE', joined_at = NOW(), last_seen_at = NOW(), left_at = NULL WHERE membership_id = $3",
         )
