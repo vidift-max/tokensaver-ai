@@ -800,3 +800,10 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - Code hardening commit: `4a05c18509bd96d8580bb5eea4a2eadd1ef8a0c8`.
 - Report HEAD will be the documentation commit immediately following this entry.
 - CI for the final report HEAD remains the required acceptance evidence.
+
+
+### CI-discovered SQL defect and correction
+
+- First final-tree CI run `43050666142` compiled the Team Room service successfully, then failed the new PostgreSQL integration test because the lease-owner validation SELECT was missing the closing parenthesis for its outer predicate. Five existing service tests passed; the new distributed lease E2E test failed at renewal validation with PostgreSQL SQLSTATE `42601`.
+- Corrected the SQL predicate and removed the unused local binding in commit `07d144a119b0c2aa202a8ae5b5fec41de4f0a54b`.
+- The failed run is recorded as a real failure, not a pass. The corrected final CI run is required before marking the distributed lease E2E as `TESTADO`.
