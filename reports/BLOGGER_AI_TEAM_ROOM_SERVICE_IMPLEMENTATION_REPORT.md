@@ -254,7 +254,7 @@ CI evidence from job logs:
 
 A previous service test run (`42968936641`) failed because the leave query did not select the newly required `status` field for the expanded row mapping. The issue was corrected in commit `f73bd3a86921caeb7f4e2e385a314cf576a78834`; the later run `42969270471` passed all three integration tests. The failure and correction are recorded rather than hidden.
 
-The overall workflow's desktop Linux/Windows jobs were still running at the last inspection of run `42969270471`; this report claims PASS only for the dedicated service job. The Mission 107 desktop CI run `42967306416` had already passed both platforms.
+Run `42969270471` completed with overall conclusion SUCCESS. Its Linux desktop job passed `cargo check`, `cargo test` and `npm run build`; its Windows desktop job passed the same three steps; and the dedicated PostgreSQL service job passed `cargo check` plus all three PostgreSQL integration tests. The Mission 107 desktop CI run `42967306416` had also passed both platforms.
 
 ## Q — Results
 
