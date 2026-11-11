@@ -1,0 +1,96 @@
+name: Distributed Runner PostgreSQL Lab
+
+on:
+  push:
+    branches: [v2-saas-alpha]
+  pull_request:
+    branches: [v2-saas-alpha]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distributed-runner-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-lease-concurrency:
+    name: PostgreSQL lease, expiry, takeover and fencing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: team_room
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: team_room_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U team_room -d team_room_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://team_room:ci-only-password@127.0.0.1:5432/team_room_test
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify PostgreSQL is accepting connections
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U team_room -d team_room_test; then
+              break
+            fi
+            sleep 2
+          done
+          pg_isready -h 127.0.0.1 -p 5432 -U team_room -d team_room_test
+      - name: Run real PostgreSQL distributed lease integration test
+        id: integration
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p distributed-runner-evidence
+          printf 'commit=%s\nmission=PostgreSQL integration fixture (random UUID per test)\n' "$GITHUB_SHA" > distributed-runner-evidence/test.log
+          set +e
+          cargo test --manifest-path services/ai-team-room/Cargo.toml ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection -- --nocapture 2>&1 | tee -a distributed-runner-evidence/test.log
+          result=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$result" >> distributed-runner-evidence/test.log
+          echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+          cat > distributed-runner-evidence/distributed-runner-evidence.json <<EOF
+          {
+            "commit_sha": "$GITHUB_SHA",
+            "workflow": "Distributed Runner PostgreSQL Lab",
+            "test": "ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection",
+            "database": "PostgreSQL 16 service container",
+            "database_shared": true,
+            "migrations_applied_by_test_fixture": true,
+            "identity_count": 10,
+            "concurrent_task_creation": "asserted",
+            "single_acquire_winner": "asserted",
+            "lease_expiry_and_reassignment": "asserted",
+            "fencing_generation_1_to_2": "asserted",
+            "stale_checkpoint_rejection": "asserted",
+            "stale_complete_rejection": "asserted",
+            "stale_renew_rejection": "not_asserted_by_this_test",
+            "stale_release_rejection": "not_asserted_by_this_test",
+            "independent_mission_runner_processes": "not_tested",
+            "http_team_room_authentication": "not_tested",
+            "recovery_worker": "not_implemented",
+            "exit_code": $result,
+            "result": "$([ "$result" -eq 0 ] && echo PASS || echo FAIL)"
+          }
+          EOF
+          exit "$result"
+      - name: Upload PostgreSQL lab evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-runner-postgres-evidence-${{ github.run_id }}
+          path: distributed-runner-evidence/
+          if-no-files-found: error
+          retention-days: 30
