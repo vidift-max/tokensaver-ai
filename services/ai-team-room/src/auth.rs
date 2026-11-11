@@ -449,7 +449,7 @@ a93ROy+abL98Yf/fSAlNg3Lw
     #[tokio::test]
     async fn oidc_jwks_signature_issuer_audience_expiry_and_kid_are_enforced() {
         let (jwks_url, server) = test_server().await;
-        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url, require_discovery: false, expected_jwks_url: None };
+        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url, require_discovery: false, expected_jwks_url: None, allow_http_localhost: true };
         let valid = signed_token(&config.issuer, &config.audience, (Utc::now() + Duration::minutes(2)).timestamp() as usize, "test-key");
         assert!(verify_oidc_token(&config, &valid).await.is_ok());
 
@@ -473,7 +473,7 @@ a93ROy+abL98Yf/fSAlNg3Lw
 
     #[tokio::test]
     async fn oidc_algorithms_other_than_rs256_are_rejected_before_jwks_use() {
-        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url: "https://unused.invalid/jwks".into(), require_discovery: false, expected_jwks_url: None };
+        let config = OidcConfig { issuer: "https://issuer.example.test".into(), audience: "team-room-api".into(), jwks_url: "https://unused.invalid/jwks".into(), require_discovery: false, expected_jwks_url: None, allow_http_localhost: true };
         let token = jsonwebtoken::encode(
             &Header::new(Algorithm::HS256),
             &json!({"iss":config.issuer,"sub":"x","aud":config.audience,"exp":(Utc::now()+Duration::minutes(1)).timestamp(),"jti":"x","scope":"team_room:connect"}),
