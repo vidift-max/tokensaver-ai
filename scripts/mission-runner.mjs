@@ -7,7 +7,7 @@ const ROOT = path.resolve(process.env.MISSION_STATE_DIR || ".mission");
 const STATE_FILE = path.join(ROOT, "STATE.json");
 const EVENTS_FILE = path.join(ROOT, "events.ndjson");
 const LOCK_FILE = path.join(ROOT, ".state.lock");
-const STATUSES = new Set(["CREATED","ASSIGNED","ACKNOWLEDGED","IN_PROGRESS","WAITING_REVIEW","BLOCKED","DONE","REJECTED","CANCELLED","DISCONNECTED"]);
+const STATUSES = new Set(["CREATED","ASSIGNED","ACKNOWLEDGED","IN_PROGRESS","WAITING_REVIEW","BLOCKED","DONE","REJECTED","CANCELLED","DISCONNECTED","RECOVERY_REQUIRED","WAITING_HANDOFF","RESUMING"]);
 const now = () => new Date().toISOString();
 const fail = (message, code = 2) => { console.error("MISSION_RUNNER_ERROR: " + message); process.exitCode = code; };
 const safeId = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(value);
@@ -38,6 +38,12 @@ function readState() {
         !mission.prompt || typeof mission.prompt !== "object") {
       throw new Error("invalid mission record in STATE.json: " + id);
     }
+  }
+  for (const mission of Object.values(s.missions)) {
+    mission.presence ||= { state:"CONNECTED",session_id:null,connected_at:null,last_seen:null,timeout_ms:Number(process.env.MISSION_HEARTBEAT_TIMEOUT_MS)||60000,disconnected_at:null,reconnected_at:null };
+    mission.execution ||= { lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null };
+    mission.reassignment_queue ||= [];
+    mission.checkpoint_history ||= mission.checkpoint ? [mission.checkpoint] : [];
   }
   return s;
 }
@@ -72,7 +78,7 @@ function main(args) {
       if (a.length < 3 || !safeId(a[0]) || !/^\d+$/.test(a[1])) throw new Error("usage: init <safe-id> <number> <title>");
       if (fs.existsSync(STATE_FILE)) throw new Error("state already exists; refusing to overwrite");
       const stamp = now(), id = a[0];
-      const mission = { mission_id:id, mission_number:Number(a[1]), title:a.slice(2).join(" "), responsible_ai:null, participant_id:null, current_task:null, subtasks:[], status:"CREATED", progress:0, last_action:"initialized", last_result:null, files_changed:[], commits:[], tests:[], evidence:[], blockers:[], next_action:"assign responsible AI", checkpoint:null, started_at:null, updated_at:stamp, completed_at:null, handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null}, prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null} };
+      const mission = { mission_id:id, mission_number:Number(a[1]), title:a.slice(2).join(" "), responsible_ai:null, participant_id:null, current_task:null, subtasks:[], presence:{state:"CONNECTED",session_id:null,connected_at:null,last_seen:null,timeout_ms:Number(process.env.MISSION_HEARTBEAT_TIMEOUT_MS)||60000,disconnected_at:null,reconnected_at:null},execution:{lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null},reassignment_queue:[],checkpoint_history:[], status:"CREATED", progress:0, last_action:"initialized", last_result:null, files_changed:[], commits:[], tests:[], evidence:[], blockers:[], next_action:"assign responsible AI", checkpoint:null, started_at:null, updated_at:stamp, completed_at:null, handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null}, prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null} };
       const s = { version:1, current_mission_id:id, missions:{[id]:mission}, updated_at:stamp };
       writeState(s,"MISSION_CREATED",{mission_number:mission.mission_number}); console.log("CREATED " + id); return;
     }
@@ -88,7 +94,7 @@ function main(args) {
       if (a.length<3 || !safeId(a[0]) || !/^\d+$/.test(a[1])) throw new Error("usage: register-next <safe-id> <number> <title>");
       if (s.missions[a[0]]) throw new Error("mission already exists; refusing duplicate registration");
       const stamp=now(), id=a[0];
-      s.missions[id]={mission_id:id,mission_number:Number(a[1]),title:a.slice(2).join(" "),responsible_ai:null,participant_id:null,current_task:null,subtasks:[],status:"CREATED",progress:0,last_action:"registered",last_result:null,files_changed:[],commits:[],tests:[],evidence:[],blockers:[],next_action:"assign responsible AI",checkpoint:null,started_at:null,updated_at:stamp,completed_at:null,handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null},prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null}};
+      s.missions[id]={mission_id:id,mission_number:Number(a[1]),title:a.slice(2).join(" "),responsible_ai:null,participant_id:null,current_task:null,subtasks:[],presence:{state:"CONNECTED",session_id:null,connected_at:null,last_seen:null,timeout_ms:Number(process.env.MISSION_HEARTBEAT_TIMEOUT_MS)||60000,disconnected_at:null,reconnected_at:null},execution:{lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null},reassignment_queue:[],checkpoint_history:[],status:"CREATED",progress:0,last_action:"registered",last_result:null,files_changed:[],commits:[],tests:[],evidence:[],blockers:[],next_action:"assign responsible AI",checkpoint:null,started_at:null,updated_at:stamp,completed_at:null,handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null},prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null}};
       s.current_mission_id=id; writeState(s,"NEXT_MISSION_REGISTERED",{previous_mission_id:previous.mission_id,next_mission_id:id}); return;
     }
     if (cmd === "switch") {
@@ -103,21 +109,71 @@ function main(args) {
       m.responsible_ai=a[0]; m.participant_id=a[1]; transition(m,"ASSIGNED"); m.next_action="responsible AI must acknowledge"; writeState(s,"MISSION_ASSIGNED"); return;
     }
     if (cmd === "acknowledge") { if (m.status!=="ASSIGNED") throw new Error("mission must be ASSIGNED"); transition(m,"ACKNOWLEDGED"); m.next_action="start mission"; writeState(s,"MISSION_ACKNOWLEDGED"); return; }
-    if (cmd === "start") { if (!["ACKNOWLEDGED","DISCONNECTED","BLOCKED"].includes(m.status)) throw new Error("mission must be ACKNOWLEDGED, DISCONNECTED or unblocked BLOCKED"); if(m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before start"); transition(m,"IN_PROGRESS"); m.started_at=m.started_at||now(); m.next_action="execute current_task and checkpoint"; writeState(s,"MISSION_STARTED"); return; }
+    if (cmd === "start") {
+      if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("pending handoff prevents the previous executor from starting");
+      if (!["ACKNOWLEDGED","DISCONNECTED","BLOCKED","RESUMING"].includes(m.status)) throw new Error("mission must be ACKNOWLEDGED, DISCONNECTED, RESUMING or unblocked BLOCKED");
+      if(m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before start");
+      transition(m,"IN_PROGRESS"); m.started_at=m.started_at||now();
+      m.execution={lease_id:crypto.randomUUID(),owner_ai:m.responsible_ai,participant_id:m.participant_id,lease_expires_at:new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString()};
+      m.next_action="execute current_task and heartbeat/checkpoint"; writeState(s,"MISSION_STARTED"); return;
+    }
     if (cmd === "checkpoint") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: checkpoint <description>; mission must be IN_PROGRESS");
-      const cp={ checkpoint_id:crypto.randomUUID(), at:now(), description:a.join(" "), task:m.current_task, files_changed:[...m.files_changed], commits:[...m.commits], tests:[...m.tests], result:m.last_result };
-      m.checkpoint=cp; m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest checkpoint"; writeState(s,"CHECKPOINT_CREATED",{checkpoint_id:cp.checkpoint_id}); return;
+      const cp={ checkpoint_id:crypto.randomUUID(), at:now(), mission_id:m.mission_id, task_id:m.current_task, responsible_ai:m.responsible_ai, participant_id:m.participant_id, session_id:m.presence.session_id, status:m.status, progress:m.progress, description:a.join(" "), task:m.current_task, files_changed:[...m.files_changed], commits:[...m.commits], tests:[...m.tests], last_result:m.last_result, next_action:m.next_action, blockers:JSON.parse(JSON.stringify(m.blockers)) };
+      m.checkpoint=cp; m.checkpoint_history.push(cp); m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest checkpoint"; writeState(s,"CHECKPOINT_CREATED",{checkpoint_id:cp.checkpoint_id}); return;
     }
+    if (cmd === "heartbeat") {
+      if (!a[0] || !a[0].trim()) throw new Error("usage: heartbeat <session_id>");
+      if (!["IN_PROGRESS","ACKNOWLEDGED","DISCONNECTED","RECOVERY_REQUIRED","RESUMING"].includes(m.status)) throw new Error("mission is not accepting a heartbeat in its current state");
+      const wasDisconnected=["DISCONNECTED","SUSPECTED_DISCONNECTED"].includes(m.presence.state);
+      m.presence.session_id=a[0]; m.presence.last_seen=now(); m.presence.state=wasDisconnected?"RECONNECTED":"ACTIVE";
+      if (!m.presence.connected_at || wasDisconnected) m.presence.connected_at=now();
+      if (wasDisconnected) m.presence.reconnected_at=now();
+      if (m.execution.lease_id && m.execution.owner_ai===m.responsible_ai) m.execution.lease_expires_at=new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString();
+      m.last_action="heartbeat"; writeState(s,"PRESENCE_HEARTBEAT",{presence:m.presence.state}); return;
+    }
+    if (cmd === "presence") {
+      if (a[0] && (!/^\d+$/.test(a[0]) || Number(a[0])<1000)) throw new Error("timeout_ms must be an integer >= 1000");
+      if (a[0]) m.presence.timeout_ms=Number(a[0]);
+      if (m.presence.last_seen) {
+        const age=Date.now()-Date.parse(m.presence.last_seen), timeout=m.presence.timeout_ms;
+        if (age>timeout*2) {
+          m.presence.state="DISCONNECTED";
+          if (m.status==="IN_PROGRESS") { transition(m,"RECOVERY_REQUIRED"); m.next_action="recover checkpoint and enqueue reassignment"; }
+          if (!m.presence.disconnected_at) m.presence.disconnected_at=now();
+          if (!m.reassignment_queue.some(item=>item.status==="QUEUED"||item.status==="ASSIGNED")) m.reassignment_queue.push({recovery_id:crypto.randomUUID(),status:"QUEUED",created_at:now(),reason:"heartbeat_timeout",checkpoint_id:m.checkpoint?.checkpoint_id||null});
+          writeState(s,"PRESENCE_DISCONNECTED",{age_ms:age});
+        } else if (age>timeout) {
+          m.presence.state="SUSPECTED_DISCONNECTED"; writeState(s,"PRESENCE_SUSPECTED_DISCONNECTED",{age_ms:age});
+        } else if (age>timeout/2) {
+          m.presence.state="IDLE"; writeState(s,"PRESENCE_IDLE",{age_ms:age});
+        } else {
+          m.presence.state="ACTIVE"; writeState(s,"PRESENCE_ACTIVE",{age_ms:age});
+        }
+      }
+      console.log(JSON.stringify({presence:m.presence,recovery_required:m.status==="RECOVERY_REQUIRED"},null,2)); return;
+    }
+    if (cmd === "recover") {
+      if (!["DISCONNECTED","RECOVERY_REQUIRED"].includes(m.status)) throw new Error("recovery requires a disconnected mission");
+      if (!m.checkpoint) throw new Error("recovery requires a persisted checkpoint");
+      transition(m,"RECOVERY_REQUIRED"); m.next_action="assign a replacement responsible AI through handoff";
+      if (!m.reassignment_queue.some(item=>item.status==="QUEUED"||item.status==="ASSIGNED")) m.reassignment_queue.push({recovery_id:crypto.randomUUID(),status:"QUEUED",created_at:now(),reason:"explicit_recovery",checkpoint_id:m.checkpoint.checkpoint_id});
+      writeState(s,"MISSION_RECOVERY_REQUIRED",{checkpoint_id:m.checkpoint.checkpoint_id}); return;
+    }
+    if (cmd === "reassign-queue") { console.log(JSON.stringify(m.reassignment_queue,null,2)); return; }
     if (cmd === "resume") {
-      if (!["IN_PROGRESS","DISCONNECTED","BLOCKED"].includes(m.status)) throw new Error("mission is not resumable from current status");
+      if (m.handoff.status==="HANDOFF_ACCEPTED" && (a[0]!==m.responsible_ai || a[1]!==m.participant_id)) throw new Error("TASK_REASSIGNED: only the accepted responsible AI may resume");
+      if (m.handoff.status==="HANDOFF_CREATED") throw new Error("pending handoff must be accepted before resume");
+      if (!["IN_PROGRESS","DISCONNECTED","BLOCKED","RECOVERY_REQUIRED","RESUMING"].includes(m.status)) throw new Error("mission is not resumable from current status");
       if (m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before resume");
       if (!m.checkpoint && m.status!=="DISCONNECTED") throw new Error("no checkpoint available");
       if (m.status === "DISCONNECTED") {
         const disconnect = [...m.blockers].reverse().find(item => item.kind === "DISCONNECT" && item.status === "RECORDED");
         if (disconnect) { disconnect.status = "RESUMED"; disconnect.resumed_at = now(); }
       }
-      transition(m,"IN_PROGRESS"); m.last_action="resumed"; m.next_action=m.checkpoint?.description || "continue assigned task"; writeState(s,"MISSION_RESUMED"); console.log("RESUMED " + m.mission_id); return;
+      transition(m,"IN_PROGRESS"); m.presence.state="RECONNECTED"; m.presence.reconnected_at=now(); m.presence.last_seen=now();
+      m.execution={lease_id:crypto.randomUUID(),owner_ai:m.responsible_ai,participant_id:m.participant_id,lease_expires_at:new Date(Date.now()+Math.max(10000,m.presence.timeout_ms)).toISOString()};
+      m.last_action="resumed"; m.next_action=m.checkpoint?.description || "continue assigned task"; writeState(s,"MISSION_RESUMED"); console.log("RESUMED " + m.mission_id); return;
     }
     if (cmd === "resolve-blockers") {
       if (m.status!=="BLOCKED" || !m.blockers.some(b=>b.status==="OPEN")) throw new Error("no open blocker on a BLOCKED mission");
@@ -142,17 +198,26 @@ function main(args) {
       transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED"); m.next_action=cmd==="block"?"resolve blocker and resume":"resume from saved checkpoint"; writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
     }
     if (cmd === "handoff-create") {
-      if (!["IN_PROGRESS","DISCONNECTED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected or review-pending mission");
+      if (!["IN_PROGRESS","DISCONNECTED","RECOVERY_REQUIRED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected, recovery-required or review-pending mission");
       if (!a[0] || !a[0].trim()) throw new Error("target AI required");
-      m.handoff={status:"HANDOFF_CREATED",target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null}; m.next_action="await explicit handoff acceptance"; writeState(s,"HANDOFF_CREATED"); return;
+      if (["HANDOFF_CREATED","HANDOFF_ACCEPTED"].includes(m.handoff.status)) throw new Error("a handoff is already pending; duplicate handoff rejected");
+      m.handoff={status:"HANDOFF_CREATED",from_ai:m.responsible_ai,target_ai:a[0],participant_id:null,created_at:now(),accepted_at:null,completed_at:null,checkpoint_id:m.checkpoint?.checkpoint_id||null,context:{mission_id:m.mission_id,task_id:m.current_task,checkpoint:m.checkpoint,files_changed:[...m.files_changed],commits:[...m.commits],tests:[...m.tests],last_result:m.last_result,next_action:m.next_action,blockers:JSON.parse(JSON.stringify(m.blockers))}};
+      if (m.status!=="WAITING_REVIEW") transition(m,"WAITING_HANDOFF");
+      m.execution={lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null};
+      m.next_action="await explicit handoff acceptance"; writeState(s,"HANDOFF_CREATED"); return;
     }
     if (cmd === "handoff-accept") {
       if (m.handoff.status!=="HANDOFF_CREATED" || !a[0]) throw new Error("no pending handoff or participant_id missing");
-      m.handoff.status="HANDOFF_ACCEPTED"; m.handoff.participant_id=a[0]; m.handoff.accepted_at=now(); m.responsible_ai=m.handoff.target_ai; m.participant_id=a[0]; writeState(s,"HANDOFF_ACCEPTED"); return;
+      m.handoff.status="HANDOFF_ACCEPTED"; m.handoff.participant_id=a[0]; m.handoff.accepted_at=now(); m.responsible_ai=m.handoff.target_ai; m.participant_id=a[0];
+      transition(m,"RESUMING"); m.execution={lease_id:null,owner_ai:null,participant_id:null,lease_expires_at:null};
+      for (const item of m.reassignment_queue) if (item.status==="QUEUED") { item.status="ASSIGNED"; item.assigned_to=m.responsible_ai; item.assigned_at=now(); break; }
+      m.next_action="new responsible AI must resume from accepted checkpoint"; writeState(s,"HANDOFF_ACCEPTED"); return;
     }
     if (cmd === "handoff-complete") {
-      if (m.handoff.status!=="HANDOFF_ACCEPTED") throw new Error("handoff must be accepted first");
-      m.handoff.status="HANDOFF_COMPLETED"; m.handoff.completed_at=now(); writeState(s,"HANDOFF_COMPLETED"); return;
+      if (m.handoff.status!=="HANDOFF_ACCEPTED" || m.status!=="IN_PROGRESS") throw new Error("handoff must be accepted and the new responsible AI must resume first");
+      m.handoff.status="HANDOFF_COMPLETED"; m.handoff.completed_at=now();
+      for (const item of m.reassignment_queue) if (item.status==="ASSIGNED" && item.assigned_to===m.responsible_ai) { item.status="COMPLETED"; item.completed_at=now(); }
+      writeState(s,"HANDOFF_COMPLETED"); return;
     }
     if (cmd === "submit-review") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: submit-review <result>; mission must be IN_PROGRESS");
