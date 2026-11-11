@@ -12,6 +12,7 @@ mod history;
 mod limits;
 mod filesystem;
 mod path_guard;
+mod project_storage;
 mod advanced;
 
 use error::{AppError, AppResult};
@@ -103,7 +104,7 @@ fn read_source_safely(app:&tauri::AppHandle, source:&Path)->AppResult<Vec<u8>>{l
     let count=((input.chars().count() as f64)/4.0).ceil() as usize;
     Ok(TokenEstimate{method:"local_estimate",count,approximate:true,provider:None,model:None,limitation:Some("Estimativa local por caracteres; não substitui a contagem do provedor.".into())})
 }
-#[tauri::command] fn initialize_project(app:tauri::AppHandle,project_id:String)->AppResult<ProjectInfo>{let root=project_root(&app,&project_id)?;if let Err(err)=fs::create_dir(&root){if err.kind()!=std::io::ErrorKind::AlreadyExists{return Err(AppError::new("STORAGE_ERROR","Não foi possível gravar no armazenamento."));}let meta=fs::symlink_metadata(&root).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível verificar o armazenamento do projeto."))?;if meta.file_type().is_symlink()||!meta.is_dir(){return Err(AppError::new("STORAGE_ERROR","O armazenamento do projeto não é um diretório regular."));}}fs::create_dir_all(root.join("blobs")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar no armazenamento."))?;let db_path=root.join("db.sqlite");db::open(&db_path)?;Ok(ProjectInfo{id:project_id,path:root.to_string_lossy().into_owned()})}
+#[tauri::command] fn initialize_project(app:tauri::AppHandle,project_id:String)->AppResult<ProjectInfo>{let root=project_root(&app,&project_id)?;project_storage::claim_project_root(&root)?;fs::create_dir_all(root.join("blobs")).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível gravar no armazenamento."))?;let db_path=root.join("db.sqlite");db::open(&db_path)?;Ok(ProjectInfo{id:project_id,path:root.to_string_lossy().into_owned()})}
 #[tauri::command]
 fn import_text_file(app:tauri::AppHandle,project_id:String,logical_path:String,source_path:String)->AppResult<String>{
     let logical=safe_logical_path(&logical_path)?;
