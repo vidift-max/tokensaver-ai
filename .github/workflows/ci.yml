@@ -87,11 +87,6 @@ jobs:
           KC_HEALTH_ENABLED: "true"
         ports:
           - 8080:8080
-        options: >-
-          --health-cmd "bash -c '</dev/tcp/127.0.0.1/8080'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - name: Wait for Keycloak readiness
