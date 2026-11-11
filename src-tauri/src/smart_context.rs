@@ -30,6 +30,35 @@ fn excerpt(text:&str, needle:&str)->String {
     out=out.replace('\n', " ").replace('\r', " ");
     if start>0 { out=format!("…{out}"); } if end<chars.len(){out.push('…');} out
 }
+fn read_context_blob<R: Read>(
+    reader: R,
+    max_file_bytes: u64,
+    remaining_batch_bytes: u64,
+) -> std::io::Result<(Vec<u8>, bool, bool)> {
+    if remaining_batch_bytes == 0 {
+        return Ok((Vec::new(), true, false));
+    }
+
+    // When the aggregate budget is the tighter limit, never read beyond it.
+    // Otherwise, read one sentinel byte to detect a per-file limit violation.
+    let read_limit = if remaining_batch_bytes > max_file_bytes {
+        max_file_bytes.saturating_add(1)
+    } else {
+        remaining_batch_bytes
+    };
+
+    let mut raw = Vec::new();
+    reader.take(read_limit).read_to_end(&mut raw)?;
+
+    let aggregate_budget_exhausted =
+        remaining_batch_bytes <= max_file_bytes && raw.len() as u64 == remaining_batch_bytes;
+    let file_too_large =
+        remaining_batch_bytes > max_file_bytes && raw.len() as u64 > max_file_bytes;
+
+    Ok((raw, aggregate_budget_exhausted, file_too_large))
+}
+
+
 #[tauri::command]
 pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, max_files: usize) -> AppResult<Vec<ContextHit>> {
     let q=query.trim(); if q.len()>512 { return Err(AppError::new("INVALID_REQUEST", "A consulta é grande demais.")); }
@@ -44,18 +73,116 @@ pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, m
     let mut hits=Vec::new();
     let mut files_examined=0usize;
     let mut bytes_read=0u64;
-    for row in rows { if files_examined >= limits::MAX_FILES_PER_BATCH || bytes_read >= limits::MAX_BATCH_BYTES { break; } let (id,path,version,bytes,sha)=row.map_err(|_|AppError::new("DATABASE_ERROR","Não foi possível ler o contexto."))?; files_examined += 1; if sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()){continue;} let blob=blobs.join(&sha); let canonical=match blob.canonicalize(){Ok(p)=>p,Err(_)=>continue}; if canonical.parent()!=Some(blobs.as_path()){continue;} let mut raw=Vec::new(); let mut file=match fs::File::open(&canonical){Ok(f)=>f,Err(_)=>continue}; if std::io::Read::take(&mut file, limits::MAX_FILE_BYTES.saturating_add(1)).read_to_end(&mut raw).is_err(){continue;} if raw.len() as u64 > limits::MAX_FILE_BYTES {continue;} let next_total=bytes_read.saturating_add(raw.len() as u64); if next_total > limits::MAX_BATCH_BYTES {break;} bytes_read=next_total; let text=match String::from_utf8(raw){Ok(t)=>t,Err(_)=>continue}; let lower=text.to_lowercase(); let path_lower=path.to_lowercase(); let mut score=0i64; let mut first="".to_string(); for t in &terms { let pc=path_lower.matches(t).count() as i64; let cc=lower.matches(t).count() as i64; score += pc*12 + cc.min(20); if first.is_empty() && cc>0 {first=excerpt(&text,t);} } if score>0 {hits.push(ContextHit{file_id:id,logical_path:path,version_no:version,byte_len:bytes,token_estimate:((text.chars().count() as f64)/4.0).ceil() as i64,score,excerpt:if first.is_empty(){text.chars().take(360).collect()}else{first}});} }
+    for row in rows {
+        if files_examined >= limits::MAX_FILES_PER_BATCH || bytes_read >= limits::MAX_BATCH_BYTES {
+            break;
+        }
+        let (id, path, version, bytes, sha) = row
+            .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível ler o contexto."))?;
+        files_examined += 1;
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let blob = blobs.join(&sha);
+        let canonical = match blob.canonicalize() {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        if canonical.parent() != Some(blobs.as_path()) {
+            continue;
+        }
+        let file = match fs::File::open(&canonical) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let remaining = limits::MAX_BATCH_BYTES.saturating_sub(bytes_read);
+        let (raw, batch_exhausted, file_too_large) =
+            match read_context_blob(file, limits::MAX_FILE_BYTES, remaining) {
+                Ok(result) => result,
+                Err(_) => continue,
+            };
+        bytes_read = bytes_read.saturating_add(raw.len() as u64);
+        if batch_exhausted {
+            // The last read may be a prefix of this file. Do not rank partial content.
+            break;
+        }
+        if file_too_large {
+            continue;
+        }
+        let text = match String::from_utf8(raw) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let lower = text.to_lowercase();
+        let path_lower = path.to_lowercase();
+        let mut score = 0i64;
+        let mut first = String::new();
+        for term in &terms {
+            let path_count = path_lower.matches(term).count() as i64;
+            let content_count = lower.matches(term).count() as i64;
+            score += path_count * 12 + content_count.min(20);
+            if first.is_empty() && content_count > 0 {
+                first = excerpt(&text, term);
+            }
+        }
+        if score > 0 {
+            hits.push(ContextHit {
+                file_id: id,
+                logical_path: path,
+                version_no: version,
+                byte_len: bytes,
+                token_estimate: ((text.chars().count() as f64) / 4.0).ceil() as i64,
+                score,
+                excerpt: if first.is_empty() {
+                    text.chars().take(360).collect()
+                } else {
+                    first
+                },
+            });
+        }
+    }
     hits.sort_by(|a,b| b.score.cmp(&a.score).then_with(||a.logical_path.cmp(&b.logical_path))); hits.truncate(limit); Ok(hits)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::excerpt;
+    use super::{excerpt, read_context_blob};
+    use std::io::Cursor;
 
     #[test]
     fn excerpt_handles_unicode_case_expansion_without_panicking() {
         let text = "prefix İSTO contexto final";
         let result = excerpt(text, "isto");
         assert!(result.contains("İSTO") || result.contains("contexto"));
+    }
+
+    #[test]
+    fn context_read_never_exceeds_remaining_aggregate_budget() {
+        let source = Cursor::new(b"abcdefgh".to_vec());
+        let (bytes, exhausted, too_large) = read_context_blob(source, 6, 3).unwrap();
+
+        assert_eq!(bytes, b"abc");
+        assert!(exhausted);
+        assert!(!too_large);
+    }
+
+    #[test]
+    fn context_read_detects_per_file_overflow_within_aggregate_budget() {
+        let source = Cursor::new(b"abcde".to_vec());
+        let (bytes, exhausted, too_large) = read_context_blob(source, 4, 8).unwrap();
+
+        assert_eq!(bytes, b"abcde");
+        assert!(!exhausted);
+        assert!(too_large);
+    }
+
+    #[test]
+    fn context_read_accepts_file_smaller_than_remaining_budget() {
+        let source = Cursor::new(b"abc".to_vec());
+        let (bytes, exhausted, too_large) = read_context_blob(source, 4, 8).unwrap();
+
+        assert_eq!(bytes, b"abc");
+        assert!(!exhausted);
+        assert!(!too_large);
     }
 }
