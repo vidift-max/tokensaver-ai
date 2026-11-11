@@ -111,6 +111,7 @@ jobs:
             -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
             -d '{"realm":"team-room-ci","enabled":true}' | grep -q '^201$'
           CLIENT_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$CLIENT_SECRET"
           curl --fail --silent --show-error -o /dev/null -w '%{http_code}' \
             -X POST http://127.0.0.1:8080/admin/realms/team-room-ci/clients \
             -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
