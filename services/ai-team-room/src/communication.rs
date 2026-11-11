@@ -471,6 +471,25 @@ mod postgres_tests {
         assert_eq!(no_session.status(),StatusCode::UNAUTHORIZED);
         let ticket=request(app.clone(),"POST",format!("/team-room/{room}/ws-ticket"),&a.token,Some(json!({}))).await;
         assert_eq!(ticket.status(),StatusCode::OK);
+        let ticket_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(ticket.into_body(),4096).await.unwrap()).unwrap();
+        let ticket_value=ticket_json["ticket"].as_str().unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server_pool=pool.clone();\n        let server=tokio::spawn(async move{axum::serve(listener,router(server_pool)).await.unwrap();});
+        let ws_url=format!("ws://{address}/team-room/{room}/ws?ticket={ticket_value}");
+        let mut ws_request=ws_url.into_client_request().unwrap();
+        ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut ws,_)=tokio_tungstenite::connect_async(ws_request).await.expect("authenticated websocket handshake");
+        let client=reqwest::Client::new();
+        let ws_message=json!({"client_message_id":Uuid::new_v4(),"body":"websocket live delivery","parent_message_id":null});
+        let response=client.post(format!("http://{address}/team-room/{room}/messages")).bearer_auth(&a.token).json(&ws_message).send().await.unwrap();
+        assert_eq!(response.status(),reqwest::StatusCode::CREATED);
+        use futures_util::StreamExt;
+        let frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws.next()).await.unwrap().unwrap().unwrap();
+        let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(event["type"],"MESSAGE_CREATED");
+        server.abort();
+
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws"),&a.token,None).await;
         assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED);
 
