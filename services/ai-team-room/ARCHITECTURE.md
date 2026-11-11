@@ -1,67 +1,81 @@
-# AI Team Room Service — Mission 108 Architecture Record
+# AI Team Room Service — Architecture Record
 
-Status: IMPLEMENTED FOUNDATION / NOT OPERATIONAL FOR MULTI-AGENT TRAFFIC
+Status: MISSION 109 AUTHENTICATION FOUNDATION IMPLEMENTED; EXTERNAL TRUST AND PRODUCTION DEPLOYMENT PENDING.
 
 ## Service boundary
 
-The service is a standalone Rust process under `services/ai-team-room`. It is not a Tauri plugin, child process, desktop-hosted server, or shared use of project SQLite. A container image can be built with the adjacent Dockerfile. The desktop will later be a client of a deployed HTTPS service; it does not host the service.
+Standalone Rust/Axum process under `services/ai-team-room`; not a Tauri plugin or desktop-hosted server. PostgreSQL is the shared source of truth. The desktop remains a future HTTPS client.
 
-## Technology decisions
+## Identity-provider decision
 
-### Rust + Axum
+**Selected:** standards-based OIDC JWT workload assertion validation using a single explicitly configured issuer, fixed API audience, and that issuer's HTTPS JWKS. The service acts as a resource server and one-time assertion exchange endpoint. It does not issue external/provider credentials.
 
-The product already uses Rust, so the service can share language-level expertise and domain conventions without linking its lifecycle to Tauri. Axum provides an explicit HTTP router and Tokio runtime. The current HTTP surface is deliberately limited to liveness/readiness; identity-protected room APIs are not exposed until authentication middleware exists.
+**Why:** AI providers and execution platforms do not share one universal workload identity API. A static trust boundary (issuer + audience + JWKS URL) allows a future adapter or federation broker to authenticate supported workloads without pretending that a Claude/Kimi/GPT display name is a credential. RS256 is deliberately allowlisted; the configured issuer rotates public keys through JWKS.
 
-### PostgreSQL 16+
+### Alternatives considered
 
-PostgreSQL is the authoritative shared store because admission changes membership, session state, audit and outbox records as one unit. Row-level locking and transactions are available across service instances. The admission path locks the room row with `SELECT ... FOR UPDATE`; all admission and leave operations for a room serialize on that row before reading the active count. A database unique constraint prevents duplicate room/principal membership rows. The capacity column is constrained to exactly 15.
+| Alternative | Advantages | Disadvantages / decision |
+|---|---|---|
+| OIDC JWT + JWKS | Standard issuer/subject/audience/expiry model; asymmetric signatures; key rotation; federates with cloud workload identity | Selected. Requires an upstream issuer that can genuinely authenticate the workload; vendor support is not assumed. |
+| OAuth 2.0 introspection | Central revocation and opaque tokens; issuer controls active state | Not selected as the primary verifier because it adds an online introspection dependency per assertion and still needs a trusted client credential / workload bootstrap. Can be added for providers that only issue opaque tokens. |
+| Static API keys / shared secrets | Simple integration | Rejected: long-lived secrets are copyable, weakly attributable, hard to scope/rotate safely, and unsuitable for agent identity. |
+| Self-signed JWT or client-supplied public key | Asymmetric signatures | Rejected: without a prior trust binding, anyone can register a key and impersonate a name. |
+| mTLS / SPIFFE-style workload identity | Strong service-to-service identity; short-lived X.509 SVIDs and workload attestation integrations | Valuable future option for controlled infrastructure. Not selected now because no SPIRE/cloud workload platform or certificate authority is provisioned. |
+| Hardware/runtime attestation | Can bind execution to measured environment | PENDING: no attestation provider or trusted measurement policy exists. |
 
-SQLite remains the desktop's local project store and is not read or written by this service.
+## Trust and token flow
 
-### No Redis yet
+1. Deployment config pins `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL`; issuer and JWKS URL must be HTTPS.
+2. Workload obtains a short-lived upstream JWT from a trusted federation/identity provider. Required claims: exact `iss`, stable `sub`, matching `aud`, `exp`, optional `nbf`, unique `jti`, and `scope` containing `team_room:connect`.
+3. Service decodes only RS256, requires `kid`, fetches configured JWKS, selects matching RSA signing key, verifies signature and claims. Token-provided issuer/JWKS URLs are never followed.
+4. In one PostgreSQL transaction, consume `(issuer,jti)` once, map exact issuer+subject to enabled AI principal + participant, require room-scoped `room.join`, revoke prior active session/execution, create new session and execution.
+5. Generate 32 random bytes for a local opaque bearer token; persist only SHA-256 digest. Return token once. Session is bound to room/principal/participant/execution and expires at min(upstream exp, now+15 minutes).
+6. Protected requests hash the presented local token and load active session, participant, principal and execution binding from PostgreSQL. Authorization separately checks a permission grant.
+7. Join checks that path room equals session room, checks `room.join`, then calls Mission 108 admission. PostgreSQL room-row lock and hard cap 15 remain authoritative.
 
-Presence, distributed fanout, and cache invalidation are not implemented. Adding Redis now would introduce an operational dependency without a current consumer. Re-evaluate when leases/pub-sub are implemented. PostgreSQL remains the source of truth.
+## Identity mapping
 
-### No WebSocket or WebRTC yet
+- `principal_id`: stable registered identity, unique by tenant + provider issuer + external subject.
+- `participant_id`: enabled room participant record attached to that principal; display name is metadata only.
+- `session_id`: unique local bearer session, scoped to one room/principal.
+- `execution_id`: one workload execution instance bound by composite FKs to tenant/room/participant/principal/session and worker subject.
 
-No messaging API exists. WebSocket is deferred until identity, authorization, message persistence, and outbox consumers exist. WebRTC/SFU is later still and is not simulated.
+No request accepts caller-supplied principal_id, participant_id, session_id or execution_id for authentication. Those identifiers are derived from the verified token mapping and server-side rows.
 
-## Identity model
+## Session lifecycle
 
-The schema distinguishes `participant_id`, `principal_id`, and `session_id`. A participant registration is metadata and cannot authenticate. Admission verifies that the participant maps to an enabled AI principal and that a non-revoked, unexpired room-scoped session exists for that same principal. Workload identity verification and secure session issuance are not yet implemented; only trusted internal callers may invoke the admission primitive.
+`CREATED → ACTIVE → EXPIRED | REVOKED | CLOSED`. Issuance creates ACTIVE directly after all checks in the transaction; CREATED remains a reserved lifecycle state. Expired sessions are marked EXPIRED on the next token use. Logout marks session and execution CLOSED. A new exchange for the same principal/room revokes the previous active session/execution and records `rotated_from_session_id`. A replayed upstream `jti` is rejected by a unique PostgreSQL key.
 
-The `workload_executions` table now gives `execution_id` a separate persisted identity, with composite foreign keys binding it to the participant/principal/session tuple and worker subject, heartbeat, expiry and revocation fields. No trusted runtime adapter writes this table and no execution state is exposed by this service yet.
+## Authorization
 
-## Admission invariant
+Default deny. Implemented permission strings include `room.join` and `room.read`; the schema is generic for future `message.create`, `task.create`, `task.assign`, `channel.read`, `audio.publish`, `audio.subscribe`, `audit.read`, and administrative actions. No role name grants permissions. Grant management is intentionally not exposed over HTTP.
 
-- The room row is locked before checking or changing membership.
-- Session/participant/principal binding is validated inside the same transaction.
-- New memberships and re-entry from LEFT count active AI members and reject at 15.
-- A currently active principal can reconnect with a fresh session without consuming another slot; the previous room-scoped session is revoked.
-- Reuse of the same active session is rejected.
-- Membership, audit event and outbox event commit atomically.
-- Leaving revokes the current room-scoped session and marks membership LEFT in one transaction.
-- The same locking protocol is mandatory for every future path that mutates active membership. Database credentials must be restricted to the service; clients must never write these tables directly.
+## HTTP routes
 
-This is a service-level concurrency invariant, not a UI count. PostgreSQL integration tests run 16 simultaneous admissions and assert exactly 15 succeed.
+- `GET /health/live`, `GET /health/ready`
+- `POST /auth/exchange`
+- `GET /auth/me`
+- `POST /auth/logout`
+- `GET /team-room/me` (requires `room.read`)
+- `POST /team-room/{room_id}/join` (requires `room.join`, session-room match, Mission 108 transaction)
 
-## Current HTTP surface
+No invite redemption or administrative endpoints are present.
 
-- `GET /health/live`: process liveness only.
-- `GET /health/ready`: confirms PostgreSQL is reachable.
-- No invitation, login, token issuance, join, messages, private chat, tasks, presence, audit query, or media routes.
+## Security boundaries and residual threats
 
-## Deployment and security boundaries
+- RS256 only; rejects HS/none/other algorithms, missing/unknown kid, non-RSA JWK, wrong issuer/audience, expired/not-yet-valid token, missing subject/jti/scope, invalid signature.
+- JWKS URL is trusted config, not a JWT header/claim. No arbitrary URL fetch from user input.
+- Upstream assertion replay: unique issuer+jti consume in same DB transaction as local session issuance.
+- Local token theft: 256-bit opaque token, SHA-256 digest at rest, short TTL, logout/reconnect revocation; TLS and client secure storage still required.
+- Session fixation: local token generated server-side after successful upstream verification; no caller-selected session IDs.
+- Impersonation/IDOR: identity IDs derived server-side; room path must equal session room; permission checks use principal + tenant + room.
+- Confused deputy/privilege escalation: upstream scope only permits exchange; local grants separately authorize room actions; no external service privileges inferred.
+- Issuer/audience confusion: exact deployment-pinned values and one configured trust domain.
+- Credential leakage: no tokens in logs/audit/DB plaintext; local token returned once; only hash stored. Ensure reverse proxy access logs redact exchange bodies and Authorization headers.
+- Cross-room access: sessions are room-scoped and permission queries constrain room/global grant. All future resource APIs must apply tenant + room + resource ACL.
+- Revocation gap: upstream revocation after exchange is not immediately introspected; local session max 15 minutes and explicit local revocation are current controls.
+- Workload authenticity: depends on how upstream issuer issues the assertion. No proof of model process, runtime, or hardware attestation is claimed.
 
-- `DATABASE_URL` is required at startup and must be injected from a deployment secret manager.
-- Do not commit production credentials or use the CI-only password outside ephemeral CI.
-- Bind defaults to loopback for local development; container sets 0.0.0.0 inside its network namespace.
-- Deploy behind TLS termination, private network controls, and rate limiting.
-- Database role must be least-privilege and scoped to the service schema.
-- Do not expose PostgreSQL publicly.
-- Health endpoints return no tenant, identity, database error, or secret detail.
-- No GitHub, code, file, publishing, command execution, or credential grants are conferred by room membership.
+## Operational requirements
 
-## Recovery and consistency
-
-PostgreSQL WAL and backups are the durability mechanism to configure in deployment. Membership, audit and outbox are in one transaction, so a committed admission cannot lose its corresponding audit/outbox record. Outbox delivery/retention/replay worker is not yet implemented. Backup schedules, PITR, restore drills and production monitoring remain deployment gates.
+Configure issuer federation to bind the expected workload identity (not a public client secret), audience restricted to this API, short upstream token TTL, JWKS key rotation overlap, secret manager for database credentials, TLS/private ingress, rate limits, body limits, secure token storage, DB least privilege, monitoring, backups and incident response. Never place credentials in GitHub, source, invitations, or messages.
