@@ -2,6 +2,7 @@ use ai_team_room_service::{
     admit_authenticated_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
     connect_pool, migrate, readiness,
 };
+use chrono::{DateTime, Utc};
 use axum::{
     extract::{ConnectInfo, Path, State},
     http::StatusCode,
@@ -22,6 +23,15 @@ struct AppState {
 
 #[derive(Serialize)]
 struct HealthResponse { service: &'static str, status: &'static str }
+
+#[derive(Serialize)]
+struct HeartbeatResponse { session_id: Uuid, execution_id: Uuid, last_seen_at: DateTime<Utc> }
+
+#[derive(Debug, sqlx::FromRow)]
+struct PresenceRow { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, heartbeat_at: Option<DateTime<Utc>> }
+
+#[derive(Serialize)]
+struct PresenceItem { participant_id: Uuid, principal_id: Uuid, session_id: Uuid, last_seen_at: Option<DateTime<Utc>>, state: String }
 
 #[derive(Deserialize)]
 struct ExchangeRequest { room_id: Uuid, workload_token: String }
@@ -94,6 +104,47 @@ async fn auth_me(
     authenticate_session(&state.pool, &headers).await.map(Json).map_err(auth_status)
 }
 
+async fn heartbeat(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<HeartbeatResponse>, StatusCode> {
+    let identity = authenticate_session(&state.pool, &headers).await.map_err(auth_status)?;
+    let mut tx = state.pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let last_seen_at: DateTime<Utc> = sqlx::query_scalar(
+        "UPDATE workload_executions SET heartbeat_at=NOW() WHERE execution_id=$1 AND session_id=$2 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW() RETURNING heartbeat_at"
+    ).bind(identity.execution_id).bind(identity.session_id).fetch_optional(&mut *tx).await
+      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::UNAUTHORIZED)?;
+    sqlx::query("UPDATE room_memberships SET last_seen_at=$1 WHERE room_id=$2 AND principal_id=$3 AND session_id=$4 AND status='ACTIVE'")
+        .bind(last_seen_at).bind(identity.room_id).bind(identity.principal_id).bind(identity.session_id)
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query("UPDATE workload_identities SET last_seen_at=$1 WHERE principal_id=$2 AND status='ACTIVE'")
+        .bind(last_seen_at).bind(identity.principal_id).execute(&mut *tx).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(HeartbeatResponse { session_id:identity.session_id, execution_id:identity.execution_id, last_seen_at }))
+}
+
+async fn room_presence(
+    State(state): State<AppState>,
+    Path(room_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<PresenceItem>>, StatusCode> {
+    let identity = authenticate_session(&state.pool, &headers).await.map_err(auth_status)?;
+    if identity.room_id != room_id { return Err(StatusCode::FORBIDDEN); }
+    require_permission(&state.pool, &identity, "room.read").await.map_err(auth_status)?;
+    let rows = sqlx::query_as::<_, PresenceRow>(
+        "SELECT m.participant_id,m.principal_id,m.session_id,w.heartbeat_at FROM room_memberships m LEFT JOIN workload_executions w ON w.session_id=m.session_id AND w.status='ACTIVE' AND w.revoked_at IS NULL WHERE m.room_id=$1 AND m.status='ACTIVE' ORDER BY m.joined_at"
+    ).bind(room_id).fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let timeout = std::env::var("TEAM_ROOM_HEARTBEAT_TIMEOUT_SECONDS").ok().and_then(|v|v.parse::<i64>().ok()).filter(|v|*v>=10).unwrap_or(90);
+    let now = Utc::now();
+    let items = rows.into_iter().map(|row| {
+        let age = row.heartbeat_at.map(|at| (now-at).num_seconds()).unwrap_or(i64::MAX);
+        let state = if age <= timeout/2 { "ACTIVE" } else if age <= timeout { "IDLE" } else if age <= timeout*2 { "SUSPECTED_DISCONNECTED" } else { "DISCONNECTED" };
+        PresenceItem { participant_id:row.participant_id, principal_id:row.principal_id, session_id:row.session_id, last_seen_at:row.heartbeat_at, state:state.to_string() }
+    }).collect();
+    Ok(Json(items))
+}
+
 async fn team_room_me(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -144,6 +195,8 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/exchange", post(exchange))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(logout))
+        .route("/team-room/heartbeat", post(heartbeat))
+        .route("/team-room/{room_id}/presence", get(room_presence))
         .route("/team-room/me", get(team_room_me))
         .route("/team-room/{room_id}/join", post(join_room))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
