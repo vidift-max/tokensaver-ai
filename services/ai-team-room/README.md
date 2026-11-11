@@ -9,6 +9,7 @@ Independent Rust service boundary for the future shared AI Team Communication Ro
 - Startup requires `DATABASE_URL` and applies versioned SQL migrations.
 - `/health/live` reports process liveness.
 - `/health/ready` checks the PostgreSQL connection.
+- The schema keeps participant, principal, session, and workload execution IDs separate; workload execution records are bound by composite foreign keys to the participant/principal/session tuple.
 - The library contains transactional room admission/leave primitives for callers that have already authenticated a workload and obtained a room-scoped session.
 - Admission locks the room row with `SELECT ... FOR UPDATE`, validates the participant/principal/session binding, counts active AI memberships, enforces the server-side limit of 15, and writes membership + audit + outbox atomically.
 - Reconnection reuses the principal's membership and rotates/revokes its previous room session. Reusing the same active session is rejected.
