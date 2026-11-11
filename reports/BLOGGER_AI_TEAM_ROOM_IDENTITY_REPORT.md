@@ -71,6 +71,8 @@ The service accepts RS256 only. It validates the JWT signature against an RSA pu
 
 **IMPLEMENTED, LIMITED SCOPE.** `principal_permissions` is default-deny. `GET /team-room/me` requires `room.read`; `POST /team-room/{room_id}/join` requires `room.join` and enforces that the path room matches the session room. No role name grants privileges. Grant-management HTTP endpoints are not exposed. Future permissions are schema-compatible but not implemented as endpoints.
 
+**Separation caveat:** `POST /auth/exchange` currently also requires a `room.join` database grant before minting a local session. Protected routes re-check their own permissions, but this means an authenticated read-only principal without `room.join` cannot obtain a session to use `room.read`. This is stricter than a fully decoupled authentication/authorization design and should be resolved before adding read-only roles; it is documented rather than silently represented as fully separated.
+
 ## L. Revocation
 
 **IMPLEMENTED LOCALLY.** Logout and session replacement revoke local sessions and workload executions. Disabled principals/participants are rejected on authentication. Upstream issuer revocation is not introspected after exchange; the local maximum 15-minute TTL bounds this residual window.
