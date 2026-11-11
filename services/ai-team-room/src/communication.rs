@@ -47,6 +47,7 @@ struct HistoryResponse {
     channel_id: Uuid,
     items: Vec<MessageRow>,
     has_more: bool,
+    unread_count: i64,
 }
 
 fn auth_status(error: AuthError) -> StatusCode {
@@ -130,9 +131,11 @@ async fn history(
     let has_more=rows.len() as i64>limit;
     let mut items:Vec<_>=rows.into_iter().take(limit as usize).collect();
     items.reverse();
+    let unread_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM team_room_messages m LEFT JOIN team_room_message_reads r ON r.channel_id=m.channel_id AND r.principal_id=$2 WHERE m.channel_id=$1 AND m.sender_principal_id<>$2 AND m.deleted_at IS NULL AND m.created_at>COALESCE(r.last_read_at,'-infinity'::timestamptz)")
+        .bind(channel).bind(who.principal_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query("INSERT INTO team_room_message_reads(channel_id,principal_id,last_read_at) VALUES($1,$2,NOW()) ON CONFLICT(channel_id,principal_id) DO UPDATE SET last_read_at=EXCLUDED.last_read_at")
         .bind(channel).bind(who.principal_id).execute(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(HistoryResponse{channel_id:channel,items,has_more}))
+    Ok(Json(HistoryResponse{channel_id:channel,items,has_more,unread_count}))
 }
 
 async fn send_general(
@@ -161,9 +164,11 @@ async fn private_history(
     ).bind(channel).bind(query.before).bind(limit+1).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let has_more=rows.len() as i64>limit;
     let mut items:Vec<_>=rows.into_iter().take(limit as usize).collect(); items.reverse();
+    let unread_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM team_room_messages m LEFT JOIN team_room_message_reads r ON r.channel_id=m.channel_id AND r.principal_id=$2 WHERE m.channel_id=$1 AND m.sender_principal_id<>$2 AND m.deleted_at IS NULL AND m.created_at>COALESCE(r.last_read_at,'-infinity'::timestamptz)")
+        .bind(channel).bind(who.principal_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query("INSERT INTO team_room_message_reads(channel_id,principal_id,last_read_at) VALUES($1,$2,NOW()) ON CONFLICT(channel_id,principal_id) DO UPDATE SET last_read_at=EXCLUDED.last_read_at")
         .bind(channel).bind(who.principal_id).execute(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(HistoryResponse{channel_id:channel,items,has_more}))
+    Ok(Json(HistoryResponse{channel_id:channel,items,has_more,unread_count}))
 }
 
 async fn send_private(
