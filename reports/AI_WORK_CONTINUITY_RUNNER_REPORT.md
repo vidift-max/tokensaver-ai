@@ -940,3 +940,104 @@ CI run `43053560701` validated code HEAD `a360a3ea751c6dc5b32cb865201a81b4b2845e
 **NO-GO for production multi-agent orchestration** until the recovery scheduler/outbox worker, staged handoff protocol, Runner-to-Team-Room bridge, provider adapters/delivery receipts, production deployment controls, and multi-process/multi-host stress evidence are complete.
 
 The code HEAD CI above is green. This report update is documentation-only; its own new branch HEAD must also complete the full four-job workflow before the branch is described as finally frozen.
+
+---
+
+# Missão — Runner distribuído, recovery durável e handoff autenticado (2026-11-11)
+
+## Estado auditado
+
+- Branch confirmada: v2-saas-alpha.
+- HEAD de referência fornecido: 44a415196bee66cface8dce38ad41514a7bbfb4a.
+- HEAD encontrado antes desta auditoria: a360a3ea751c6dc5b32cb865201a81b4b2845ece.
+- Único commit posterior à referência encontrado: a360a3ea751c6dc5b32cb865201a81b4b2845ece — fix(continuity): preserve repeated lease events and heartbeat checkpoints.
+- Esse commit adiciona migration 0006_allow_repeated_lease_events.sql e amplia o teste PostgreSQL para duas renovações e dois checkpoints na mesma geração de fencing.
+- Para o HEAD a360a3e, a consulta de status checks retornou lista vazia e a consulta de workflow runs não retornou execuções. CI desse SHA: PENDENTE / NÃO VALIDADA, nunca verde por inferência.
+- O run 43052264884 validou somente o SHA f218930a25d9c212addfe2831818073a1b8718e7; não valida a migration 0006 nem commits posteriores.
+
+## Runner — auditoria crítica
+
+**IMPLEMENTADO:** scripts/mission-runner.mjs mantém STATE.json, lock local, eventos NDJSON, checkpoints e ciclo de vida local.
+
+**VALIDADO por inspeção:** start e resume ainda criam lease_id e lease_expires_at localmente; heartbeat estende esse prazo local; checkpoint, complete e outros comandos alteram o estado local sem chamar as APIs Team Room.
+
+**BLOQUEADOR:** o Runner ainda pode representar execução como ativa sem adquirir lease PostgreSQL. Portanto, STATE.json ainda funciona como autoridade operacional de facto para o Runner. A integração Runner → Team Room NÃO está implementada. Não usar o Runner como executor distribuído até a integração fail-closed existir.
+
+## Ownership, lease e fencing
+
+- Ownership PostgreSQL com FOR UPDATE e revalidação de sessão, principal, membership e workload: IMPLEMENTADO; TESTADO no SHA f218930.
+- Acquire, renew, release e expiração usando relógio PostgreSQL: IMPLEMENTADO; TESTADO no SHA f218930.
+- Fencing monotônico, comparação exata e trigger anti-rollback: IMPLEMENTADO; TESTADO no SHA f218930.
+- Runner carregar task_id, owner/session/execution e fencing_token remoto: PENDENTE.
+- Teste de processo Runner antigo após takeover: PENDENTE.
+
+## Recovery
+
+- recover_expired marca leases vencidos como RECOVERY_REQUIRED e grava evento: IMPLEMENTADO no serviço.
+- Endpoint autenticado para disparar recovery: IMPLEMENTADO.
+- Worker/daemon/scheduler contínuo, polling, retries, métricas e alertas: PENDENTE. A operação manual não é recovery autônomo.
+
+## Handoff
+
+- Registro durável RESUMED na aquisição após owner/recovery anterior: IMPLEMENTADO.
+- Protocolo de oferta endereçada, HANDOFF_PENDING, aceite autenticado, recusa, timeout, cancelamento e HANDOFF_COMPLETED: PENDENTE. Aquisição após expiração não equivale a handoff negociado.
+
+## Reassignment
+
+- list_candidates filtra membership, sessão, workload, permissão e heartbeat; ordena por leases ativos e last_seen; limite fixo de três leases: IMPLEMENTADO.
+- Scheduler que escolhe e atribui automaticamente candidato, com verificação de incompatibilidade de ownership: PENDENTE.
+- Capacidade configurável/métrica real: PENDENTE; o limite atual é fixo.
+
+## Testes e concorrência
+
+- Run 43052264884 no SHA f218930: 19 testes passaram, 0 falharam nos grupos Rust/PostgreSQL relatados. Incluiu dez contendores, um vencedor, renew, expiry/recovery, takeover concorrente, fencing 1→2, rejeição de token antigo/futuro, trigger anti-rollback e conclusão.
+- A migration 0006 e os asserts adicionais para renovações/checkpoints repetidos estão IMPLEMENTADOS, mas NÃO TESTADOS no HEAD a360a3e.
+- Teste de Runner integrado ao Team Room, stale Runner, worker, handoff A/B, timeout/recusa, revogação durante execução e race handoff/recovery: PENDENTE.
+- Teste concorrente Tokio contra PostgreSQL existe; teste de múltiplos processos independentes/multi-host: PENDENTE.
+
+## CI
+
+| Evidência | Resultado | Escopo |
+|---|---|---|
+| 43052264884 | SUCCESS | SHA f218930; Team Room PostgreSQL E2E; não valida HEAD posterior |
+| a360a3e status checks | lista vazia | Nenhum status disponível na consulta |
+| a360a3e workflow runs | lista vazia | Consulta de runs não forneceu execução associada |
+| HEAD final deste relatório | PENDENTE | Exige CI do SHA exato após o commit documental |
+
+## Evidências consultadas
+
+- Branch search confirmou v2-saas-alpha.
+- Commit search encontrou a360a3e como HEAD mais recente no início da auditoria.
+- Foram lidos diretamente scripts/mission-runner.mjs, tests/mission-runner.test.mjs, services/ai-team-room/src/tasks.rs, services/ai-team-room/src/main.rs, migrations 0005/0006, README do Team Room e este relatório.
+- O código do Runner demonstra geração/renovação local de lease sem chamada HTTP ao Team Room.
+- O README declara que não existe scheduler/background recovery.
+- tasks.rs implementa recovery manual e consulta de candidatos, mas não handoff staged nem reassignment automático.
+
+## Limitações
+
+1. Runner não integrado à autoridade PostgreSQL.
+2. Lease local pode induzir falsa percepção de ownership.
+3. Sem recovery daemon/scheduler.
+4. Sem handoff negociado com destinatário.
+5. Sem timeout/recusa de handoff.
+6. Sem seleção automática que efetive reassignment.
+7. Sem teste de stale Runner real.
+8. Sem teste multi-processo/multi-host.
+9. CI do HEAD a360a3e não comprovada.
+10. OIDC autentica workload registrado, mas não atesta o binário/modelo em execução.
+
+## Próxima missão
+
+1. Integrar Runner fail-closed com Team Room: autenticar, criar/localizar task, adquirir lease e persistir somente metadados não secretos. Cada renew/checkpoint/complete deve exigir a lease remota atual; falha de rede ou 401/403/409 deve interromper a execução. Nunca persistir bearer token em STATE.json/logs.
+2. Implementar worker separado com polling PostgreSQL, FOR UPDATE SKIP LOCKED, idempotência, retry/backoff, métricas, alertas, deployment e shutdown documentados.
+3. Implementar handoff endereçado com aceite/recusa autenticados e timeout sem janela de dois owners.
+4. Implementar scheduler determinístico usando somente métricas e critérios disponíveis; dados ausentes permanecem PENDENTE.
+5. Criar testes de integração Runner, multi-processo, takeover, revogação, handoff/recovery race e CI no HEAD exato final.
+
+## Decisão final
+
+**GO CONDICIONADO** para continuar desenvolvimento da infraestrutura PostgreSQL.
+
+**NO-GO** para declarar Runner distribuído, recuperação autônoma, handoff autenticado completo ou autonomia multi-IA. Um executor desaparecido ainda não é substituído por worker automático e o Runner ainda pode iniciar com autoridade local simulada.
+
+**Missão de implementação: PARCIAL.** As dez áreas foram auditadas, mas não há evidência de dez rodadas de implementação concluídas. Integração do Runner, worker de recovery e protocolo explícito de handoff permanecem pendentes.
