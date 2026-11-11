@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
+import { TeamRoomClient } from "../scripts/team-room-client.mjs";
 
 const script = path.resolve("scripts/mission-runner.mjs");
 const roomId="10000000-0000-4000-8000-000000000001";
@@ -329,4 +330,22 @@ test("stale fencing is rejected remotely for renew, checkpoint and complete afte
  original.missions["M-203"].execution.ownership_state="OWNED";
  fs.writeFileSync(statePath,JSON.stringify(original));
  assert.equal(run(c,"complete","new owner completion").status,0);
+});
+
+
+test("two independent Runner state directories resolve one mission task and only one acquires", t => {
+ const a=env(),b=env();t.after(()=>fs.rmSync(a.dir,{recursive:true,force:true}));t.after(()=>fs.rmSync(b.dir,{recursive:true,force:true}));
+ for(const ctx of [a,b]){run(ctx,"init","M-204","204","Same mission");run(ctx,"assign","AI-A","p-a");run(ctx,"acknowledge");}
+ assert.equal(run(a,"start").status,0);
+ const first=JSON.parse(fs.readFileSync(path.join(a.dir,"STATE.json"),"utf8")).missions["M-204"];
+ assert.ok(first.execution.task_id);
+ const secondStart=run(b,"start");
+ assert.equal(secondStart.status,2);
+ assert.match(secondStart.stderr,/HTTP 409/);
+ const client=new TeamRoomClient(a.env);
+ const missionUuid=client.missionUuid("M-204");
+ const response=await fetch(apiUrl+"/team-room/tasks/by-mission/"+missionUuid,{headers:{authorization:"Bearer test-session-token"}});
+ assert.equal(response.status,200);
+ const canonical=await response.json();
+ assert.equal(canonical.task_id,first.execution.task_id);
 });
