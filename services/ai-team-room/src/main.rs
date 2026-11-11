@@ -203,6 +203,90 @@ mod http_security_tests {
     }
 
     #[tokio::test]
+    async fn authenticated_http_routes_enforce_room_scope_permissions_and_revocation() {
+        use sha2::{Digest, Sha256};
+        use uuid::Uuid;
+
+        let database_url = std::env::var("DATABASE_URL").expect("PostgreSQL CI required for HTTP integration test");
+        let pool = connect_pool(&database_url).await.unwrap();
+        migrate(&pool).await.unwrap();
+        let tenant = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let other_room = Uuid::new_v4();
+        let principal = Uuid::new_v4();
+        let participant = Uuid::new_v4();
+        let workload = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        let issuer = "https://http-test-issuer.example";
+        let subject = Uuid::new_v4().to_string();
+        let raw_token = "http-integration-opaque-bearer";
+        let digest = Sha256::digest(raw_token.as_bytes()).to_vec();
+
+        sqlx::query("INSERT INTO tenants (tenant_id,name) VALUES ($1,'http-security-test')")
+            .bind(tenant).execute(&pool).await.unwrap();
+        for (room_id, name) in [(room, "http-room"), (other_room, "other-room")] {
+            sqlx::query("INSERT INTO rooms (room_id,tenant_id,name) VALUES ($1,$2,$3)")
+                .bind(room_id).bind(tenant).bind(name).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO principals (principal_id,tenant_id,principal_kind,provider,external_subject) VALUES ($1,$2,'AI',$3,$4)")
+            .bind(principal).bind(tenant).bind(issuer).bind(&subject).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES ($1,$2,$3,'http fixture')")
+            .bind(participant).bind(tenant).bind(principal).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES ($1,$2,$3,$4,$5,'ACTIVE')")
+            .bind(workload).bind(tenant).bind(principal).bind(issuer).bind(&subject).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.join')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO sessions (session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES ($1,$2,$3,$4,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE',$5)")
+            .bind(session).bind(tenant).bind(room).bind(principal).bind(&digest).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workload_executions (execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')")
+            .bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session)
+            .bind(format!("{issuer}|{subject}")).execute(&pool).await.unwrap();
+
+        let app = build_router(AppState { pool: pool.clone(), oidc: None });
+        let auth_response = app.clone().oneshot(
+            axum::http::Request::builder().uri("/auth/me")
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(auth_response.status(), StatusCode::OK);
+
+        let read_denied = app.clone().oneshot(
+            axum::http::Request::builder().uri("/team-room/me")
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(read_denied.status(), StatusCode::FORBIDDEN);
+
+        let cross_room = app.clone().oneshot(
+            axum::http::Request::builder().method("POST")
+                .uri(format!("/team-room/{other_room}/join"))
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(cross_room.status(), StatusCode::FORBIDDEN);
+
+        let joined = app.clone().oneshot(
+            axum::http::Request::builder().method("POST")
+                .uri(format!("/team-room/{room}/join"))
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(joined.status(), StatusCode::OK);
+
+        sqlx::query("UPDATE workload_identities SET status='REVOKED', revoked_at=NOW() WHERE workload_id=$1")
+            .bind(workload).execute(&pool).await.unwrap();
+        let revoked = app.oneshot(
+            axum::http::Request::builder().uri("/auth/me")
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn token_exchange_is_disabled_without_trusted_oidc_configuration() {
         let response = test_app().oneshot(
             axum::http::Request::builder().method("POST").uri("/auth/exchange")
