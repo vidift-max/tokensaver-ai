@@ -299,6 +299,30 @@ mod tests {
     }
 
     #[test]
+    fn roots_json_enforces_the_configured_root_count_limit() {
+        let roots: Vec<ImportRoot> = (0..limits::MAX_IMPORT_ROOTS)
+            .map(|index| ImportRoot {
+                #[cfg(windows)]
+                path: format!(r"C:\\import-root-{index}"),
+                #[cfg(not(windows))]
+                path: format!("/tmp/import-root-{index}"),
+            })
+            .collect();
+        let within_limit = serde_json::to_vec(&roots).unwrap();
+        assert_eq!(parse_roots_json(&within_limit).unwrap().len(), limits::MAX_IMPORT_ROOTS);
+
+        let mut over_limit = roots;
+        over_limit.push(ImportRoot {
+            #[cfg(windows)]
+            path: r"C:\\import-root-over-limit".to_string(),
+            #[cfg(not(windows))]
+            path: "/tmp/import-root-over-limit".to_string(),
+        });
+        let over_limit = serde_json::to_vec(&over_limit).unwrap();
+        assert!(parse_roots_json(&over_limit).is_err());
+    }
+
+    #[test]
     fn normalize_absolute_rejects_relative_and_parent_components(){
         assert!(normalize_absolute(Path::new("relative/file.txt")).is_err());
         if cfg!(windows){assert!(normalize_absolute(Path::new(r"C:\root\..\file.txt")).is_err());}
