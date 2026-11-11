@@ -155,28 +155,46 @@ fn open_roots_lock_file(path: &Path) -> AppResult<File> {
     Ok(file)
 }
 
-fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
-    let path=config_path(app)?.with_file_name("import_roots.lock");
-    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar as configurações do aplicativo."))?;}
-    let file = open_roots_lock_file(&path)?;
+fn acquire_roots_lock(file: File, timeout: Duration) -> AppResult<RootsLock> {
     #[cfg(unix)] {
         use std::os::unix::io::AsRawFd;
-        let deadline=Instant::now()+Duration::from_secs(5);
-        loop { let rc=unsafe{libc::flock(file.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)}; if rc==0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
+        let deadline=Instant::now()+timeout;
+        loop {
+            let rc=unsafe{libc::flock(file.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)};
+            if rc==0 { break; }
+            if Instant::now()>=deadline {
+                return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
     #[cfg(windows)] unsafe {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::LockFileEx;
         use windows_sys::Win32::System::IO::OVERLAPPED;
         // LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY:
-        // non-blocking acquisition is required for the five-second deadline below.
+        // non-blocking acquisition is required for the deadline below.
         const LOCKFILE_FAIL_IMMEDIATELY: u32 = 0x00000001;
         const LOCKFILE_EXCLUSIVE_LOCK: u32 = 0x00000002;
         let mut ov: OVERLAPPED = std::mem::zeroed();
-        let deadline=Instant::now()+Duration::from_secs(5);
-        loop { let ok=LockFileEx(file.as_raw_handle(),LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0, u32::MAX,u32::MAX,&mut ov); if ok!=0{break;} if Instant::now()>=deadline{return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));} std::thread::sleep(Duration::from_millis(25)); }
+        let deadline=Instant::now()+timeout;
+        loop {
+            let ok=LockFileEx(file.as_raw_handle(),LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,u32::MAX,u32::MAX,&mut ov);
+            if ok!=0 { break; }
+            if Instant::now()>=deadline {
+                return Err(AppError::new("STORAGE_BUSY","As áreas de importação estão sendo atualizadas por outro processo."));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
     Ok(RootsLock{file})
+}
+
+fn lock_roots(app: &tauri::AppHandle) -> AppResult<RootsLock> {
+    let path=config_path(app)?.with_file_name("import_roots.lock");
+    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|_|AppError::new("STORAGE_ERROR","Não foi possível preparar as configurações do aplicativo."))?;}
+    let file = open_roots_lock_file(&path)?;
+    acquire_roots_lock(file, Duration::from_secs(5))
 }
 
 fn config_path(app:&tauri::AppHandle)->AppResult<PathBuf> {
@@ -370,6 +388,43 @@ mod tests {
 
         assert!(open_roots_lock_file(&root).is_err());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn roots_lock_cross_process_child() {
+        let Ok(path) = std::env::var("TOKENSAVER_ROOTS_LOCK_CHILD_PATH") else {
+            return;
+        };
+        let file = open_roots_lock_file(Path::new(&path)).unwrap();
+        assert!(acquire_roots_lock(file, Duration::from_millis(150)).is_err());
+    }
+
+    #[test]
+    fn roots_lock_is_exclusive_across_processes() {
+        use std::process::Command;
+
+        let root = std::env::temp_dir().join(format!("tokensaver-lock-process-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("import_roots.lock");
+        fs::write(&path, b"").unwrap();
+        let file = open_roots_lock_file(&path).unwrap();
+        let held_lock = acquire_roots_lock(file, Duration::from_secs(1)).unwrap();
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("path_guard::tests::roots_lock_cross_process_child")
+            .arg("--nocapture")
+            .env("TOKENSAVER_ROOTS_LOCK_CHILD_PATH", &path)
+            .output()
+            .unwrap();
+
+        drop(held_lock);
+        assert!(
+            output.status.success(),
+            "child process failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let _ = fs::remove_dir_all(root);
     }
 
