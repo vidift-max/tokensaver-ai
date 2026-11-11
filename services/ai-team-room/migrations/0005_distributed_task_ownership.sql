@@ -80,3 +80,32 @@ CREATE UNIQUE INDEX task_handoff_one_pending_idx ON task_handoffs(task_id)
 
 -- Every mutation of protected task state must compare the current fencing token.
 -- The task row is the serialization point; no local process lock is authoritative.
+
+
+-- Database-level monotonicity guard: ownership cannot move to another executor
+-- without advancing the fence exactly once. Completed work is immutable.
+CREATE FUNCTION enforce_team_task_fencing() RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status IN ('COMPLETED','CANCELLED') AND NEW IS DISTINCT FROM OLD THEN
+        RAISE EXCEPTION 'terminal task is immutable' USING ERRCODE='23514';
+    END IF;
+    IF NEW.fencing_token < OLD.fencing_token OR NEW.fencing_token > OLD.fencing_token + 1 THEN
+        RAISE EXCEPTION 'fencing token must be monotonic and advance by at most one' USING ERRCODE='23514';
+    END IF;
+    IF NEW.owner_principal_id IS NOT NULL AND
+       (NEW.owner_principal_id,NEW.owner_participant_id,NEW.owner_session_id,NEW.owner_execution_id)
+       IS DISTINCT FROM
+       (OLD.owner_principal_id,OLD.owner_participant_id,OLD.owner_session_id,OLD.owner_execution_id)
+       AND NEW.fencing_token <> OLD.fencing_token + 1 THEN
+        RAISE EXCEPTION 'new owner requires a strictly newer fencing token' USING ERRCODE='23514';
+    END IF;
+    IF NEW.checkpoint_version < OLD.checkpoint_version OR NEW.checkpoint_version > OLD.checkpoint_version + 1 THEN
+        RAISE EXCEPTION 'checkpoint version must be monotonic and advance by at most one' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER team_tasks_fencing_guard
+BEFORE UPDATE ON team_tasks
+FOR EACH ROW EXECUTE FUNCTION enforce_team_task_fencing();
