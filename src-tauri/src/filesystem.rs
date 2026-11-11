@@ -262,4 +262,45 @@ mod tests {
         assert!(target.is_dir());
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn limited_copy_cleans_staging_file_after_budget_failure() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, b"this source exceeds the budget").unwrap();
+
+        let err = copy_file_limited(&source, &target, 4).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
+        assert!(!target.exists());
+
+        let remaining: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining, vec![std::ffi::OsString::from("source")]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn limited_copy_leaves_no_target_when_source_is_missing() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("missing-source");
+        let target = root.join("target");
+
+        assert!(copy_file_limited(&source, &target, 16).is_err());
+        assert!(!target.exists());
+
+        let remaining: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(remaining.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
 }
