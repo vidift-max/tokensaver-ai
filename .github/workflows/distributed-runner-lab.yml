@@ -123,8 +123,9 @@ jobs:
           jq --argjson process "$process_evidence" '
             .independent_mission_runner_processes = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
             .http_team_room_authentication = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS" end) |
-            .recovery_worker = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS: authenticated one-shot worker selected replacement" end) |
-            .runner_process_evidence = $process
+            .recovery_worker = (if $process == null then "FAILED_OR_NO_EVIDENCE" else "PASS: authenticated concurrent workers serialized recovery and selected replacement" end) |
+            .runner_process_evidence = $process |
+            .result = (if $process == null then "FAIL" else "PASS" end)
           ' distributed-runner-evidence/distributed-runner-evidence.json > distributed-runner-evidence/distributed-runner-evidence.tmp
           mv distributed-runner-evidence/distributed-runner-evidence.tmp distributed-runner-evidence/distributed-runner-evidence.json
       - name: Upload PostgreSQL lab evidence

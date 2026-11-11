@@ -57,7 +57,7 @@ function seed(){
       VALUES(${quote(identity.executionId)},${quote(tenantId)},${quote(roomId)},${quote(identity.participantId)},${quote(identity.principalId)},${quote(identity.sessionId)},${quote(subject)},NOW(),NOW()+INTERVAL '10 minutes','ACTIVE');
       INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status)
       VALUES(gen_random_uuid(),${quote(tenantId)},${quote(roomId)},${quote(identity.participantId)},${quote(identity.principalId)},${quote(identity.sessionId)},'ACTIVE');`);
-    const grants=identity.role==="recovery-worker"?["task.assign"]:["task.read","task.write","task.transition"];
+    const grants=identity.role.startsWith("recovery-worker")?["task.assign"]:["task.read","task.write","task.transition"];
     for(const permission of grants){
       sqlOk(`INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission)
         VALUES(gen_random_uuid(),${quote(tenantId)},${quote(identity.principalId)},${quote(roomId)},${quote(permission)})`);
