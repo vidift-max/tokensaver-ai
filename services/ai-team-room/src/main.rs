@@ -2,7 +2,7 @@ mod tasks;
 mod communication;
 
 use ai_team_room_service::{
-    admit_authenticated_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
+    admit_authenticated_participant, leave_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
     connect_pool, migrate, readiness,
 };
 use chrono::{DateTime, Utc};
@@ -210,6 +210,23 @@ async fn join_room(
     })
 }
 
+async fn leave_room(
+    State(state):State<AppState>,
+    Path(room_id):Path<Uuid>,
+    headers:axum::http::HeaderMap,
+)->Result<StatusCode,StatusCode>{
+    let identity=authenticate_session(&state.pool,&headers).await.map_err(auth_status)?;
+    if identity.room_id!=room_id{return Err(StatusCode::FORBIDDEN);}
+    require_permission(&state.pool,&identity,"room.join").await.map_err(auth_status)?;
+    leave_participant(&state.pool,room_id,identity.principal_id).await.map_err(|error|match error{
+        ai_team_room_service::RoomServiceError::MembershipNotFound=>StatusCode::NOT_FOUND,
+        ai_team_room_service::RoomServiceError::RoomUnavailable=>StatusCode::NOT_FOUND,
+        ai_team_room_service::RoomServiceError::InvalidSession|ai_team_room_service::RoomServiceError::ParticipantNotAuthorized=>StatusCode::FORBIDDEN,
+        _=>StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn logout(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -337,6 +354,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/{room_id}/presence", get(room_presence).put(update_presence))
         .route("/team-room/me", get(team_room_me))
         .route("/team-room/{room_id}/join", post(join_room))
+        .route("/team-room/{room_id}/leave", post(leave_room))
         .route("/team-room/tasks", post(create_task))
         .route("/team-room/tasks/by-mission/{mission_id}", get(task_by_mission))
         .route("/team-room/tasks/{task_id}/lease/acquire", post(acquire_task_lease))
