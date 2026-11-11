@@ -1424,3 +1424,10 @@ Para o SHA exato `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`:
 3. Implementar recovery worker concorrente com claim transacional/locking, seleção de candidato elegível, acquire explícito e idempotência entre múltiplos workers; não substituir isso por mutação de JSON.
 4. Definir e testar handoff staged se o produto ainda exigir estados OFFERED/ACCEPTED/REJECTED; manter o row lock/fencing como autoridade final.
 5. Executar testes Node, Rust, PostgreSQL, concorrência, build e Windows BAT em CI; capturar workflow/check vinculados ao SHA final exato.
+
+
+## Addendum de fechamento — HEAD documental final (2026-11-11)
+
+A atualização deste relatório foi commitada em `7c3fbd17a5f225c24a3b7081e374d9bf53a24c57`. Esse commit é o HEAD observado imediatamente antes deste addendum. A consulta de status combinado para esse SHA retornou zero checks; a consulta de workflow runs disponível retornou lista vazia (com a limitação descrita acima). Logo, o SHA de código/relatório final desta auditoria **não foi testado nem validado por CI**. O commit deste addendum será o novo HEAD documental e também não será considerado validado por CI sem check/run vinculado exatamente ao seu SHA.
+
+**Regra de integridade:** nenhum SHA desta missão deve ser rotulado como TESTADO/VALIDADO por execução, build ou CI sem evidência de saída de teste ou check associado ao mesmo SHA. A decisão permanece **NO-GO**.
