@@ -823,3 +823,11 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - Corrected the task-creation predicate (one closing parenthesis for EXISTS) and ensured the lease-validation predicate closes both its outer boolean expression and inner EXISTS.
 - Commits: `aca0f6a2120c8949ceb2c24e294232572c280d4b` and `2acbad0351eab14c0d39d5c32c4841fc29ba35ba`.
 - The previous run is a failure, not a validation. A fresh CI on the final report HEAD must prove the new PostgreSQL test passes.
+
+
+### PostgreSQL E2E cleanup constraint correction
+
+- CI run `43051841915` compiled the service and executed the distributed PostgreSQL scenario. The ten-way acquire, renewal, expiry, recovery, replacement token increment, stale/future token rejection, database rollback trigger and completion assertions all ran before the test failed during fixture cleanup.
+- Failure: deleting the isolated test tenant was blocked because `task_handoffs.tenant_id` did not yet have an ON DELETE CASCADE relationship.
+- Added tenant-scoped cascade to durable handoff records in migration 0005, commit `02991c6dded0f8da48e22e0e8b516750750e02bc`. This is a schema lifecycle correction; it does not weaken ownership or token checks.
+- The test is still classified `PENDENTE` until a fresh PostgreSQL CI run completes successfully.
