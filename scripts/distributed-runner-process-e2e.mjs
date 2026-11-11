@@ -115,25 +115,19 @@ try{
     mustRun(identity,stateDir,"acknowledge");
   }
 
-  const [startA,startB]=await Promise.all([
-    runAsync(runnerA,stateA,"start"),
-    runAsync(runnerB,stateB,"start")
-  ]);
-  assert.equal([startA,startB].filter(result=>result.status===0).length,1,"two independent Runner processes must produce exactly one initial owner");
-  const ownerIsA=startA.status===0;
-  const owner=ownerIsA?runnerA:runnerB;
-  const replacement=ownerIsA?runnerB:runnerA;
-  const ownerDir=ownerIsA?stateA:stateB;
-  const replacementDir=ownerIsA?stateB:stateA;
-  const ownerStart=ownerIsA?startA:startB;
-  const replacementStart=ownerIsA?startB:startA;
+  const startA=await runAsync(runnerA,stateA,"start");
+  assert.equal(startA.status,0,"Runner A must acquire the initial PostgreSQL lease");
+  const startB=await runAsync(runnerB,stateB,"start");
+  assert.equal(startB.status,2,"Runner B must be denied while Runner A's lease is live");
+  assert.match(startB.stderr,/HTTP 409/,"Runner B must be rejected by the live PostgreSQL lease");
+  const owner=runnerA,replacement=runnerB,ownerDir=stateA,replacementDir=stateB;
+  const ownerStart=startA;
   const ownerState=stateFor(ownerDir);
   const taskId=ownerState.execution.task_id;
   const fencingA=ownerState.execution.fencing_token;
-  assert.ok(taskId,"initial owner must persist the PostgreSQL task reference");
+  assert.ok(taskId,"Runner A must persist the PostgreSQL task reference");
   assert.equal(fencingA,1);
-  assert.equal(replacementStart.status,2,"second Runner must be denied while first lease is live");
-  assert.match(replacementStart.stderr,/HTTP 409/,"second Runner must be rejected by the live PostgreSQL lease");
+  assert.equal(sqlOk(`SELECT COUNT(*) FROM team_tasks WHERE tenant_id=${quote(tenantId)} AND room_id=${quote(roomId)} AND mission_id=${quote(missionUuid)}`),"1","simultaneous/idempotent Runner starts must resolve to one canonical PostgreSQL task");
   const initialTask=await (await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+owner.token}})).json();
   assert.equal(initialTask.task_id,taskId);
   assert.equal(initialTask.owner_principal_id,owner.principalId);
@@ -193,7 +187,8 @@ try{
     mission_id:missionUuid,
     task_id:taskId,
     runner_a_process_pid:ownerStart.pid,
-    runner_b_process_pid:replacementStart.pid,
+    runner_b_initial_rejected_process_pid:startB.pid,
+    runner_b_process_pid:takeover.pid,
     runner_a_principal_id:owner.principalId,
     runner_a_session_id:owner.sessionId,
     runner_a_execution_id:owner.executionId,
@@ -215,17 +210,19 @@ try{
     lease_expiry_wait_seconds:16,
     lease_expired_by_database_clock:true,
     initial_acquire:"ACCEPTED",
-    concurrent_second_acquire:"REJECTED",
+    runner_b_initial_acquire:"REJECTED",
+    task_count_for_mission:1,
     takeover:"ACCEPTED",
     stale_a_renew:staleResults.renew,
     stale_a_checkpoint:staleResults.checkpoint,
     stale_a_complete:staleResults.complete,
     stale_a_release:staleResults.release,
     runner_b_checkpoint:"ACCEPTED",
+    runner_b_checkpoint_version:finalTask.checkpoint_version,
     runner_b_complete:"ACCEPTED",
     final_task_status:finalTask.status,
     distinct_runner_sessions:owner.sessionId!==replacement.sessionId,
-    distinct_runner_processes:ownerStart.pid!==replacementStart.pid,
+    distinct_runner_processes:ownerStart.pid!==takeover.pid,
     database:"PostgreSQL 16 shared Team Room service",
     result:"PASS"
   };
