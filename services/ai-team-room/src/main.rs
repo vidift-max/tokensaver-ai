@@ -386,6 +386,17 @@ mod http_security_tests {
         let presence_json: serde_json::Value = serde_json::from_slice(&presence_body).unwrap();
         assert_eq!(presence_json[0]["state"], "ACTIVE");
 
+        sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '2 minutes' WHERE execution_id=$1")
+            .bind(execution).execute(&pool).await.unwrap();
+        let suspected_presence = app.clone().oneshot(
+            axum::http::Request::builder().uri(format!("/team-room/{room}/presence"))
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let suspected_body = axum::body::to_bytes(suspected_presence.into_body(), 4096).await.unwrap();
+        let suspected_json: serde_json::Value = serde_json::from_slice(&suspected_body).unwrap();
+        assert_eq!(suspected_json[0]["state"], "SUSPECTED_DISCONNECTED");
+
         sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '5 minutes' WHERE execution_id=$1")
             .bind(execution).execute(&pool).await.unwrap();
         let stale_presence = app.clone().oneshot(
