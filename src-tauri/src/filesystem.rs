@@ -249,6 +249,34 @@ mod tests {
     }
 
     #[test]
+    fn limited_copy_cleans_staging_file_when_target_appears_before_publication() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::write(&source, b"new-content").unwrap();
+        fs::write(&target, b"winner-content").unwrap();
+
+        let err = copy_file_limited(&source, &target, 1024).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"winner-content");
+
+        let remaining: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            remaining.len(),
+            2,
+            "failed publication must remove its private staging file"
+        );
+        assert!(remaining.contains(&std::ffi::OsString::from("source")));
+        assert!(remaining.contains(&std::ffi::OsString::from("target")));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn refuses_existing_target() {
         let root = temp_dir();
         fs::create_dir_all(&root).unwrap();
