@@ -118,6 +118,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          STAGE="admin-login"
           ADMIN_TOKEN="$(curl --fail --silent --show-error \
             -d 'client_id=admin-cli' -d 'username=ci-admin' \
             -d 'password=ci-only-bootstrap-password' -d 'grant_type=password' \
@@ -145,6 +146,7 @@ jobs:
           test "$(echo "$DISCOVERY" | jq -r .issuer)" = "$ISSUER"
           TOKEN_ENDPOINT="$(echo "$DISCOVERY" | jq -r .token_endpoint)"
           JWKS_URI="$(echo "$DISCOVERY" | jq -r .jwks_uri)"
+          STAGE="client-credentials-token"
           TOKEN_RESPONSE="$(curl --fail --silent --show-error \
             -u "team-room-ci:$CLIENT_SECRET" -d 'grant_type=client_credentials' "$TOKEN_ENDPOINT")"
           ACCESS_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r .access_token)"
@@ -185,18 +187,28 @@ jobs:
         run: |
           set -euo pipefail
           set +x
+          STAGE="initialization"
+          SERVICE_PID=""
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then echo "E2E_FAILURE_STAGE=$STAGE exit=$status"; fi
+            if [ -n "$SERVICE_PID" ]; then kill "$SERVICE_PID" 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
           ISSUER="http://127.0.0.1:8080/realms/team-room-ci"
           ADMIN_TOKEN="$(curl --fail --silent --show-error \
             -d 'client_id=admin-cli' -d 'username=ci-admin' \
             -d 'password=ci-only-bootstrap-password' -d 'grant_type=password' \
             http://127.0.0.1:8080/realms/master/protocol/openid-connect/token | jq -r .access_token)"
           echo "::add-mask::$ADMIN_TOKEN"
+          STAGE="client-lookup"
           CLIENT_ID="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients?clientId=team-room-ci" | jq -r '.[0].id')"
           test -n "$CLIENT_ID" && test "$CLIENT_ID" != "null"
 
           # Give the real Keycloak client a default scope and an explicit API audience.
+          STAGE="create-client-scope"
           curl --fail --silent --show-error -o /dev/null \
             -X POST http://127.0.0.1:8080/admin/realms/team-room-ci/client-scopes \
             -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
@@ -213,6 +225,7 @@ jobs:
             -X PUT "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/default-client-scopes/$SCOPE_ID" \
             -H "Authorization: Bearer $ADMIN_TOKEN"
 
+          STAGE="service-account-lookup"
           SERVICE_ACCOUNT_SUB="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/service-account-user" | jq -r .id)"
@@ -234,17 +247,17 @@ jobs:
           test "$TOKEN_AUD" = "team-room-api"
           echo "$TOKEN_SCOPE" | tr ' ' '\n' | grep -Fxq 'team_room:connect'
 
+          STAGE="service-startup"
           export OIDC_ISSUER="$ISSUER" OIDC_AUDIENCE="team-room-api" OIDC_ALLOW_HTTP_LOCALHOST="true"
           RUST_LOG=info ./services/ai-team-room/target/debug/ai-team-room-service > ai-team-room-service.log 2>&1 &
           SERVICE_PID=$!
-          cleanup() { kill "$SERVICE_PID" 2>/dev/null || true; }
-          trap cleanup EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:8081/health/ready >/dev/null; then break; fi
             sleep 2
           done
           curl --fail --silent --show-error http://127.0.0.1:8081/health/ready >/dev/null
 
+          STAGE="database-registration"
           TENANT_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO tenants (tenant_id,name) VALUES (gen_random_uuid(),'keycloak-e2e') RETURNING tenant_id")"
           ROOM_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO rooms (room_id,tenant_id,name) VALUES (gen_random_uuid(),'$TENANT_ID','keycloak-e2e-room') RETURNING room_id")"
           PRINCIPAL_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO principals (principal_id,tenant_id,principal_kind,provider,external_subject) VALUES (gen_random_uuid(),'$TENANT_ID','AI','$ISSUER','$TOKEN_SUB') RETURNING principal_id")"
@@ -253,6 +266,7 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
             "INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','$ROOM_ID','room.join')" >/dev/null
 
+          STAGE="token-exchange"
           EXCHANGE_BODY="$(jq -nc --arg room "$ROOM_ID" --arg token "$ACCESS_TOKEN" '{room_id:$room,workload_token:$token}')"
           EXCHANGE_STATUS="$(curl --silent --show-error -o exchange.json -w '%{http_code}' \
             -H 'Content-Type: application/json' -X POST http://127.0.0.1:8081/auth/exchange -d "$EXCHANGE_BODY")"
@@ -275,18 +289,23 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atc "SELECT workload_id FROM workload_identities WHERE principal_id='$PRINCIPAL_ID' AND status='ACTIVE' AND last_seen_at IS NOT NULL")" = "$WORKLOAD_ID"
           test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM security_audit_events WHERE principal_id='$PRINCIPAL_ID' AND action='auth.session.created' AND outcome='SUCCESS' AND metadata->>'workload_id'='$WORKLOAD_ID'")" = "1"
 
-          AUTH_ME="$(curl --fail --silent --show-error \
+          STAGE="local-session-authentication"
+          AUTH_ME_STATUS="$(curl --silent --show-error -o auth-me.json -w '%{http_code}' \
             -H "Authorization: Bearer $LOCAL_TOKEN" http://127.0.0.1:8081/auth/me)"
+          test "$AUTH_ME_STATUS" = "200"
+          AUTH_ME="$(cat auth-me.json)"
           test "$(echo "$AUTH_ME" | jq -r .session_id)" = "$SESSION_ID"
           test "$(echo "$AUTH_ME" | jq -r .issuer)" = "$ISSUER"
           test "$(echo "$AUTH_ME" | jq -r .subject)" = "$TOKEN_SUB"
 
           # Authentication is not authorization: room.read was deliberately not granted.
+          STAGE="permission-denial-check"
           READ_STATUS="$(curl --silent --show-error -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer $LOCAL_TOKEN" http://127.0.0.1:8081/team-room/me)"
           test "$READ_STATUS" = "403"
           test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM security_audit_events WHERE principal_id='$PRINCIPAL_ID' AND action='authorization.denied' AND outcome='DENIED' AND reason_code='permission_not_granted'")" = "1"
 
+          STAGE="postgres-admission"
           JOIN_STATUS="$(curl --silent --show-error -o admission.json -w '%{http_code}' \
             -X POST -H "Authorization: Bearer $LOCAL_TOKEN" \
             "http://127.0.0.1:8081/team-room/$ROOM_ID/join")"
@@ -297,11 +316,13 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM room_memberships WHERE room_id='$ROOM_ID' AND principal_id='$PRINCIPAL_ID' AND session_id='$SESSION_ID' AND status='ACTIVE'")" = "1"
           test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM audit_events WHERE room_id='$ROOM_ID' AND actor_principal_id='$PRINCIPAL_ID' AND action='participant.admitted' AND outcome='SUCCESS'")" = "1"
 
+          STAGE="replay-rejection"
           REPLAY_STATUS="$(curl --silent --show-error -o /dev/null -w '%{http_code}' \
             -H 'Content-Type: application/json' -X POST http://127.0.0.1:8081/auth/exchange -d "$EXCHANGE_BODY")"
           test "$REPLAY_STATUS" = "401"
           test "$(psql "$DATABASE_URL" -Atc "SELECT COUNT(*) FROM security_audit_events WHERE room_id='$ROOM_ID' AND action='auth.exchange.denied' AND reason_code='assertion_replay'")" = "1"
 
+          STAGE="log-redaction-check"
           # The service log must not contain either bearer token or the client secret.
           if grep -F -e "$ACCESS_TOKEN" -e "$LOCAL_TOKEN" -e "$CLIENT_SECRET" -e "$ADMIN_TOKEN" ai-team-room-service.log; then
             echo "Credential material found in service log" >&2
