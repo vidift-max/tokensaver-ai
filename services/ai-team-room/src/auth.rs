@@ -548,7 +548,7 @@ a93ROy+abL98Yf/fSAlNg3Lw
         let address = listener.local_addr().unwrap();
         let issuer = format!("http://127.0.0.1:{}/realms/rotation", address.port());
         *metadata_state.write().await = json!({
-            "issuer": issuer,
+            "issuer": issuer.clone(),
             "authorization_endpoint": format!("http://127.0.0.1:{}/auth", address.port()),
             "token_endpoint": format!("http://127.0.0.1:{}/token", address.port()),
             "jwks_uri": format!("http://127.0.0.1:{}/jwks", address.port()),
