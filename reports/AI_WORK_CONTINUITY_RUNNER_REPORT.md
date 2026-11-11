@@ -1340,3 +1340,87 @@ Esses testes são unit/integration HTTP contra fixture in-memory, não provam tr
 ## Decisão
 
 **EXECUÇÃO PARCIAL — NÃO CONCLUÍDA.** As rodadas 2 a 7 têm integração inicial no código, ainda sem execução de testes. A rodada 8 tem somente fixture HTTP e não satisfaz a prova PostgreSQL multi-executor. Rodadas 9 e 10 permanecem pendentes. O Runner agora falha fechado sem Team Room e não fabrica ownership local, mas não deve ser classificado como executor distribuído validado até recovery worker, handoff autenticado, prova A/B com PostgreSQL e CI verde no SHA exato.
+
+
+---
+
+# MISSÃO DE CONTINUIDADE — AUDITORIA INDEPENDENTE DO HEAD (2026-11-11)
+
+## Snapshot exato e proveniência
+
+- Branch consultada: `v2-saas-alpha` (encontrada no GitHub).
+- HEAD observado nesta auditoria: `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`.
+- Commit HEAD: `docs(continuity): report remote runner integration and remaining proof gaps`.
+- Commits de implementação posteriores ao baseline `d7b29c1c114c131237615368bb55723e0e3483ee`: os 13 SHAs listados na seção imediatamente anterior deste relatório, mais o commit documental HEAD `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`. Nenhum commit foi descartado ou reescrito nesta auditoria.
+- O branch search confirmou a existência da branch obrigatória. O histórico de commits retornou `8a4e1be` como commit mais recente no momento da consulta.
+- `STATE.json` não foi encontrado como arquivo versionado no branch. O Runner define o caminho runtime como `.mission/STATE.json`; a pasta é estado operacional local/ignorado. Seu conteúdo real não pode ser inferido do GitHub nem foi disponibilizado nesta sessão. **Estado local: NÃO INSPECIONÁVEL nesta auditoria.** Não tratar ausência no Git como estado vazio.
+- Acesso GitHub: operações de leitura e escrita de conteúdo funcionaram; não houve erro de token insuficiente/expirado.
+
+## Auditoria técnica das APIs e do Runner
+
+Inspeção direta de `scripts/team-room-client.mjs`, `scripts/mission-runner.mjs`, `services/ai-team-room/src/main.rs`, `services/ai-team-room/src/tasks.rs`, migrations, README e testes confirmou:
+
+- Autenticação de sessão: `GET /auth/me`, com Bearer local injetado por ambiente e validação de principal, participant, session, execution e room.
+- Criação canônica: `POST /team-room/tasks`, idempotência em PostgreSQL por `(tenant_id, room_id, mission_id)`, garantida pelo índice único da migration 0007.
+- Lookup: `GET /team-room/tasks/by-mission/{mission_id}`; leitura não concede ownership.
+- Acquire: `POST /team-room/tasks/{task_id}/lease/acquire`; lock transacional da task, validação de sessão/workload/membership e incremento de fencing.
+- Renew: `POST /team-room/tasks/{task_id}/lease/renew`; envia fencing token atual e valida lease/owner/session/execution no banco.
+- Checkpoint: `POST /team-room/tasks/{task_id}/checkpoint`; escrita transacional protegida pelo fencing e owner atuais.
+- Complete: `POST /team-room/tasks/{task_id}/complete`; escrita terminal protegida pelo fencing e owner atuais.
+- Release: `POST /team-room/tasks/{task_id}/lease/release`; requer fencing atual.
+- Recovery manual: `POST /team-room/{room_id}/tasks/recover`, permissionado por `task.assign`; marca leases expiradas para recovery. Não equivale a worker periódico.
+- Candidate discovery: `GET /team-room/{room_id}/tasks/{task_id}/candidates`; retorna candidatos elegíveis, mas não assume task nem executa handoff por conta própria.
+- Presence: `POST /team-room/heartbeat` é separado de renew de lease; o README declara explicitamente que heartbeat não renova task lease.
+
+O código de `TeamRoomClient` chama lookup/criação, acquire, renew, checkpoint, complete e release. O `start` só transita para `IN_PROGRESS` depois de acquire remoto e validação da concessão. O `resume` consulta o estado remoto, compara owner/session/execution/fencing e exige acquire explícito quando a task não tem owner válido. Operações protegidas usam task_id e fencing armazenados como referência local, mas a autoridade é a validação transacional do Team Room.
+
+## Classificação consolidada das 10 rodadas
+
+| Rodada | IMPLEMENTADO | TESTADO | VALIDADO | Situação |
+|---|---|---|---|---|
+| 1 Auditoria | Inspeção do HEAD, histórico, Runner, APIs e migrations | Não aplicável | Branch/HEAD e código inspecionados | **PARCIAL**: STATE runtime não acessível; CI sem evidência |
+| 2 Cliente remoto | Sim, cliente HTTP fail-closed no Runner | Fixture HTTP adicionada; execução não comprovada nesta sessão | Não | **IMPLEMENTADO / NÃO TESTADO** |
+| 3 Start remoto | Lookup/create/acquire antes de IN_PROGRESS | Fixture HTTP adicionada; execução não comprovada | Não | **IMPLEMENTADO / NÃO TESTADO** |
+| 4 Resume remoto | Reconciliação owner/session/execution/lease/fencing | Fixture parcial; execução não comprovada | Não | **IMPLEMENTADO / NÃO TESTADO** |
+| 5 Renew | Endpoint exclusivo de renew com fencing; presence separado | Fixture HTTP adicionada; execução não comprovada | Não | **IMPLEMENTADO / NÃO TESTADO** |
+| 6 Checkpoint e complete | Endpoints remotos protegidos por fencing | Fixture de fencing obsoleto adicionada; não executada aqui | Não | **IMPLEMENTADO / NÃO TESTADO** |
+| 7 Dois Runners | Dois diretórios/processos CLI aparecem na fixture | Não há prova executada contra PostgreSQL compartilhado e sessões independentes | Não | **PARCIAL / PROVA REAL PENDENTE** |
+| 8 Recovery worker | Endpoint manual e candidate discovery existem no serviço | Nenhum worker periódico executado | Não | **PENDENTE** |
+| 9 Handoff e concorrência | Acquire transacional registra takeover/handoff RESUMED; locks e fencing no banco | Testes PostgreSQL estão no repositório, mas não foram executados nesta sessão | Não | **PARCIAL**: handoff staged e prova A/B real pendentes |
+| 10 Fechamento/CI | Relatório atualizado | Nenhum comando de teste/build foi executado nesta sessão | Não | **BLOQUEADO para GO** |
+
+## CI e execução
+
+Para o SHA exato `8a4e1beba4765edab8b2bf46b6d981d51c8171bb`:
+- Consulta de status combinado: zero status/checks retornados.
+- Consulta de workflow runs disponível: lista vazia. A função de consulta documentada filtra runs disparados por pull request; portanto, lista vazia não prova que não houve push workflow, mas também não fornece evidência positiva de sucesso.
+- Não há evidência de execução local de `npm run test:missions`, `cargo test`, `cargo check`, testes PostgreSQL, concorrência, Keycloak, build ou BAT Windows nesta sessão.
+- Resultado: **CI NÃO VALIDADA; testes NÃO EXECUTADOS por esta sessão.** Não declarar HEAD validado.
+
+## Limitações e riscos identificados
+
+1. A fixture HTTP de `tests/mission-runner.test.mjs` usa servidor/estado in-memory. Processos CLI separados contra essa fixture não satisfazem o teste de dois executores autenticados e PostgreSQL compartilhado solicitado.
+2. Não existe worker periódico autônomo. O endpoint `/tasks/recover` apenas marca leases expiradas; candidate discovery não seleciona e não adquire por outro executor.
+3. O takeover por acquire é transacional e grava handoff com status `RESUMED`, mas não é a máquina de estados staged de handoff solicitada.
+4. `STATE.json` não está versionado e não foi disponibilizado como artefato local; não foi possível inspecionar seu conteúdo atual. O contrato documentado e o código indicam que é metadata/checkpoint, não autoridade de ownership.
+5. Sem status/run CI para o SHA consultado e sem execução direta dos comandos, não há base para classificar o comportamento implementado como TESTADO ou VALIDADO.
+
+## Resultado final desta missão
+
+- **IMPLEMENTADO:** cliente remoto; autenticação de sessão; lookup/criação idempotente; acquire; start fail-closed; resume com reconciliação remota; renew separado de heartbeat; checkpoint/complete/release remotos; fencing transacional no Team Room; migration de identidade canônica.
+- **TESTADO:** testes/fixtures e testes PostgreSQL existem no repositório; execução nesta sessão **NÃO COMPROVADA**.
+- **VALIDADO:** branch e HEAD consultados; rotas/código inspecionados. Nenhum comportamento de execução distribuída foi validado nesta sessão.
+- **PARCIAL:** handoff/takeover, testes de dois runners e cobertura de concorrência.
+- **PENDENTE:** recovery worker real, handoff staged, teste A/B com PostgreSQL compartilhado e sessões distintas, execução integral da suíte e CI verde no SHA final.
+- **BLOQUEADO:** declaração de GO/produção pela ausência de prova executada e de CI identificada no SHA final.
+- **NÃO TESTADO:** testes Node, Rust, PostgreSQL, concorrência, recovery, handoff, build, Windows BAT e CI nesta sessão.
+
+**DECISÃO: NO-GO para declarar Runner distribuído validado ou pronto para produção.** A integração remota está presente no código, mas a prova obrigatória de fencing A/B, recovery worker real e CI no SHA exato continuam sem evidência.
+
+## Próxima missão obrigatória
+
+1. Adicionar teste de integração PostgreSQL que inicia dois processos CLI independentes com identidades/sessões/workloads distintos e uma mesma missão.
+2. Demonstrar A=fence 1, expiração, B=fence 2, e rejeição pelo servidor de renew/checkpoint/complete/release de A; B deve completar.
+3. Implementar recovery worker concorrente com claim transacional/locking, seleção de candidato elegível, acquire explícito e idempotência entre múltiplos workers; não substituir isso por mutação de JSON.
+4. Definir e testar handoff staged se o produto ainda exigir estados OFFERED/ACCEPTED/REJECTED; manter o row lock/fencing como autoridade final.
+5. Executar testes Node, Rust, PostgreSQL, concorrência, build e Windows BAT em CI; capturar workflow/check vinculados ao SHA final exato.
