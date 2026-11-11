@@ -32,7 +32,7 @@ test("persists mission, checkpoint and resume across separate processes", t => {
 test("handoff requires explicit acceptance and records lifecycle", t => {
  const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
  run(c,"init","M-121","121","Handoff");
- run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start"); run(c,"checkpoint","before handoff");
  assert.equal(run(c,"handoff-create","AI-B").status,0);
  assert.equal(run(c,"handoff-complete").status,2);
  assert.equal(run(c,"handoff-accept","p-b").status,0);
