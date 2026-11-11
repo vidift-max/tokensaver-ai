@@ -493,6 +493,21 @@ mod postgres_tests {
         let c_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(c_history.into_body(),20000).await.unwrap()).unwrap();
         assert!(!c_json.to_string().contains("A-to-B confidential"),"third participant must not read A↔B conversation");
 
+        let decision=request(app.clone(),"POST",format!("/team-room/{room}/decisions"),&a.token,Some(json!({"title":"Use shared outbox","decision":"All room events must be committed with their aggregate mutation.","participants":[],"mission_id":null,"reference_message_id":null}))).await;
+        assert_eq!(decision.status(),StatusCode::CREATED,"empty participant lists are valid");
+        let decisions=request(app.clone(),"GET",format!("/team-room/{room}/decisions"),&b.token,None).await;
+        assert_eq!(decisions.status(),StatusCode::OK);
+        let decision_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(decisions.into_body(),20000).await.unwrap()).unwrap();
+        assert!(decision_json.as_array().unwrap().iter().any(|d|d["title"]=="Use shared outbox"));
+
+        let channel_id=first["channel_id"].as_str().unwrap();
+        let attachment=request(app.clone(),"POST",format!("/team-room/{room}/attachments"),&a.token,Some(json!({"channel_id":channel_id,"message_id":first["message_id"],"task_id":null,"file_name":"architecture.md","storage_ref":"object://team-room/architecture-v1","content_type":"text/markdown","byte_len":128,"sha256":null}))).await;
+        assert_eq!(attachment.status(),StatusCode::CREATED);
+        let files=request(app.clone(),"GET",format!("/team-room/{room}/attachments"),&b.token,None).await;
+        assert_eq!(files.status(),StatusCode::OK);
+        let files_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(files.into_body(),20000).await.unwrap()).unwrap();
+        assert!(files_json.as_array().unwrap().iter().any(|item|item["file_name"]=="architecture.md"));
+
         let no_session=request(app.clone(),"GET",format!("/team-room/{room}/messages"),"invalid-session",None).await;
         assert_eq!(no_session.status(),StatusCode::UNAUTHORIZED);
         let ticket=request(app.clone(),"POST",format!("/team-room/{room}/ws-ticket"),&a.token,Some(json!({}))).await;
