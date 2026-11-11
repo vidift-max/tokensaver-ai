@@ -292,11 +292,11 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:8081/health/ready >/dev/null
 
           STAGE="database-registration"
-          TENANT_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO tenants (tenant_id,name) VALUES (gen_random_uuid(),'keycloak-e2e') RETURNING tenant_id")"
-          ROOM_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO rooms (room_id,tenant_id,name) VALUES (gen_random_uuid(),'$TENANT_ID','keycloak-e2e-room') RETURNING room_id")"
-          PRINCIPAL_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO principals (principal_id,tenant_id,principal_kind,provider,external_subject) VALUES (gen_random_uuid(),'$TENANT_ID','AI','$ISSUER','$TOKEN_SUB') RETURNING principal_id")"
-          PARTICIPANT_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','Keycloak E2E workload') RETURNING participant_id")"
-          WORKLOAD_ID="$(psql "$DATABASE_URL" -Atc "INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','$ISSUER','$TOKEN_SUB','ACTIVE') RETURNING workload_id")"
+          TENANT_ID="$(psql "$DATABASE_URL" -qAtc "INSERT INTO tenants (tenant_id,name) VALUES (gen_random_uuid(),'keycloak-e2e') RETURNING tenant_id")"
+          ROOM_ID="$(psql "$DATABASE_URL" -qAtc "INSERT INTO rooms (room_id,tenant_id,name) VALUES (gen_random_uuid(),'$TENANT_ID','keycloak-e2e-room') RETURNING room_id")"
+          PRINCIPAL_ID="$(psql "$DATABASE_URL" -qAtc "INSERT INTO principals (principal_id,tenant_id,principal_kind,provider,external_subject) VALUES (gen_random_uuid(),'$TENANT_ID','AI','$ISSUER','$TOKEN_SUB') RETURNING principal_id")"
+          PARTICIPANT_ID="$(psql "$DATABASE_URL" -qAtc "INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','Keycloak E2E workload') RETURNING participant_id")"
+          WORKLOAD_ID="$(psql "$DATABASE_URL" -qAtc "INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','$ISSUER','$TOKEN_SUB','ACTIVE') RETURNING workload_id")"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
             "INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES (gen_random_uuid(),'$TENANT_ID','$PRINCIPAL_ID','$ROOM_ID','room.join')" >/dev/null
 
