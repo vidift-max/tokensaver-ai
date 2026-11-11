@@ -256,6 +256,14 @@ fn remap_project_scope(
     Ok(())
 }
 
+fn publish_restore_stage(stage: &Path, target: &Path) -> std::io::Result<()> {
+    let result = filesystem::publish_noreplace(stage, target);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(stage);
+    }
+    result
+}
+
 fn prepare_restore_projects_root(storage: &Path) -> AppResult<PathBuf> {
     let projects_root = storage.join("projects");
     // Never use create_dir_all here: if "projects" is a symlink, it can
@@ -489,7 +497,7 @@ pub fn restore_project_backup(
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível finalizar a identificação do projeto restaurado."))?;
         tx.commit().map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível confirmar a restauração."))?;
         drop(restored_db);
-        filesystem::publish_noreplace(&stage, &target)
+        publish_restore_stage(&stage, &target)
             .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível publicar o projeto restaurado: o destino já existe ou a publicação segura não está disponível."))?;
         Ok(())
     })();
@@ -511,6 +519,48 @@ mod tests {
     use super::*;
 
  
+
+    #[test]
+    fn concurrent_restore_stages_publish_exactly_one_and_clean_loser() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let base = std::env::temp_dir().join(format!("tokensaver-restore-race-{}", Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let target = Arc::new(base.join("restored-project"));
+        let stage_a = base.join(".restore-a");
+        let stage_b = base.join(".restore-b");
+        fs::create_dir(&stage_a).unwrap();
+        fs::create_dir(&stage_b).unwrap();
+        fs::write(stage_a.join("winner"), b"a").unwrap();
+        fs::write(stage_b.join("winner"), b"b").unwrap();
+
+        let barrier = Arc::new(Barrier::new(3));
+        let spawn = |stage: std::path::PathBuf| {
+            let target = Arc::clone(&target);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                publish_restore_stage(&stage, &target)
+            })
+        };
+        let a = spawn(stage_a.clone());
+        let b = spawn(stage_b.clone());
+        barrier.wait();
+        let result_a = a.join().unwrap();
+        let result_b = b.join().unwrap();
+
+        assert_ne!(result_a.is_ok(), result_b.is_ok(), "exactly one restore may publish");
+        assert!(target.is_dir());
+        assert_eq!(
+            fs::read(target.join("winner")).unwrap(),
+            if result_a.is_ok() { b"a" } else { b"b" }
+        );
+        assert_eq!(stage_a.exists(), result_a.is_ok());
+        assert_eq!(stage_b.exists(), result_b.is_ok());
+
+        let _ = fs::remove_dir_all(base);
+    }
 
     #[cfg(unix)]
     #[test]
