@@ -258,3 +258,21 @@ The next hard gate is to let GitHub Actions complete on the report commit SHA, i
 - C receives no private A↔B event;
 - npm run build passes;
 - all CI jobs are green for the exact final SHA.
+
+
+---
+
+## 16. Final security hardening and SHA reconciliation
+
+- Private conversation creation now requires an active private_chat grant for **both** principals. Membership alone does not silently grant private messaging.
+- WebSocket private-event fanout now requires both persisted channel membership and a live private_chat grant. Permission revocation prevents future private events from reaching that connection.
+- The PostgreSQL integration fixture now makes participant C an active room member without private_chat, expects HTTP 403 for A↔B private history, and verifies C receives no private WebSocket notification.
+- The task creation comment was corrected to match the actual INSERT ... ON CONFLICT DO NOTHING + canonical SELECT behavior.
+
+**Code HEAD immediately before this report update:** a9d1a00121a9a66a01cf8f2e31e787b49ca2dde4.
+
+Actions observations before this report commit:
+- CI run 555 / ID 43104696168 was pending for code SHA a9d1a00121a9a66a01cf8f2e31e787b49ca2dde4.
+- CI run 554 / ID 43104636393 was still in progress for the prior code SHA 925b0de9f864042b4a333bcd281fc0aaf9b111bb.
+- Runs for superseded SHAs were cancelled by the workflow concurrency group. A cancelled run is not a test failure and is not a pass.
+- The report update creates a new final branch HEAD. CI must be observed on that exact report commit before the mission can be marked validated.
