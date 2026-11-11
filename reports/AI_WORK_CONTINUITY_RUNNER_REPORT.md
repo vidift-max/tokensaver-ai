@@ -1668,3 +1668,101 @@ Mission label: `TEST-MISSION-DISTRIBUTED-001`.
 **GO CONDITIONED for the distributed Runner layer.** The requested PostgreSQL-backed concurrent A/B proof, real lease expiry, fencing, concurrent recovery workers, stale-owner rejection, B checkpoint/completion, artifact and full CI all passed on SHA `38c0e855ead17df9c6e88a1f5df10e09463db39b`.
 
 Do not describe the whole product as production-ready until room-wide recovery scheduling/operations and staged handoff are completed. The next layer should address those operational boundaries; do not repeat the already-passing A/B proof unless relevant code changes.
+
+
+---
+
+# BRANCH RECONCILIATION AND VALIDATION — FINAL HEAD 2026-11-11
+
+## Scope and branch map
+
+- Repository: `vidift-max/tokensaver-ai`.
+- Branch: `v2-saas-alpha`.
+- Previously validated security baseline: `ac49251f950a97d8592f3b0c38a627bbf20d7ab4`.
+- Reconciled HEAD: `8e39b8c7db3d5d9a8dd07497c663b7a1699333f9`.
+- GitHub compare: 120 commits ahead of the baseline, one linear parent chain, no merge commits in the compared range.
+- The 120 commits are authored by `vidift-max`; the compare contains 19 changed paths. The net change set adds or modifies code, tests, migrations, workflows and reports; it deletes no paths.
+- No reset, force-push, history rewrite, blind cherry-pick, squash, or automatic revert was performed. No commit was discarded.
+
+## Commit families and reconciliation decisions
+
+| Commit family | Paths / responsibility | Classification | Decision |
+|---|---|---|---|
+| Mission Runner continuity | `CONTINUE_MISSION.bat`, `scripts/mission-runner.mjs`, `tests/mission-runner.test.mjs`, `package.json` | VÁLIDA / REUTILIZÁVEL | Preserved; local state is metadata/context, remote Team Room owns execution leases |
+| Team Room task ownership | `src/tasks.rs`, `src/main.rs`, migrations 0005–0007, README | VÁLIDA | Preserved; authenticated ownership, lease renewal/release, checkpoint, completion and monotonic fencing |
+| Session/workload binding | lease validation predicates and workload execution binding | VÁLIDA | Preserved; each lease write revalidates owner principal, participant, session, execution, membership, workload and active status |
+| Idempotent mission identity | migration 0007 and task creation/query paths | VÁLIDA | Preserved; canonical task identity per tenant/room/mission |
+| Presence and heartbeat | authenticated heartbeat and presence routes | VÁLIDA | Preserved; presence heartbeat is separate from task lease renewal |
+| Recovery Worker | `scripts/team-room-recovery-worker.mjs`, Team Room recovery APIs | IMPLEMENTADA / PARCIAL | Preserved; bounded watch/polling is validated, but not a supervised room-wide scheduler |
+| Distributed A/B proof | `scripts/distributed-runner-process-e2e.mjs`, PostgreSQL workflow | VÁLIDA / TESTADA | Preserved; independent Runner processes, independent sessions, real PostgreSQL lease expiry, fencing and recovery |
+| Handoff | local Runner handoff metadata and durable takeover/resume records | PARCIAL | Preserved without overstating it; a staged authenticated server-side handoff state machine/API is not implemented |
+| CI and evidence | `.github/workflows/ci.yml`, `.github/workflows/distributed-runner-lab.yml` | VÁLIDA | Preserved; aggregate proof gate fails if a required stage is missing or fails |
+
+No confirmed duplicate implementation or unresolved merge conflict was found in the final integrated tree. Intermediate CI failures were retained in the history and corrected by subsequent commits; they were not relabeled as passing runs.
+
+## Technical corrections preserved in the final tree
+
+- SQL predicate/parenthesis and Rust binding corrections for task creation and lease validation.
+- Tenant-scoped cascade for durable handoff fixture cleanup.
+- Migration `0006_allow_repeated_lease_events.sql` drops the overly restrictive unique constraint on `(task_id, fencing_token, event_type)`, allowing repeated renewal/checkpoint events within a fencing generation.
+- Migration `0007_idempotent_mission_task_identity.sql` supports canonical task identity.
+- Presence heartbeat cannot extend a task lease; only the fenced lease-renew endpoint can.
+- The final lease test covers repeated renewal/checkpoint events, ten-way acquire contention, expiry, concurrent recovery/takeover, fencing increment, stale/future fencing rejection, database rollback protection, concurrent release and completion.
+
+## Exact-HEAD CI evidence
+
+The following runs both target the reconciled HEAD `8e39b8c7db3d5d9a8dd07497c663b7a1699333f9`:
+
+1. **TokenSaver AI CI**, run `43084296346`, run number 501 — SUCCESS.
+   - `foundation` — SUCCESS.
+   - `foundation-windows` — SUCCESS.
+   - `ai-team-room-service` — SUCCESS.
+   - `keycloak-oidc-smoke` — SUCCESS.
+   - Linux Node mission tests: 19/19; Linux Rust foundation tests: 86/86.
+   - Windows Node mission tests: 19/19; Windows Rust foundation tests: 83/83.
+   - Team Room log groups: JWT 6/6, HTTP/security plus task tests 6/6, PostgreSQL admission 3/3, PostgreSQL auth/session 4/4; no failures.
+   - Build steps completed successfully on both platform jobs.
+
+2. **Distributed Runner PostgreSQL Lab**, run `43084296441`, run number 24 — SUCCESS.
+   - PostgreSQL 16 + Team Room + independent Runner processes — SUCCESS.
+   - The workflow's Rust PostgreSQL lease/fencing integration test passed.
+   - Independent Runner A/B process proof and recovery worker proof passed.
+   - Artifact: `distributed-runner-postgres-evidence-43084296441`, artifact ID `13886810103`.
+   - Artifact digest: `sha256:65dcfa038fb06c04aaf76d69506e1e0cf3b32d45bfd4978046df66e4267dd5d7`.
+
+These are exact-HEAD results, not inherited results from an earlier SHA. Links:
+- https://github.com/vidift-max/tokensaver-ai/actions/runs/43084296346
+- https://github.com/vidift-max/tokensaver-ai/actions/runs/43084296441
+
+## Security/log review boundary
+
+The Keycloak smoke job exercised live discovery, client-credentials token issuance, JWKS retrieval, RS256 validation, `/auth/exchange`, PostgreSQL session digest binding, permission denial, room admission and replay rejection. The current run logs were scanned for compact JWT-shaped credentials and literal Bearer credential values; none were found by those patterns. This is a scoped scan of these run logs, not a retroactive scan of every historical repository/log artifact. The previously documented historical secret-redaction incident remains part of the security record and is not erased.
+
+## Remaining limitations — not blockers for this bounded layer
+
+- Recovery Worker is bounded watch/polling for a specified room/task; room-wide supervised scheduling, restart policy, metrics and alerting remain pending.
+- Recovery Worker selects an eligible candidate, but the candidate Runner performs its own authenticated lease acquire. The worker does not impersonate the candidate or atomically assign a lease on its behalf.
+- Runner A/B sessions in the process proof are opaque local-session fixtures seeded in PostgreSQL and then validated through the real Team Room authentication/permission path. The two Runner processes do not perform two independent OIDC token exchanges; live Keycloak federation is validated by the separate Keycloak CI job.
+- A staged authenticated handoff API/state machine with durable OFFERED/ACCEPTED/REJECTED/EXPIRED/CANCELLED/COMPLETED states remains unimplemented. The proven operation is lease expiry, recovery-required persistence, candidate selection and transactional acquire/takeover.
+- Local working-tree status cannot be inspected through the GitHub repository connector. The remote branch HEAD and exact-SHA checks are the source of truth for this closure.
+
+## Ten-round closure
+
+| Round | Result |
+|---|---|
+| 1. Branch map | CONCLUÍDA — 120 commits, linear ancestry, 19 paths, authors and CI history reviewed |
+| 2. Parallel commit audit | CONCLUÍDA — work grouped and classified; no commits discarded |
+| 3. Integration audit | CONCLUÍDA — auth/session/workload, PostgreSQL, Team Room, Runner, heartbeat and recovery reviewed |
+| 4. Reconciliation | CONCLUÍDA — compatible work preserved; SQL, fixture and migration corrections retained |
+| 5. Ownership/lease/fencing | CONCLUÍDA — implemented and covered by PostgreSQL integration |
+| 6. Regression tests | CONCLUÍDA — Team Room, JWT/security, Node Runner, Linux and Windows test groups passed |
+| 7. Concurrency | CONCLUÍDA — ten-way lease race, independent Runner starts, two recovery workers and concurrent release covered |
+| 8. E2E | CONCLUÍDA COM ESCOPO SEPARADO — Keycloak OIDC smoke and PostgreSQL Runner A/B lab both passed; no claim that A/B used separate OIDC exchanges |
+| 9. Exact-HEAD CI | CONCLUÍDA — CI 501 and Distributed Lab 24 both SUCCESS on `8e39b8c...` |
+| 10. Freeze | CONCLUÍDA NO REMOTO — HEAD stayed `8e39b8c...` after both runs; no later branch commit observed. Local working tree was not accessible. |
+
+## Final decision
+
+**GO CONDICIONADO — reconciled distributed Runner / Team Room ownership layer.**
+
+The branch has one coherent remote HEAD with full CI and the dedicated PostgreSQL distributed lab both green on that exact SHA. No later unvalidated push was observed at closure. This is not a claim that the entire product is production-ready: room-wide supervised recovery and staged authenticated handoff remain explicit follow-up boundaries. Do not mark those pending capabilities as implemented.
