@@ -301,7 +301,7 @@ async fn recover_room_tasks(
 }
 
 fn build_router(state: AppState) -> Router {
-    Router::new()
+    let base = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/auth/exchange", post(exchange))
@@ -320,9 +320,9 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/tasks/{task_id}/complete", post(complete_task))
         .route("/team-room/{room_id}/tasks/{task_id}/candidates", get(task_candidates))
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
-        .merge(communication::router(state.pool.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
-        .with_state(state)
+        .with_state(state.clone());
+    base.merge(communication::router(state.pool))
 }
 
 #[tokio::main]
