@@ -218,7 +218,7 @@ mod http_security_tests {
             let mut request = axum::http::Request::builder().method("POST").uri("/auth/exchange")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"x"}"#)).unwrap();
-            request.extensions_mut().insert(ConnectInfo("127.0.0.11:8080".parse().unwrap()));
+            request.extensions_mut().insert(ConnectInfo("127.0.0.11:8080".parse::<SocketAddr>().unwrap()));
             let response = app.clone().oneshot(request).await.unwrap();
             last_status = response.status();
         }
@@ -227,7 +227,7 @@ mod http_security_tests {
         let mut oversized_request = axum::http::Request::builder().method("POST").uri("/auth/exchange")
             .header("content-type", "application/json")
             .body(Body::from(format!(r#"{{"room_id":"00000000-0000-0000-0000-000000000001","workload_token":"{}"}}"#, "x".repeat(25_000)))).unwrap();
-        oversized_request.extensions_mut().insert(ConnectInfo("127.0.0.12:8080".parse().unwrap()));
+        oversized_request.extensions_mut().insert(ConnectInfo("127.0.0.12:8080".parse::<SocketAddr>().unwrap()));
         let oversized = app.oneshot(oversized_request).await.unwrap();
         assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
@@ -312,7 +312,7 @@ mod http_security_tests {
 
         sqlx::query("UPDATE workload_identities SET status='REVOKED', revoked_at=NOW() WHERE workload_id=$1")
             .bind(workload).execute(&pool).await.unwrap();
-        let revoked = app.oneshot(
+        let revoked = app.clone().oneshot(
             axum::http::Request::builder().uri("/auth/me")
                 .header("authorization", format!("Bearer {raw_token}"))
                 .body(Body::empty()).unwrap()
