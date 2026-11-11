@@ -142,3 +142,25 @@ The local Keycloak service-account example uses OAuth 2.0 Client Credentials wit
 The HTTP token exchange is limited to 10 attempts per peer address per 60 seconds in one service process. This is not a distributed quota; the ingress/API gateway must enforce the authoritative fleet-wide limit. Requests do not trust `X-Forwarded-For`. The exchange body is capped at 20 KiB and the upstream token at 16 KiB.
 
 Private-chat authorization is only prepared in the permission vocabulary. A future private channel must enforce a server-side channel-member ACL on every read, write, search, notification, attachment, and realtime subscription. A broad `private_chat` grant alone must never disclose a channel. No private-chat, task, message, audio, or invitation endpoint exists in this service yet.
+
+
+## Distributed task ownership, leases and fencing (migration 0005)
+
+PostgreSQL is the authority for shared task ownership. The local Mission Runner is not an ownership authority.
+
+- `team_tasks` stores mission/task identity, owner principal/participant/session/execution, lease timestamps, monotonically increasing `fencing_token`, checkpoint JSON and checkpoint version.
+- Every acquire locks the task row with `SELECT ... FOR UPDATE`, validates the caller's current active session, workload execution and room membership against PostgreSQL, then increments the fencing token and commits the new owner and lease atomically.
+- Lease durations are constrained to 15–300 seconds. All issue/expiry/renewal timestamps use PostgreSQL `NOW()`; client clocks are not authoritative.
+- Authenticated `POST /team-room/heartbeat` renews only leases which have not already expired. A late heartbeat cannot resurrect an expired lease.
+- `POST /team-room/{room_id}/tasks/recover` moves expired leases to `RECOVERY_REQUIRED`. It is permission-gated by `task.assign`.
+- `POST /team-room/tasks` creates a task (`task.write`).
+- `POST /team-room/tasks/{task_id}/lease/acquire` acquires/reassigns a task (`task.transition`); response includes the fencing token.
+- `POST /team-room/tasks/{task_id}/lease/renew`, `.../lease/release`, `.../checkpoint`, and `.../complete` require the current fencing token and the same authenticated principal, participant, session and workload execution.
+- `GET /team-room/{room_id}/tasks/{task_id}/candidates` returns only currently connected, active, permitted room members with a live workload session and fewer than three active task leases. It is discovery only; selection remains an explicit acquire by the chosen authenticated participant.
+- A successful acquire after expiry records a durable handoff/resume row and increments the fencing token in the same transaction. Checkpoint and completion mutations compare the current owner/session/execution and exact token while holding the task row lock.
+- A PostgreSQL trigger prevents fencing-token rollback/jumps, requires a token increment when ownership changes to a new executor, keeps checkpoint versions monotonic, and makes completed/cancelled tasks immutable.
+- Lease history is retained in `task_lease_events`; handoff context is retained in `task_handoffs`. The task row is the single serialization point, avoiding reliance on local locks.
+
+### Security and operational boundaries
+
+This is a server-side shared ownership foundation, not model-provider attestation. A valid OIDC-backed Team Room session establishes an authenticated workload identity, not proof of a particular model runtime. Candidate discovery does not automatically choose or start a provider. Provider adapters, external prompt delivery receipts, and execution attestation remain out of scope. Configure the explicit `task.write`, `task.transition`, and `task.assign` grants through the controlled permission provisioning process; default-deny remains in force.
