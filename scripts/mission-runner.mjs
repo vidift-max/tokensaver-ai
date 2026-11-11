@@ -61,8 +61,28 @@ function main(args) {
       const s = { version:1, current_mission_id:id, missions:{[id]:mission}, updated_at:stamp };
       writeState(s,"MISSION_CREATED",{mission_number:mission.mission_number}); console.log("CREATED " + id); return;
     }
-    const s = readState(), m = current(s);
+    const s = readState();
     if (cmd === "status") { console.log(JSON.stringify(s,null,2)); return; }
+    if (cmd === "list") {
+      const rows=Object.values(s.missions).map(m=>({mission_id:m.mission_id,mission_number:m.mission_number,title:m.title,status:m.status,responsible_ai:m.responsible_ai,updated_at:m.updated_at,next_action:m.next_action}));
+      console.log(JSON.stringify(rows,null,2)); return;
+    }
+    if (cmd === "register-next") {
+      const previous=current(s);
+      if (previous.status!=="DONE") throw new Error("current mission must be DONE before registering its successor");
+      if (a.length<3 || !safeId(a[0]) || !/^\d+$/.test(a[1])) throw new Error("usage: register-next <safe-id> <number> <title>");
+      if (s.missions[a[0]]) throw new Error("mission already exists; refusing duplicate registration");
+      const stamp=now(), id=a[0];
+      s.missions[id]={mission_id:id,mission_number:Number(a[1]),title:a.slice(2).join(" "),responsible_ai:null,participant_id:null,current_task:null,subtasks:[],status:"CREATED",progress:0,last_action:"registered",last_result:null,files_changed:[],commits:[],tests:[],evidence:[],blockers:[],next_action:"assign responsible AI",checkpoint:null,started_at:stamp,updated_at:stamp,completed_at:null,handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null},prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null}};
+      s.current_mission_id=id; writeState(s,"NEXT_MISSION_REGISTERED",{previous_mission_id:previous.mission_id,next_mission_id:id}); return;
+    }
+    if (cmd === "switch") {
+      if (!s.missions[a[0]]) throw new Error("mission does not exist");
+      const old=current(s);
+      if (!["DONE","CANCELLED","REJECTED"].includes(old.status)) throw new Error("finish or cancel current mission before switching");
+      s.current_mission_id=a[0]; writeState(s,"CURRENT_MISSION_SWITCHED",{mission_id:a[0]}); return;
+    }
+    const m = current(s);
     if (cmd === "assign") {
       if (a.length !== 2 || !a[0].trim() || !a[1].trim()) throw new Error("usage: assign <responsible_ai> <participant_id>");
       m.responsible_ai=a[0]; m.participant_id=a[1]; transition(m,"ASSIGNED"); m.next_action="responsible AI must acknowledge"; writeState(s,"MISSION_ASSIGNED"); return;
