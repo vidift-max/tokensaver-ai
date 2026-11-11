@@ -30,6 +30,7 @@ pub struct TaskLease {
     pub owner_principal_id: Option<Uuid>,
     pub owner_participant_id: Option<Uuid>,
     pub owner_session_id: Option<Uuid>,
+    pub owner_execution_id: Option<Uuid>,
     pub fencing_token: i64,
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub checkpoint: Value,
@@ -64,7 +65,7 @@ async fn lock_task<'a>(
     task_id: Uuid,
 ) -> Result<TaskLease, TaskError> {
     sqlx::query_as::<_, TaskLease>(
-        "SELECT task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE task_id=$1 AND room_id=$2 FOR UPDATE"
+        "SELECT task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version FROM team_tasks WHERE task_id=$1 AND room_id=$2 FOR UPDATE"
     ).bind(task_id).bind(room_id).fetch_optional(&mut **tx).await?.ok_or(TaskError::NotFound)
 }
 
@@ -124,7 +125,7 @@ pub async fn acquire_lease(
     let previous_token = old.fencing_token;
     let was_reassigned = previous_owner.is_some() || matches!(old.status.as_str(),"LEASE_EXPIRED"|"RECOVERY_REQUIRED"|"HANDOFF_PENDING");
     let task = sqlx::query_as::<_,TaskLease>(
-        "UPDATE team_tasks SET status=CASE WHEN $4 THEN 'REASSIGNED' ELSE 'OWNED' END, owner_principal_id=$2, owner_participant_id=$3, owner_session_id=$5, owner_execution_id=$6, fencing_token=fencing_token+1, lease_issued_at=NOW(), lease_renewed_at=NOW(), lease_expires_at=NOW()+($7 * INTERVAL '1 second'), updated_at=NOW() WHERE task_id=$1 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+        "UPDATE team_tasks SET status=CASE WHEN $4 THEN 'REASSIGNED' ELSE 'OWNED' END, owner_principal_id=$2, owner_participant_id=$3, owner_session_id=$5, owner_execution_id=$6, fencing_token=fencing_token+1, lease_issued_at=NOW(), lease_renewed_at=NOW(), lease_expires_at=NOW()+($7 * INTERVAL '1 second'), updated_at=NOW() WHERE task_id=$1 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(identity.principal_id).bind(identity.participant_id).bind(was_reassigned)
      .bind(identity.session_id).bind(identity.execution_id).bind(lease_seconds)
      .fetch_one(&mut *tx).await?;
@@ -171,7 +172,7 @@ pub async fn renew_lease(
     let mut tx=pool.begin().await?;
     let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
-      "UPDATE team_tasks SET lease_renewed_at=NOW(),lease_expires_at=NOW()+($3 * INTERVAL '1 second'),updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+      "UPDATE team_tasks SET lease_renewed_at=NOW(),lease_expires_at=NOW()+($3 * INTERVAL '1 second'),updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(lease_seconds).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"RENEWED",serde_json::json!({"lease_seconds":lease_seconds})).await?;
     tx.commit().await?;
@@ -188,7 +189,7 @@ pub async fn write_checkpoint(
     let mut tx=pool.begin().await?;
     let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
-      "UPDATE team_tasks SET checkpoint=$3,checkpoint_version=checkpoint_version+1,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+      "UPDATE team_tasks SET checkpoint=$3,checkpoint_version=checkpoint_version+1,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(checkpoint).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"CHECKPOINTED",serde_json::json!({"checkpoint_version":updated.checkpoint_version})).await?;
     tx.commit().await?;
@@ -206,7 +207,7 @@ pub async fn complete_task(
     let mut tx=pool.begin().await?;
     let _task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
-      "UPDATE team_tasks SET status='COMPLETED',checkpoint=$3,checkpoint_version=checkpoint_version+1,completed_at=NOW(),updated_at=NOW(),owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+      "UPDATE team_tasks SET status='COMPLETED',checkpoint=$3,checkpoint_version=checkpoint_version+1,completed_at=NOW(),updated_at=NOW(),owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(final_checkpoint).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"COMPLETED",serde_json::json!({"checkpoint_version":updated.checkpoint_version})).await?;
     tx.commit().await?;
@@ -216,7 +217,7 @@ pub async fn complete_task(
 pub async fn recover_expired(pool: &PgPool, room_id: Uuid) -> Result<u64, TaskError> {
     let mut tx=pool.begin().await?;
     let expired=sqlx::query_as::<_,TaskLease>(
-      "UPDATE team_tasks SET status='RECOVERY_REQUIRED',updated_at=NOW() WHERE room_id=$1 AND status IN ('OWNED','REASSIGNED') AND lease_expires_at<=NOW() RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+      "UPDATE team_tasks SET status='RECOVERY_REQUIRED',updated_at=NOW() WHERE room_id=$1 AND status IN ('OWNED','REASSIGNED') AND lease_expires_at<=NOW() RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(room_id).fetch_all(&mut *tx).await?;
     for task in &expired {
       sqlx::query("INSERT INTO task_lease_events (lease_event_id,tenant_id,room_id,task_id,principal_id,participant_id,session_id,fencing_token,event_type,metadata) VALUES ($1,(SELECT tenant_id FROM team_tasks WHERE task_id=$2),$3,$2,$4,$5,$6,$7,'EXPIRED',$8)")
@@ -237,7 +238,7 @@ pub async fn release_lease(
     let mut tx=pool.begin().await?;
     let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
-      "UPDATE team_tasks SET status='UNOWNED',owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
+      "UPDATE team_tasks SET status='UNOWNED',owner_principal_id=NULL,owner_participant_id=NULL,owner_session_id=NULL,owner_execution_id=NULL,lease_issued_at=NULL,lease_renewed_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&task,identity,"RELEASED",serde_json::json!({})).await?;
     tx.commit().await?;
