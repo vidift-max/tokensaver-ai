@@ -101,9 +101,10 @@ async fn resolve_jwks_url(config: &OidcConfig, force_refresh: bool) -> Result<St
     if !algorithms.iter().any(|v| v.as_str() == Some("RS256")) {
         return Err(AuthError::ProviderUnavailable);
     }
+    // The development exception must use the same strict loopback parser as
+    // JWKS. Prefix checks would accept hosts such as localhost.attacker.example.
     let secure_endpoint = |value: Option<&str>| value.is_some_and(|url| url.starts_with("https://")
-        || (config.allow_http_localhost && (url.starts_with("http://localhost")
-            || url.starts_with("http://127.0.0.1"))));
+        || (config.allow_http_localhost && is_loopback_http_url(url)));
     if !secure_endpoint(metadata.get("token_endpoint").and_then(Value::as_str)) {
         return Err(AuthError::ProviderUnavailable);
     }
@@ -647,6 +648,45 @@ rYCbrUTET0soLkbXAVaf4NZm
         assert!(!is_loopback_http_url("http://127.0.0.1.attacker.example/realm"));
         assert!(!is_loopback_http_url("http://localhost@attacker.example/realm"));
         assert!(!is_loopback_http_url("https://localhost/realm"));
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_lookalike_http_token_and_authorization_endpoints() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let metadata = Arc::new(RwLock::new(json!({
+            "issuer": "http://127.0.0.1:12345/realm",
+            "token_endpoint": "http://localhost.attacker.example/token",
+            "authorization_endpoint": "http://127.0.0.1.attacker.example/auth",
+            "jwks_uri": "http://127.0.0.1:12345/jwks",
+            "id_token_signing_alg_values_supported": ["RS256"]
+        })));
+        let state = metadata.clone();
+        let app = Router::new().route("/realm/.well-known/openid-configuration", get(move || {
+            let value = state.clone();
+            async move { Json(value.read().await.clone()) }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let issuer = format!("http://{}/realm", address);
+        metadata.write().await["issuer"] = json!(issuer.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let config = OidcConfig {
+            issuer,
+            audience: "team-room-api".into(),
+            jwks_url: String::new(),
+            require_discovery: true,
+            expected_jwks_url: None,
+            allow_http_localhost: true,
+        };
+
+        assert!(matches!(resolve_jwks_url(&config, true).await, Err(AuthError::ProviderUnavailable)));
+        metadata.write().await["token_endpoint"] = json!(format!("http://{}/token", address));
+        assert!(matches!(resolve_jwks_url(&config, true).await, Err(AuthError::ProviderUnavailable)));
+        metadata.write().await["authorization_endpoint"] = json!(format!("http://{}/auth", address));
+        assert!(resolve_jwks_url(&config, true).await.is_ok());
+        server.abort();
     }
 
     #[tokio::test]
