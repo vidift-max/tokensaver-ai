@@ -39,6 +39,15 @@ CREATE TABLE team_tasks (
     FOREIGN KEY (room_id, owner_session_id, owner_principal_id)
         REFERENCES sessions(room_id, session_id, principal_id)
 );
+ALTER TABLE workload_executions
+    ADD CONSTRAINT workload_execution_owner_binding_unique
+    UNIQUE (tenant_id,room_id,participant_id,principal_id,session_id,execution_id);
+
+ALTER TABLE team_tasks
+    ADD CONSTRAINT team_tasks_owner_execution_binding_fk
+    FOREIGN KEY (tenant_id,room_id,owner_participant_id,owner_principal_id,owner_session_id,owner_execution_id)
+    REFERENCES workload_executions(tenant_id,room_id,participant_id,principal_id,session_id,execution_id);
+
 CREATE INDEX team_tasks_room_status_idx ON team_tasks(room_id,status,updated_at DESC);
 CREATE INDEX team_tasks_owner_lease_idx ON team_tasks(owner_principal_id,lease_expires_at)
     WHERE status IN ('OWNED','REASSIGNED');
