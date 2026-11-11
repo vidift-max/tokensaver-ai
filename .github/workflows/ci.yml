@@ -213,6 +213,13 @@ jobs:
           DEFAULT_SCOPES="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/default-client-scopes")"
+          echo "Keycloak default client scopes: $(echo "$DEFAULT_SCOPES" | jq -r '[.[].name] | join(",")')"
+          ROLES_SCOPE_ID="$(echo "$DEFAULT_SCOPES" | jq -r '.[] | select(.name=="roles") | .id' | head -n 1)"
+          if [ -n "$ROLES_SCOPE_ID" ] && [ "$ROLES_SCOPE_ID" != "null" ]; then
+            curl --fail --silent --show-error -o /dev/null \
+              -X DELETE "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/default-client-scopes/$ROLES_SCOPE_ID" \
+              -H "Authorization: Bearer $ADMIN_TOKEN"
+          fi
           ACCOUNT_SCOPE_ID="$(echo "$DEFAULT_SCOPES" | jq -r '.[] | select(.name=="account") | .id' | head -n 1)"
           if [ -n "$ACCOUNT_SCOPE_ID" ] && [ "$ACCOUNT_SCOPE_ID" != "null" ]; then
             curl --fail --silent --show-error -o /dev/null \
@@ -252,25 +259,6 @@ jobs:
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$CLIENT_ID/service-account-user" | jq -r .id)"
           test -n "$SERVICE_ACCOUNT_SUB" && test "$SERVICE_ACCOUNT_SUB" != "null"
-          ACCOUNT_CLIENT_ID="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $ADMIN_TOKEN" \
-            "http://127.0.0.1:8080/admin/realms/team-room-ci/clients?clientId=account" | jq -r '.[0].id')"
-          if [ -n "$ACCOUNT_CLIENT_ID" ] && [ "$ACCOUNT_CLIENT_ID" != "null" ]; then
-            ACCOUNT_ROLES="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              "http://127.0.0.1:8080/admin/realms/team-room-ci/users/$SERVICE_ACCOUNT_SUB/role-mappings/clients/$ACCOUNT_CLIENT_ID")"
-            if [ "$(echo "$ACCOUNT_ROLES" | jq 'length')" -gt 0 ]; then
-              curl --fail --silent --show-error -o /dev/null \
-                -X DELETE "http://127.0.0.1:8080/admin/realms/team-room-ci/users/$SERVICE_ACCOUNT_SUB/role-mappings/clients/$ACCOUNT_CLIENT_ID" \
-                -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-                -d "$ACCOUNT_ROLES"
-            fi
-            # The ephemeral test realm does not need the built-in account application.
-            curl --fail --silent --show-error -o /dev/null \
-              -X DELETE "http://127.0.0.1:8080/admin/realms/team-room-ci/clients/$ACCOUNT_CLIENT_ID" \
-              -H "Authorization: Bearer $ADMIN_TOKEN"
-          fi
-
           STAGE="client-credentials-token"
           TOKEN_ENDPOINT="$ISSUER/protocol/openid-connect/token"
           TOKEN_RESPONSE="$(curl --fail --silent --show-error \
