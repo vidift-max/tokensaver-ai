@@ -69,9 +69,10 @@ jobs:
           if errorlevel 1 exit /b 1
           CONTINUE_MISSION.bat acknowledge
           if errorlevel 1 exit /b 1
+          REM No Team Room session is provisioned in CI; start must fail closed.
           CONTINUE_MISSION.bat start
-          if errorlevel 1 exit /b 1
-          CONTINUE_MISSION.bat checkpoint windows-smoke-checkpoint
+          if not errorlevel 1 exit /b 1
+          CONTINUE_MISSION.bat status
           if errorlevel 1 exit /b 1
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
