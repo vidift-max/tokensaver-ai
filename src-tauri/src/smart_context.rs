@@ -19,6 +19,11 @@ fn project_root(app: &tauri::AppHandle, project_id: &str) -> AppResult<PathBuf> 
     app.path().app_data_dir().map(|p| p.join("storage").join("projects").join(project_id)).map_err(|_| AppError::new("STORAGE_ERROR", "Não foi possível localizar o armazenamento."))
 }
 fn terms(query:&str)->Vec<String>{ query.split_whitespace().map(|s| s.trim_matches(|c:char| !c.is_alphanumeric() && c!='_' && c!='-').to_lowercase()).filter(|s|s.len()>=2).take(12).collect() }
+
+fn is_canonical_sha256(sha: &str) -> bool {
+    sha.len() == 64
+        && sha.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
 fn excerpt(text:&str, needle:&str)->String {
     let lower=text.to_lowercase();
     let pos=lower.find(needle);
@@ -85,7 +90,7 @@ pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, m
         let (id, path, version, bytes, sha) = row
             .map_err(|_| AppError::new("DATABASE_ERROR", "Não foi possível ler o contexto."))?;
         files_examined += 1;
-        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !is_canonical_sha256(&sha) {
             continue;
         }
         let blob = blobs.join(&sha);
@@ -153,6 +158,13 @@ pub fn smart_context(app: tauri::AppHandle, project_id: String, query: String, m
 mod tests {
     use super::{excerpt, read_context_blob};
     use std::io::Cursor;
+
+    #[test]
+    fn smart_context_accepts_only_canonical_lowercase_sha256() {
+        assert!(super::is_canonical_sha256(&"a".repeat(64)));
+        assert!(!super::is_canonical_sha256(&"A".repeat(64)));
+        assert!(!super::is_canonical_sha256("not-a-sha256"));
+    }
 
     #[test]
     fn excerpt_handles_unicode_case_expansion_without_panicking() {
