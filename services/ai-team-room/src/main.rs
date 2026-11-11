@@ -122,6 +122,11 @@ async fn heartbeat(
     sqlx::query("UPDATE workload_identities SET last_seen_at=$1 WHERE principal_id=$2 AND status='ACTIVE'")
         .bind(last_seen_at).bind(identity.principal_id).execute(&mut *tx).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Heartbeat renews only leases already valid at database time; an expired
+    // lease can never be resurrected by a late heartbeat.
+    sqlx::query("UPDATE team_tasks SET lease_renewed_at=NOW(), lease_expires_at=GREATEST(lease_expires_at,NOW()+INTERVAL '60 seconds'), updated_at=NOW() WHERE owner_execution_id=$1 AND owner_session_id=$2 AND status IN ('OWNED','REASSIGNED') AND lease_expires_at>NOW()")
+        .bind(identity.execution_id).bind(identity.session_id).execute(&mut *tx).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(HeartbeatResponse { session_id:identity.session_id, execution_id:identity.execution_id, last_seen_at }))
 }
