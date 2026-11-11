@@ -347,6 +347,28 @@ mod tests {
         assert!(parse_roots_json(&json).is_err());
     }
 
+    #[test]
+    fn roots_lock_file_accepts_regular_file() {
+        let root = std::env::temp_dir().join(format!("tokensaver-lock-file-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("import_roots.lock");
+        fs::write(&path, b"").unwrap();
+
+        assert!(open_roots_lock_file(&path).is_ok());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn roots_lock_file_rejects_directories() {
+        let root = std::env::temp_dir().join(format!("tokensaver-lock-dir-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+
+        assert!(open_roots_lock_file(&root).is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn roots_lock_file_rejects_symlinks() {
