@@ -3,14 +3,16 @@ use ai_team_room_service::{
     connect_pool, migrate, readiness,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::{env, net::SocketAddr};
+use std::{collections::{HashMap, VecDeque}, env, net::SocketAddr, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -25,6 +27,27 @@ struct HealthResponse { service: &'static str, status: &'static str }
 
 #[derive(Deserialize)]
 struct ExchangeRequest { room_id: Uuid, workload_token: String }
+
+static EXCHANGE_ATTEMPTS: OnceLock<Mutex<HashMap<String, VecDeque<Instant>>>> = OnceLock::new();
+
+async fn rate_limit_exchange(request: Request, next: Next) -> Response {
+    let key = request.extensions().get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(address)| address.ip().to_string())
+        .unwrap_or_else(|| "unresolved-peer".to_string());
+    let limits = EXCHANGE_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut limits = limits.lock().expect("rate limiter mutex poisoned");
+    let now = Instant::now();
+    let attempts = limits.entry(key).or_default();
+    while attempts.front().is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60)) {
+        attempts.pop_front();
+    }
+    if attempts.len() >= 10 {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    attempts.push_back(now);
+    drop(limits);
+    next.run(request).await
+}
 
 async fn live() -> (StatusCode, Json<HealthResponse>) {
     (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "live" }))
@@ -125,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
-        .route("/auth/exchange", post(exchange))
+        .route("/auth/exchange", post(exchange).route_layer(middleware::from_fn(rate_limit_exchange)))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(logout))
         .route("/team-room/me", get(team_room_me))
@@ -134,6 +157,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "AI Team Room service listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
