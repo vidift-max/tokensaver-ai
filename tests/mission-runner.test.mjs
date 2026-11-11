@@ -177,6 +177,10 @@ test("heartbeat presence timeout requires missed heartbeats, not a long-running 
  s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
  assert.equal(s.missions["M-134"].presence.state,"DISCONNECTED");
  assert.equal(s.missions["M-134"].status,"RECOVERY_REQUIRED");
+ assert.equal(s.missions["M-134"].checkpoint.description,"automatic heartbeat-timeout checkpoint");
+ assert.equal(s.missions["M-134"].checkpoint.status,"RECOVERY_REQUIRED");
+ assert.equal(s.missions["M-134"].checkpoint_history.length,1);
+ assert.equal(s.missions["M-134"].reassignment_queue[0].checkpoint_id,s.missions["M-134"].checkpoint.checkpoint_id);
 });
 
 test("recovery preserves checkpoint and handoff blocks the previous executor", t => {

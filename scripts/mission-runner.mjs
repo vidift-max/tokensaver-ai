@@ -142,7 +142,11 @@ function main(args) {
         const age=Date.now()-Date.parse(m.presence.last_seen), timeout=m.presence.timeout_ms;
         if (age>timeout*2) {
           m.presence.state="DISCONNECTED";
-          if (m.status==="IN_PROGRESS") { transition(m,"RECOVERY_REQUIRED"); m.next_action="recover checkpoint and enqueue reassignment"; }
+          if (m.status==="IN_PROGRESS") {
+            transition(m,"RECOVERY_REQUIRED");
+            m.next_action="recover latest checkpoint and enqueue reassignment";
+            createCheckpoint(m,"automatic heartbeat-timeout checkpoint");
+          }
           if (!m.presence.disconnected_at) m.presence.disconnected_at=now();
           if (!m.reassignment_queue.some(item=>item.status==="QUEUED"||item.status==="ASSIGNED")) m.reassignment_queue.push({recovery_id:crypto.randomUUID(),status:"QUEUED",created_at:now(),reason:"heartbeat_timeout",checkpoint_id:m.checkpoint?.checkpoint_id||null});
           writeState(s,"PRESENCE_DISCONNECTED",{age_ms:age});

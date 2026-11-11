@@ -310,15 +310,42 @@ mod distributed_lease_tests {
         let renewed=renew_lease(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,45).await.unwrap();
         assert_eq!(renewed.fencing_token,1);
         assert!(renewed.lease_expires_at.unwrap()>old_grant.task.lease_expires_at.unwrap());
+        let renewed_again=renew_lease(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,45).await.unwrap();
+        assert_eq!(renewed_again.fencing_token,1);
+        assert!(renewed_again.lease_expires_at.unwrap()>=renewed.lease_expires_at.unwrap());
+
+        let checkpoint_one=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"progress":42})).await.unwrap();
+        let checkpoint_two=write_checkpoint(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,serde_json::json!({"progress":43})).await.unwrap();
+        assert_eq!(checkpoint_one.checkpoint_version,1);
+        assert_eq!(checkpoint_two.checkpoint_version,2);
+        let renewal_events:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_lease_events WHERE task_id=$1 AND fencing_token=1 AND event_type='RENEWED'")
+            .bind(task.task_id).fetch_one(&*pool).await.unwrap();
+        let checkpoint_events:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_lease_events WHERE task_id=$1 AND fencing_token=1 AND event_type='CHECKPOINTED'")
+            .bind(task.task_id).fetch_one(&*pool).await.unwrap();
+        assert_eq!(renewal_events,2,"one fencing generation must permit repeated heartbeat renewals");
+        assert_eq!(checkpoint_events,2,"one fencing generation must permit repeated checkpoints");
 
         sqlx::query("UPDATE team_tasks SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE task_id=$1")
             .bind(task.task_id).execute(&*pool).await.unwrap();
         assert_eq!(recover_expired(&pool,task_room(&pool,task.task_id).await).await.unwrap(),1);
-        let replacement=identities.iter().find(|id|id.principal_id!=old_identity.principal_id).unwrap().clone();
-        let new_grant=acquire_lease(&pool,&replacement,task.task_id,30).await.unwrap();
+
+        let mut takeover_attempts=Vec::new();
+        for candidate in identities.iter().filter(|id|id.principal_id!=old_identity.principal_id).take(2).cloned() {
+            let p=pool.clone();
+            let task_id=task.task_id;
+            takeover_attempts.push(tokio::spawn(async move {
+                acquire_lease(&p,&candidate,task_id,30).await.map(|grant|(candidate,grant))
+            }));
+        }
+        let mut replacements=Vec::new();
+        for attempt in takeover_attempts {
+            if let Ok(Ok(replacement))=attempt.await { replacements.push(replacement); }
+        }
+        assert_eq!(replacements.len(),1,"two concurrent takeover attempts must produce exactly one new owner");
+        let (replacement,new_grant)=replacements.remove(0);
         assert!(new_grant.reassigned);
         assert_eq!(new_grant.task.fencing_token,2);
-        assert_eq!(new_grant.task.checkpoint["progress"],41);
+        assert_eq!(new_grant.task.checkpoint["progress"],43);
         let downgrade=sqlx::query("UPDATE team_tasks SET fencing_token=1 WHERE task_id=$1")
             .bind(task.task_id).execute(&*pool).await;
         assert!(downgrade.is_err(),"PostgreSQL trigger must reject fencing token rollback");
@@ -332,6 +359,22 @@ mod distributed_lease_tests {
         assert_eq!(completed.status,"COMPLETED");
         let reopen=write_checkpoint(&pool,&replacement,task.task_id,new_grant.task.fencing_token,serde_json::json!({"reopen":true})).await;
         assert!(matches!(reopen,Err(TaskError::Fenced)));
+
+        let release_task=create_task(&pool,&replacement,CreateTask{mission_id:Uuid::new_v4(),title:"concurrent release regression".into(),checkpoint:serde_json::json!({})}).await.unwrap();
+        let release_grant=acquire_lease(&pool,&replacement,release_task.task_id,30).await.unwrap();
+        let release_task_id=release_task.task_id;
+        let release_token=release_grant.task.fencing_token;
+        let pool_one=pool.clone();
+        let pool_two=pool.clone();
+        let identity_one=replacement.clone();
+        let identity_two=replacement.clone();
+        let release_one=tokio::spawn(async move { release_lease(&pool_one,&identity_one,release_task_id,release_token).await });
+        let release_two=tokio::spawn(async move { release_lease(&pool_two,&identity_two,release_task_id,release_token).await });
+        let release_results=[release_one.await.unwrap(),release_two.await.unwrap()];
+        assert_eq!(release_results.iter().filter(|result|result.is_ok()).count(),1,"two simultaneous releases must commit exactly once");
+        let release_status:String=sqlx::query_scalar("SELECT status FROM team_tasks WHERE task_id=$1")
+            .bind(release_task_id).fetch_one(&*pool).await.unwrap();
+        assert_eq!(release_status,"UNOWNED");
 
         let handoffs:i64=sqlx::query_scalar("SELECT COUNT(*) FROM task_handoffs WHERE task_id=$1 AND status='RESUMED' AND from_fencing_token=1 AND to_fencing_token=2")
             .bind(task.task_id).fetch_one(&*pool).await.unwrap();
