@@ -94,6 +94,10 @@ pub async fn create_task(
     let task_id = Uuid::new_v4();
     let checkpoint = if request.checkpoint.is_null() { serde_json::json!({}) } else { request.checkpoint };
     let mut tx = pool.begin().await?;
+    let actor_valid: bool = sqlx::query_scalar(
+      "SELECT EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id AND w.execution_id=$4 JOIN room_memberships m ON m.room_id=s.room_id AND m.principal_id=s.principal_id AND m.session_id=s.session_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE')"
+    ).bind(identity.session_id).bind(identity.room_id).bind(identity.principal_id).bind(identity.execution_id).fetch_one(&mut *tx).await?;
+    if !actor_valid { return Err(TaskError::Fenced); }
     sqlx::query("INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7)")
         .bind(task_id).bind(identity.tenant_id).bind(identity.room_id)
         .bind(request.mission_id).bind(title).bind(checkpoint).bind(identity.principal_id)
