@@ -363,6 +363,41 @@ mod http_security_tests {
         ).await.unwrap();
         assert_eq!(joined.status(), StatusCode::OK);
 
+        sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.read')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).execute(&pool).await.unwrap();
+        let heartbeat = app.clone().oneshot(
+            axum::http::Request::builder().method("POST").uri("/team-room/heartbeat")
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(heartbeat.status(), StatusCode::OK);
+        let heartbeat_body = axum::body::to_bytes(heartbeat.into_body(), 4096).await.unwrap();
+        let heartbeat_json: serde_json::Value = serde_json::from_slice(&heartbeat_body).unwrap();
+        assert_eq!(heartbeat_json["session_id"], session.to_string());
+        assert_eq!(heartbeat_json["execution_id"], execution.to_string());
+
+        let presence = app.clone().oneshot(
+            axum::http::Request::builder().uri(format!("/team-room/{room}/presence"))
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(presence.status(), StatusCode::OK);
+        let presence_body = axum::body::to_bytes(presence.into_body(), 4096).await.unwrap();
+        let presence_json: serde_json::Value = serde_json::from_slice(&presence_body).unwrap();
+        assert_eq!(presence_json[0]["state"], "ACTIVE");
+
+        sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '5 minutes' WHERE execution_id=$1")
+            .bind(execution).execute(&pool).await.unwrap();
+        let stale_presence = app.clone().oneshot(
+            axum::http::Request::builder().uri(format!("/team-room/{room}/presence"))
+                .header("authorization", format!("Bearer {raw_token}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(stale_presence.status(), StatusCode::OK);
+        let stale_body = axum::body::to_bytes(stale_presence.into_body(), 4096).await.unwrap();
+        let stale_json: serde_json::Value = serde_json::from_slice(&stale_body).unwrap();
+        assert_eq!(stale_json[0]["state"], "DISCONNECTED");
+
         sqlx::query("UPDATE workload_identities SET status='REVOKED', revoked_at=NOW() WHERE workload_id=$1")
             .bind(workload).execute(&pool).await.unwrap();
         let revoked = app.clone().oneshot(
