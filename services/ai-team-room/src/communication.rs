@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, FromRequestParts, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
@@ -250,7 +250,8 @@ struct TicketQuery { ticket:String }
 struct WsAuthRow { tenant_id:Uuid,participant_id:Uuid,principal_id:Uuid,session_id:Uuid,execution_id:Uuid,room_id:Uuid,issuer:String,subject:String }
 
 async fn websocket(
-    State(pool):State<PgPool>,Path(room_id):Path<Uuid>,Query(query):Query<TicketQuery>,ws:WebSocketUpgrade,
+    State(pool):State<PgPool>,Path(room_id):Path<Uuid>,Query(query):Query<TicketQuery>,
+    request:axum::extract::Request,
 )->Result<axum::response::Response,StatusCode>{
     if query.ticket.len()>128{return Err(StatusCode::UNAUTHORIZED);}
     let digest=Sha256::digest(query.ticket.as_bytes()).to_vec();
@@ -265,6 +266,11 @@ async fn websocket(
     let identity=AuthenticatedIdentity{tenant_id:who.tenant_id,participant_id:who.participant_id,principal_id:who.principal_id,session_id:who.session_id,execution_id:who.execution_id,room_id:who.room_id,issuer:who.issuer,subject:who.subject};
     let can_read=require_permission(&pool,&identity,"room.read").await.is_ok();
     if !can_read{return Err(StatusCode::FORBIDDEN);}
+    // Authenticate and authorize the single-use ticket before parsing the
+    // WebSocket upgrade. Invalid tickets therefore receive 401, not an
+    // extractor-level 426 response.
+    let (mut parts,_body)=request.into_parts();
+    let ws=WebSocketUpgrade::from_request_parts(&mut parts,&pool).await.map_err(|_|StatusCode::UPGRADE_REQUIRED)?;
     Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal,identity.session_id)))
 }
 
@@ -548,14 +554,8 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
         server.abort();
 
-        let bad_ws_request=axum::http::Request::builder().method("GET")
-            .uri(format!("/team-room/{room}/ws?ticket=invalid"))
-            .header("connection","Upgrade").header("upgrade","websocket")
-            .header("sec-websocket-key","dGhlIHNhbXBsZSBub25jZQ==")
-            .header("sec-websocket-version","13").header("sec-websocket-protocol","team-room.v1")
-            .body(Body::empty()).unwrap();
-        let bad_ws=app.clone().oneshot(bad_ws_request).await.unwrap();
-        assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED,"a valid websocket upgrade with an invalid ticket must be rejected by authentication");
+        let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
+        assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED,"invalid websocket tickets must be rejected before upgrade parsing");
 
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
