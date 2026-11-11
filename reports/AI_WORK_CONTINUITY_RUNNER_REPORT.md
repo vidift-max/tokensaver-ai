@@ -857,7 +857,7 @@ Updated: 2026-11-11
 - Parallel work was preserved from the former branch tip `4ff21adabf073c606a71da0900bdf3b5f01ad7db`; no reset, force push, squash, cherry-pick, automatic revert, or history rewrite was used.
 - At code-validation time, the branch was `a360a3ea751c6dc5b32cb865201a81b4b2845ece`, 68 commits ahead of the `ac492...` baseline and not behind it.
 - The graph is a linear parent chain: no merge commits were found in the audited range. The audited commits are authored by `vidift-max`.
-- The comparison from `ac492...` to the code HEAD contains 13 changed paths: 4 additions and 9 modifications; no deleted paths. The additions are the local Runner/BAT/tests, task ownership module, and migrations 0005/0006; the remaining paths extend CI, docs, and the existing Team Room service.
+- The comparison from `ac492...` to the code HEAD contains 13 changed paths: 7 additions and 6 modifications; no deleted paths. The additions are the local Runner/BAT/tests, task ownership module, and migrations 0005/0006; the remaining paths extend CI, docs, and the existing Team Room service.
 - Branch protection is disabled (`protected=false`). The HEAD can be observed and validated, but the freeze is not enforced by a GitHub branch rule.
 
 ## 2. Commit-to-work map and classification
