@@ -308,6 +308,9 @@ mod distributed_lease_tests {
         assert_eq!(winners.len(),1,"exactly one executor may own the task");
         let (old_identity,old_grant)=winners.remove(0);
         assert_eq!(old_grant.task.fencing_token,1);
+        let renewed=renew_lease(&pool,&old_identity,task.task_id,old_grant.task.fencing_token,45).await.unwrap();
+        assert_eq!(renewed.fencing_token,1);
+        assert!(renewed.lease_expires_at.unwrap()>old_grant.task.lease_expires_at.unwrap());
 
         sqlx::query("UPDATE team_tasks SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE task_id=$1")
             .bind(task.task_id).execute(&*pool).await.unwrap();
