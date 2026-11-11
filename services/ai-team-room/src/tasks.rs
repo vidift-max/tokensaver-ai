@@ -95,7 +95,7 @@ pub async fn create_task(
     let checkpoint = if request.checkpoint.is_null() { serde_json::json!({}) } else { request.checkpoint };
     let mut tx = pool.begin().await?;
     let actor_valid: bool = sqlx::query_scalar(
-      "SELECT EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id AND w.execution_id=$4 JOIN room_memberships m ON m.room_id=s.room_id AND m.principal_id=s.principal_id AND m.session_id=s.session_id JOIN principals p ON p.tenant_id=s.tenant_id AND p.principal_id=s.principal_id JOIN workload_identities wi ON wi.tenant_id=p.tenant_id AND wi.principal_id=p.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND p.enabled=TRUE AND wi.status='ACTIVE'))"
+      "SELECT EXISTS (SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id AND w.execution_id=$4 JOIN room_memberships m ON m.room_id=s.room_id AND m.principal_id=s.principal_id AND m.session_id=s.session_id JOIN principals p ON p.tenant_id=s.tenant_id AND p.principal_id=s.principal_id JOIN workload_identities wi ON wi.tenant_id=p.tenant_id AND wi.principal_id=p.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND p.enabled=TRUE AND wi.status='ACTIVE')"
     ).bind(identity.session_id).bind(identity.room_id).bind(identity.principal_id).bind(identity.execution_id).fetch_one(&mut *tx).await?;
     if !actor_valid { return Err(TaskError::Fenced); }
     sqlx::query("INSERT INTO team_tasks (task_id,tenant_id,room_id,mission_id,title,checkpoint,created_by_principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7)")
@@ -191,7 +191,7 @@ pub async fn write_checkpoint(
     checkpoint: Value,
 ) -> Result<TaskLease, TaskError> {
     let mut tx=pool.begin().await?;
-    let task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
+    let _task=validate_current_lease(&mut tx,identity,task_id,fencing_token).await?;
     let updated=sqlx::query_as::<_,TaskLease>(
       "UPDATE team_tasks SET checkpoint=$3,checkpoint_version=checkpoint_version+1,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(checkpoint).fetch_one(&mut *tx).await?;
