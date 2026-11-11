@@ -256,6 +256,25 @@ fn remap_project_scope(
     Ok(())
 }
 
+fn insert_restore_db_blob(
+    blobs: &mut std::collections::BTreeMap<String, u64>,
+    sha: String,
+    len: i64,
+    relative: String,
+) -> AppResult<()> {
+    if blobs.len() >= MAX_BACKUP_BLOBS {
+        return Err(AppError::new("BACKUP_LIMIT_EXCEEDED", "O banco do backup excede o número máximo de blobs."));
+    }
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+        || len < 0 || relative != format!("blobs/{}", sha) {
+        return Err(AppError::new("BACKUP_INVALID", "Metadados de blob inválidos no banco."));
+    }
+    if blobs.insert(sha.to_ascii_lowercase(), len as u64).is_some() {
+        return Err(AppError::new("BACKUP_INVALID", "O banco do backup contém blobs duplicados."));
+    }
+    Ok(())
+}
+
 fn validate_backup_id(id: &str) -> AppResult<()> {
     let parsed = Uuid::parse_str(id).map_err(|_| AppError::new("INVALID_REQUEST", "backup_id inválido."))?;
     if parsed.to_string() != id.to_ascii_lowercase() {
@@ -345,11 +364,7 @@ pub fn restore_project_backup(
         .map_err(|_| AppError::new("BACKUP_INVALID", "Não foi possível listar os blobs do banco."))?;
     for row in rows {
         let (sha, len, relative) = row.map_err(|_| AppError::new("BACKUP_INVALID", "Registro de blob inválido."))?;
-        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit())
-            || len < 0 || relative != format!("blobs/{}", sha) {
-            return Err(AppError::new("BACKUP_INVALID", "Metadados de blob inválidos no banco."));
-        }
-        db_blobs.insert(sha.to_ascii_lowercase(), len as u64);
+        insert_restore_db_blob(&mut db_blobs, sha, len, relative)?;
     }
     drop(stmt);
     drop(snapshot);
@@ -483,6 +498,34 @@ pub fn restore_project_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+ 
+
+    #[test]
+    fn restore_db_blob_map_enforces_manifest_blob_cap() {
+        let mut blobs = std::collections::BTreeMap::new();
+        for index in 0..MAX_BACKUP_BLOBS {
+            blobs.insert(format!("{index:064x}"), 1);
+        }
+        let sha = "f".repeat(64);
+        let error = insert_restore_db_blob(&mut blobs, sha.clone(), 1, format!("blobs/{sha}"))
+            .expect_err("database blob list above cap must be rejected");
+        assert_eq!(error.code, "BACKUP_LIMIT_EXCEEDED");
+        assert_eq!(blobs.len(), MAX_BACKUP_BLOBS);
+    }
+
+    #[test]
+    fn restore_db_blob_map_rejects_duplicate_and_invalid_relative_path() {
+        let mut blobs = std::collections::BTreeMap::new();
+        let sha = "a".repeat(64);
+        insert_restore_db_blob(&mut blobs, sha.clone(), 1, format!("blobs/{sha}")).unwrap();
+        let duplicate = insert_restore_db_blob(&mut blobs, sha.clone(), 1, format!("blobs/{sha}"))
+            .expect_err("duplicate SHA must be rejected");
+        assert_eq!(duplicate.code, "BACKUP_INVALID");
+        let invalid = insert_restore_db_blob(&mut blobs, "b".repeat(64), 1, "outside/blob".into())
+            .expect_err("path outside blobs directory must be rejected");
+        assert_eq!(invalid.code, "BACKUP_INVALID");
+    }
 
     #[test]
     fn source_database_budget_counts_database_and_wal() {
