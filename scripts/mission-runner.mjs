@@ -46,7 +46,7 @@ function transition(m, status) {
   if (status === "DONE") m.completed_at = now();
 }
 function usage() {
-  console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  complete <result>\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered <evidence_reference>");
+  console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  resolve-blockers\n  set-task <task>\n  record-file <path>\n  record-commit <sha>\n  record-test <result>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  complete <result>\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered <evidence_reference>");
 }
 function main(args) {
   const [cmd, ...a] = args;
@@ -79,6 +79,22 @@ function main(args) {
       if (m.status==="BLOCKED" && m.blockers.length) throw new Error("resolve blockers before resume");
       if (!m.checkpoint && m.status!=="DISCONNECTED") throw new Error("no checkpoint available");
       transition(m,"IN_PROGRESS"); m.last_action="resumed"; m.next_action=m.checkpoint?.description || "continue assigned task"; writeState(s,"MISSION_RESUMED"); console.log("RESUMED " + m.mission_id); return;
+    }
+    if (cmd === "resolve-blockers") {
+      if (m.status!=="BLOCKED" || !m.blockers.some(b=>b.status==="OPEN")) throw new Error("no open blocker on a BLOCKED mission");
+      for (const blocker of m.blockers) if (blocker.status==="OPEN") { blocker.status="RESOLVED"; blocker.resolved_at=now(); }
+      m.next_action="resume mission"; writeState(s,"BLOCKERS_RESOLVED"); return;
+    }
+    if (cmd === "set-task") {
+      if (!a.length) throw new Error("task description required");
+      m.current_task=a.join(" "); m.last_action="task_updated"; writeState(s,"MISSION_TASK_UPDATED"); return;
+    }
+    if (cmd === "record-file" || cmd === "record-commit" || cmd === "record-test") {
+      if (!a.length) throw new Error("record value required");
+      const field=cmd==="record-file"?"files_changed":cmd==="record-commit"?"commits":"tests";
+      const value=a.join(" ");
+      if (!m[field].includes(value)) m[field].push(value);
+      m.last_action=cmd; writeState(s,cmd.toUpperCase().replaceAll("-","_")); return;
     }
     if (cmd === "block" || cmd === "disconnect") {
       if (!a.length) throw new Error("a reason is required");

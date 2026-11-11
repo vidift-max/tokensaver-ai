@@ -63,3 +63,15 @@ test("records block and refuses resume until blocker is resolved", t => {
  assert.equal(run(c,"block","missing dependency").status,0);
  assert.equal(run(c,"resume").status,2);
 });
+
+test("blockers can be explicitly resolved before resume", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-126","126","Unblock");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start");
+ run(c,"checkpoint","before block"); run(c,"block","dependency unavailable");
+ assert.equal(run(c,"resume").status,2);
+ assert.equal(run(c,"resolve-blockers").status,0);
+ assert.equal(run(c,"resume").status,0);
+ const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-126"];
+ assert.equal(m.blockers[0].status,"RESOLVED"); assert.equal(m.status,"IN_PROGRESS");
+});
