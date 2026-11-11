@@ -549,8 +549,12 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
         server.abort();
 
-        let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
-        assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED);
+        let bad_ws=client.get(format!("http://{address}/team-room/{room}/ws?ticket=invalid"))
+            .header("connection","Upgrade").header("upgrade","websocket")
+            .header("sec-websocket-key","dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version","13").header("sec-websocket-protocol","team-room.v1")
+            .send().await.unwrap();
+        assert_eq!(bad_ws.status(),reqwest::StatusCode::UNAUTHORIZED,"a syntactically valid websocket handshake with an invalid ticket must be rejected by authentication");
 
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);

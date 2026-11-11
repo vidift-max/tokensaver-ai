@@ -624,7 +624,7 @@ mod postgres_tests {
         let expired_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"expire transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
         let expired_lease=tasks::acquire_lease(&pool,&ids[0],expired_task.task_id,60).await.unwrap();
         let expired=create(&pool,&ids[0],expired_task.task_id,request(&ids[1],expired_lease.task.fencing_token)).await.unwrap();
-        sqlx::query("UPDATE task_handoffs SET expires_at=NOW()-INTERVAL '1 second' WHERE handoff_id=$1").bind(expired.handoff_id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE task_handoffs SET created_at=NOW()-INTERVAL '2 minutes',expires_at=NOW()-INTERVAL '1 second' WHERE handoff_id=$1").bind(expired.handoff_id).execute(&pool).await.unwrap();
         assert!(matches!(accept(&pool,&ids[1],expired.handoff_id,60).await,Err(HandoffError::Expired)));
         assert_eq!(get(&pool,&ids[1],expired.handoff_id).await.unwrap().status,"EXPIRED");
         assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(expired.handoff_id).execute(&pool).await.is_err(),"database trigger must reject EXPIRED -> ACCEPTED");
