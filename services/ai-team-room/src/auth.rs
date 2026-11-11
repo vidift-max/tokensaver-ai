@@ -623,6 +623,11 @@ rYCbrUTET0soLkbXAVaf4NZm
             (Utc::now() + Duration::minutes(2)).timestamp() as usize, "new-key", ROTATED_PRIVATE_KEY);
         assert!(verify_oidc_token(&config, &new_token).await.is_ok());
         assert!(matches!(verify_oidc_token(&config, &old_token).await, Err(AuthError::Unauthorized)));
+
+        let mut wrong_metadata = metadata_state.write().await;
+        wrong_metadata["issuer"] = json!("http://127.0.0.1:9/attacker");
+        drop(wrong_metadata);
+        assert!(matches!(resolve_jwks_url(&config, true).await, Err(AuthError::ProviderUnavailable)));
         server.abort();
     }
 
