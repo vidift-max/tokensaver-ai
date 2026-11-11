@@ -165,6 +165,12 @@ test("heartbeat presence timeout requires missed heartbeats, not a long-running 
  s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
  assert.equal(s.missions["M-134"].presence.state,"IDLE");
  assert.equal(s.missions["M-134"].status,"IN_PROGRESS");
+ s.missions["M-134"].presence.last_seen=new Date(Date.now()-1500).toISOString();
+ fs.writeFileSync(path.join(c.dir,"STATE.json"),JSON.stringify(s));
+ assert.equal(run(c,"presence","1000").status,0);
+ s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(s.missions["M-134"].presence.state,"SUSPECTED_DISCONNECTED");
+ assert.equal(s.missions["M-134"].status,"IN_PROGRESS");
  s.missions["M-134"].presence.last_seen=new Date(Date.now()-3000).toISOString();
  fs.writeFileSync(path.join(c.dir,"STATE.json"),JSON.stringify(s));
  assert.equal(run(c,"presence","1000").status,0);
