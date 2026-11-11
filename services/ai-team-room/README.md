@@ -55,3 +55,79 @@ Use a dedicated PostgreSQL instance, never the desktop's SQLite database. Supply
 - OAuth 2.0/OIDC workload token issuance/federation must be configured externally. The service is a resource server/token-exchange consumer; it does not issue upstream credentials.
 - No invitations, admin grant API, messaging, private chat, tasks, presence, WebSocket, WebRTC or audio.
 - Deploy behind TLS termination, private ingress, rate limiting, request-size limits, secret manager and least-privilege DB role. No production host or secret manager has been provisioned.
+
+
+## Mission 110 — OIDC federation configuration
+
+### Selected provider: Keycloak (self-hosted OIDC)
+
+Keycloak is selected as the reference Identity Provider for controlled development and a possible self-hosted production deployment. It provides standard OpenID Connect discovery, JWKS, asymmetric signing-key rotation, client credentials/service accounts, scopes and realm-level issuer separation. It is open-source and can run locally with Docker; production cost is infrastructure and operations rather than a per-seat identity subscription.
+
+Alternatives considered:
+- **Auth0 / Okta:** managed OIDC and mature operations, but workload/client-credentials plans and production pricing depend on vendor tiers; adds a SaaS trust dependency.
+- **Microsoft Entra Workload ID:** strong federation for Azure/Kubernetes/GitHub Actions environments; less neutral when workloads are not hosted in those ecosystems.
+- **SPIFFE/SPIRE:** strong workload identity and mTLS/SVID semantics, but not an OIDC provider by itself; requires an additional federation/token-exchange bridge and operational control plane.
+- **Keycloak:** selected as a portable reference IdP with OIDC discovery/JWKS and service accounts. It does not attest model runtime or hardware.
+
+### Local development
+
+Start the isolated local IdP (HTTP is bound to loopback only):
+
+```bash
+export KEYCLOAK_ADMIN_USERNAME='local-admin'
+export KEYCLOAK_ADMIN_PASSWORD='<generate-a-local-development-password>'
+docker compose -f services/ai-team-room/compose.keycloak.dev.yml up -d
+```
+
+In the Keycloak admin console at `http://localhost:8080`:
+
+1. Create realm `team-room`.
+2. Create confidential client `team-room-workload`; enable Service Accounts; disable Standard Flow and Direct Access Grants unless independently required.
+3. Create/attach an audience mapper that emits exact audience `team-room-api` in access tokens.
+4. Configure the client scope `team_room:connect` so the access token contains that scope.
+5. Generate the client secret in Keycloak and inject it only into the workload's local environment/secret store. Never commit it.
+6. Register the service-account subject in `principals`, create its participant and an ACTIVE `workload_identities` row with exact issuer `http://localhost:8080/realms/team-room` and the service-account user's exact `sub`. Grant only the required room permissions through the controlled database administration path.
+
+Configure the service:
+- `OIDC_ISSUER=http://localhost:8080/realms/team-room`
+- `OIDC_AUDIENCE=team-room-api`
+- `OIDC_ALLOW_HTTP_LOCALHOST=true` (development only)
+- Leave `OIDC_JWKS_URL` unset to use the discovery document's `jwks_uri`.
+- `DATABASE_URL` remains a secret-managed PostgreSQL connection string.
+
+The service resolves `/.well-known/openid-configuration` from the configured issuer, verifies exact metadata issuer, requires an HTTPS JWKS URI (or explicit localhost HTTP for local development), and pins RS256. An optional `OIDC_JWKS_URL` is an additional exact URI pin, not a client-controlled URL.
+
+### JWKS and JWT policy
+
+- OIDC discovery metadata and JWKS are cached in-process for up to 5 minutes.
+- Unknown `kid` triggers one forced metadata/JWKS refresh before rejection.
+- HTTP redirects are disabled; requests time out after 5 seconds; JSON metadata/JWKS bodies are capped at 1 MiB.
+- RSA + RS256 only; `kid`, `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `team_room:connect` are required; `nbf` is validated when present.
+- Upstream token maximum is 16 KiB. No token-supplied issuer, JWKS URI, or public key is trusted.
+- A new key must be published by the trusted IdP under its JWKS. The service refreshes once when a `kid` is not cached.
+
+### Workload registration and permissions
+
+Migration `0004_federation_security_hardening.sql` adds:
+- `workload_identities`: explicit tenant/principal/issuer/subject registration with ACTIVE, DISABLED, REVOKED and EXPIRED states, last-seen timestamp, revocation timestamp and non-sensitive metadata.
+- Existing enabled AI principals are backfilled as ACTIVE workload registrations; disabled principals are backfilled as DISABLED.
+- `permission_catalog`: room, task, private-chat, audio and admin permission vocabulary. ADMIN is privileged and is never granted by display name or workload claim.
+- `security_audit_events`: security event ledger; metadata must never contain bearer tokens, JWTs, client secrets or private key material.
+
+The identity exchange authenticates the registered workload and creates a session without implicitly granting room membership. The subsequent join route checks `room.join`; room reads independently check `room.read`. The registry status is checked both at exchange and local-session authentication, so disabling/revoking a workload invalidates its sessions on the next request.
+
+### Rate limiting and transport
+
+The token exchange has a process-local limit of 10 attempts per peer IP per rolling 60 seconds, in addition to a 20,000-byte request-body limit. This is defense in depth only: configure a distributed ingress/API-gateway limit, TLS, request/connection limits, and trusted client-IP forwarding policy in production. The service does not trust arbitrary `X-Forwarded-For` headers.
+
+### Production requirements — NOT PROVISIONED
+
+- HTTPS issuer and JWKS only; never set `OIDC_ALLOW_HTTP_LOCALHOST` in production.
+- Private ingress with TLS 1.2+ (prefer TLS 1.3), managed certificate renewal, HSTS at the public edge.
+- Secret manager for IdP client credentials and database credentials; least-privilege service DB role.
+- Managed PostgreSQL with encryption at rest/in transit, automated backups, restore drills, network allowlists and migrations.
+- Distributed rate limiting, WAF/request-size controls, structured redacted logs, metrics, alerts and incident response.
+- Keycloak HA, persistent encrypted database, admin MFA, realm export/backup, signing-key rotation and emergency key-revocation runbook.
+- Upstream token revocation is not continuously introspected; local sessions remain capped at 15 minutes. Use short-lived upstream tokens and disable the workload registry entry for immediate local denial.
+
+**Trust statement:** this federation proves that the configured Keycloak issuer signed an assertion for its service-account subject and that the subject maps to a pre-registered workload principal. It does not prove which AI model, binary, process, host or hardware produced the request. `ATTESTATION REAL — PENDENTE`. No Claude, Kimi or GPT-6 connection is claimed.
