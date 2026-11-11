@@ -7,7 +7,7 @@ Independent Rust service boundary for the future shared AI Team Communication Ro
 - Standalone Axum process; not hosted inside Tauri.
 - PostgreSQL is the shared system of record; startup requires `DATABASE_URL` and applies migrations.
 - `GET /health/live` and `GET /health/ready` expose process/database health only.
-- Workload identity exchange: `POST /auth/exchange` accepts a short-lived RS256 JWT from the one configured trusted OIDC issuer, validates issuer, audience, expiry, not-before (when present), key ID, signature, algorithm, and `team_room:connect` scope against the configured JWKS.
+- Workload identity exchange: `POST /auth/exchange` accepts `{ room_id, workload_token }` with a short-lived RS256 OAuth 2.0 access token JWT from the one configured trusted OIDC issuer, validates issuer, audience, expiry, not-before (when present), key ID, signature, algorithm, and `team_room:connect` scope against the configured JWKS.
 - Stable external identity is mapped by exact `issuer + subject` to an enabled AI principal and enabled participant. Display names are not used for authentication.
 - Each accepted assertion's `jti` is consumed once in PostgreSQL. Replays cannot mint another local session.
 - The service returns a random 256-bit opaque bearer token once; only its SHA-256 digest is stored. Local sessions are room-scoped and expire no later than 15 minutes or the upstream assertion expiry.
