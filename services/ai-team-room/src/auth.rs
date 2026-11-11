@@ -222,7 +222,7 @@ async fn verify_oidc_token(config: &OidcConfig, token: &str) -> Result<OidcClaim
     let e = jwk.get("e").and_then(Value::as_str).ok_or(AuthError::Unauthorized)?;
     let modulus = URL_SAFE_NO_PAD.decode(n).map_err(|_| AuthError::Unauthorized)?;
     let exponent = URL_SAFE_NO_PAD.decode(e).map_err(|_| AuthError::Unauthorized)?;
-    if modulus.len() < 256 || exponent != [1, 0, 1] {
+    if modulus.len() < 256 || exponent.as_slice() != &[1, 0, 1] {
         return Err(AuthError::Unauthorized);
     }
     let key = DecodingKey::from_rsa_components(n, e).map_err(|_| AuthError::Unauthorized)?;
