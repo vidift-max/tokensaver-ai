@@ -397,7 +397,9 @@ mod tests {
             return;
         };
         let file = open_roots_lock_file(Path::new(&path)).unwrap();
-        assert!(acquire_roots_lock(file, Duration::from_millis(150)).is_err());
+        let error = acquire_roots_lock(file, Duration::from_millis(150))
+            .expect_err("a second process must not acquire an already-held lock");
+        assert_eq!(error.code, "STORAGE_BUSY");
     }
 
     #[test]
