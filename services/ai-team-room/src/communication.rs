@@ -398,3 +398,83 @@ pub fn router(pool:PgPool)->Router{
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(pool)
 }
+
+#[cfg(test)]
+mod postgres_tests {
+    use super::*;
+    use axum::body::Body;
+    use ai_team_room_service::{admit_authenticated_participant,migrate,connect_pool};
+    use sha2::{Digest,Sha256};
+    use tower::ServiceExt;
+
+    struct Actor { principal:Uuid, participant:Uuid, session:Uuid, token:String }
+
+    async fn actor(pool:&PgPool,tenant:Uuid,room:Uuid,name:&str,permissions:&[&str])->Actor{
+        let principal=Uuid::new_v4();let participant=Uuid::new_v4();let session=Uuid::new_v4();let execution=Uuid::new_v4();
+        let issuer="https://communication-test.example";let subject=format!("{name}-{}",Uuid::new_v4());let token=format!("communication-session-{name}-{}",Uuid::new_v4());
+        let digest=Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI',$3,$4)").bind(principal).bind(tenant).bind(issuer).bind(&subject).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,$4)").bind(participant).bind(tenant).bind(principal).bind(name).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,$4,$5,'ACTIVE')").bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(issuer).bind(&subject).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES($1,$2,$3,$4,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE',$5)").bind(session).bind(tenant).bind(room).bind(principal).bind(digest).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES($1,$2,$3,$4,$5,$6,$7,NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')").bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session).bind(format!("{issuer}|{subject}")).execute(pool).await.unwrap();
+        for permission in permissions{
+            sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)").bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(permission).execute(pool).await.unwrap();
+        }
+        admit_authenticated_participant(pool,room,participant,principal,session).await.unwrap();
+        Actor{principal,participant,session,token}
+    }
+
+    async fn request(app:Router,method:&str,path:String,token:&str,body:Option<serde_json::Value>)->axum::response::Response{
+        let mut builder=axum::http::Request::builder().method(method).uri(path).header("authorization",format!("Bearer {token}"));
+        if body.is_some(){builder=builder.header("content-type","application/json");}
+        app.oneshot(builder.body(body.map(|v|Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn postgres_general_private_acl_and_message_idempotency(){
+        let database=std::env::var("DATABASE_URL").expect("PostgreSQL integration database required");
+        let pool=connect_pool(&database).await.unwrap();migrate(&pool).await.unwrap();
+        let tenant=Uuid::new_v4();let room=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'communication-integration')").bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,'communication-room')").bind(room).bind(tenant).execute(&pool).await.unwrap();
+        let grants=["room.join","room.read","room.write","private_chat","presence.update","task.read","task.write","decision.propose","attachment.upload","attachment.read"];
+        let a=actor(&pool,tenant,room,"Agent A",&grants).await;
+        let b=actor(&pool,tenant,room,"Agent B",&grants).await;
+        let c=actor(&pool,tenant,room,"Agent C",&grants).await;
+        let app=router(pool.clone());
+        let client_id=Uuid::new_v4();
+        let message=json!({"client_message_id":client_id,"body":"general hello","parent_message_id":null});
+        let sent=request(app.clone(),"POST",format!("/team-room/{room}/messages"),&a.token,Some(message.clone())).await;
+        assert_eq!(sent.status(),StatusCode::CREATED);
+        let first:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(sent.into_body(),20000).await.unwrap()).unwrap();
+        let duplicate=request(app.clone(),"POST",format!("/team-room/{room}/messages"),&a.token,Some(message)).await;
+        assert_eq!(duplicate.status(),StatusCode::CREATED);
+        let second:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(duplicate.into_body(),20000).await.unwrap()).unwrap();
+        assert_eq!(first["message_id"],second["message_id"]);
+        let event_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM outbox_events WHERE event_type='MESSAGE_CREATED' AND aggregate_id=$1").bind(Uuid::parse_str(first["channel_id"].as_str().unwrap()).unwrap()).fetch_one(&pool).await.unwrap();
+        assert_eq!(event_count,1,"idempotent retry must not duplicate outbox events");
+
+        let private_body=json!({"client_message_id":Uuid::new_v4(),"body":"A-to-B confidential","parent_message_id":null});
+        let sent_private=request(app.clone(),"POST",format!("/team-room/{room}/private/{}/messages",b.principal),&a.token,Some(private_body)).await;
+        assert_eq!(sent_private.status(),StatusCode::CREATED);
+        let b_history=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages",a.principal),&b.token,None).await;
+        assert_eq!(b_history.status(),StatusCode::OK);
+        let b_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(b_history.into_body(),20000).await.unwrap()).unwrap();
+        assert!(b_json["items"].as_array().unwrap().iter().any(|m|m["body"]=="A-to-B confidential"));
+        let c_history=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages",b.principal),&c.token,None).await;
+        assert_eq!(c_history.status(),StatusCode::OK);
+        let c_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(c_history.into_body(),20000).await.unwrap()).unwrap();
+        assert!(!c_json.to_string().contains("A-to-B confidential"),"third participant must not read A↔B conversation");
+
+        let no_session=request(app.clone(),"GET",format!("/team-room/{room}/messages"),"invalid-session",None).await;
+        assert_eq!(no_session.status(),StatusCode::UNAUTHORIZED);
+        let ticket=request(app.clone(),"POST",format!("/team-room/{room}/ws-ticket"),&a.token,Some(json!({}))).await;
+        assert_eq!(ticket.status(),StatusCode::OK);
+        let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws"),&a.token,None).await;
+        assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED);
+
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+        let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+    }
+}
