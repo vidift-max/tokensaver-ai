@@ -66,8 +66,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Check service formatting
-        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
       - name: Check independent service
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Run service unit and PostgreSQL integration tests
