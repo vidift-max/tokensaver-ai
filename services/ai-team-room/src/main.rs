@@ -24,7 +24,7 @@ struct AppState {
 struct HealthResponse { service: &'static str, status: &'static str }
 
 #[derive(Deserialize)]
-struct ExchangeRequest { room_id: Uuid, id_token: String }
+struct ExchangeRequest { room_id: Uuid, workload_token: String }
 
 async fn live() -> (StatusCode, Json<HealthResponse>) {
     (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "live" }))
@@ -52,9 +52,9 @@ async fn exchange(
     State(state): State<AppState>,
     Json(request): Json<ExchangeRequest>,
 ) -> Result<Json<ai_team_room_service::auth::ExchangeResponse>, StatusCode> {
-    if request.id_token.len() > 16_384 { return Err(StatusCode::PAYLOAD_TOO_LARGE); }
+    if request.workload_token.len() > 16_384 { return Err(StatusCode::PAYLOAD_TOO_LARGE); }
     let config = state.oidc.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    exchange_workload_token(&state.pool, config, request.room_id, &request.id_token)
+    exchange_workload_token(&state.pool, config, request.room_id, &request.workload_token)
         .await.map(Json).map_err(auth_status)
 }
 
