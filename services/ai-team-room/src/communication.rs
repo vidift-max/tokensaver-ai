@@ -94,6 +94,9 @@ async fn private_channel(pool: &PgPool, who: &AuthenticatedIdentity, room_id: Uu
         "SELECT EXISTS(SELECT 1 FROM room_memberships WHERE room_id=$1 AND principal_id=$2 AND status='ACTIVE')"
     ).bind(room_id).bind(other).fetch_one(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !recipient_active { return Err(StatusCode::NOT_FOUND); }
+    let both_authorized:bool=sqlx::query_scalar("SELECT COUNT(DISTINCT principal_id)=2 FROM principal_permissions WHERE tenant_id=$1 AND principal_id=ANY($2::uuid[]) AND permission='private_chat' AND revoked_at IS NULL AND (room_id IS NULL OR room_id=$3)")
+        .bind(who.tenant_id).bind(vec![who.principal_id,other]).bind(room_id).fetch_one(pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !both_authorized{return Err(StatusCode::FORBIDDEN);}
     let (a,b) = if who.principal_id < other {(who.principal_id,other)} else {(other,who.principal_id)};
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let lock_key = format!("{room_id}:{a}:{b}");
@@ -297,7 +300,7 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
                     let channel_type:Option<String>=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1")
                         .bind(channel).fetch_optional(&pool).await.unwrap_or(None);
                     if channel_type.as_deref()==Some("PRIVATE"){
-                        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members WHERE channel_id=$1 AND principal_id=$2)")
+                        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members cm JOIN team_room_channels ch ON ch.channel_id=cm.channel_id JOIN principal_permissions pp ON pp.tenant_id=ch.tenant_id AND pp.principal_id=cm.principal_id AND pp.permission='private_chat' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=ch.room_id) WHERE cm.channel_id=$1 AND cm.principal_id=$2)")
                             .bind(channel).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                         if !allowed{continue;}
                     }
@@ -467,7 +470,8 @@ mod postgres_tests {
         let grants=["room.join","room.read","room.write","private_chat","presence.update","task.read","task.write","decision.propose","attachment.upload","attachment.read"];
         let a=actor(&pool,tenant,room,"Agent A",&grants).await;
         let b=actor(&pool,tenant,room,"Agent B",&grants).await;
-        let c=actor(&pool,tenant,room,"Agent C",&grants).await;
+        let c_grants=["room.join","room.read","room.write","presence.update","task.read","task.write","decision.propose","attachment.upload","attachment.read"];
+        let c=actor(&pool,tenant,room,"Agent C",&c_grants).await;
         let app=router(pool.clone());
         let client_id=Uuid::new_v4();
         let message=json!({"client_message_id":client_id,"body":"general hello","parent_message_id":null});
@@ -489,9 +493,7 @@ mod postgres_tests {
         let b_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(b_history.into_body(),20000).await.unwrap()).unwrap();
         assert!(b_json["items"].as_array().unwrap().iter().any(|m|m["body"]=="A-to-B confidential"));
         let c_history=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages",b.principal),&c.token,None).await;
-        assert_eq!(c_history.status(),StatusCode::OK);
-        let c_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(c_history.into_body(),20000).await.unwrap()).unwrap();
-        assert!(!c_json.to_string().contains("A-to-B confidential"),"third participant must not read A↔B conversation");
+        assert_eq!(c_history.status(),StatusCode::FORBIDDEN,"third participant without private_chat grant cannot read A↔B conversation");
 
         let decision=request(app.clone(),"POST",format!("/team-room/{room}/decisions"),&a.token,Some(json!({"title":"Use shared outbox","decision":"All room events must be committed with their aggregate mutation.","participants":[],"mission_id":null,"reference_message_id":null}))).await;
         assert_eq!(decision.status(),StatusCode::CREATED,"empty participant lists are valid");
