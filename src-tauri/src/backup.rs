@@ -421,7 +421,10 @@ pub fn restore_project_backup(
     }
 
     let projects_root = storage.join("projects");
-    fs::create_dir_all(&projects_root)
+    // Never use create_dir_all here: if "projects" is a symlink, it can
+    // create directories at the symlink destination before we reject it.
+    // Reuse the no-symlink root claim used by normal project initialization.
+    crate::project_storage::claim_project_root(&projects_root)
         .map_err(|_| AppError::new("RESTORE_ERROR", "Não foi possível preparar a pasta de projetos."))?;
     let target = projects_root.join(&target_project_id);
     let projects_meta = fs::symlink_metadata(&projects_root)
