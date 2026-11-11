@@ -37,6 +37,9 @@ async fn rate_limit_exchange(request: Request, next: Next) -> Response {
     let limits = EXCHANGE_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut limits = limits.lock().expect("rate limiter mutex poisoned");
     let now = Instant::now();
+    if limits.len() > 4096 {
+        limits.retain(|_, attempts| attempts.back().is_some_and(|last| now.duration_since(*last) < Duration::from_secs(60)));
+    }
     let attempts = limits.entry(key).or_default();
     while attempts.front().is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60)) {
         attempts.pop_front();
