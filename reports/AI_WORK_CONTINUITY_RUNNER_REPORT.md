@@ -831,3 +831,16 @@ Lease acquire, renew, checkpoint, release and completion now re-check the active
 - Failure: deleting the isolated test tenant was blocked because `task_handoffs.tenant_id` did not yet have an ON DELETE CASCADE relationship.
 - Added tenant-scoped cascade to durable handoff records in migration 0005, commit `02991c6dded0f8da48e22e0e8b516750750e02bc`. This is a schema lifecycle correction; it does not weaken ownership or token checks.
 - The test is still classified `PENDENTE` until a fresh PostgreSQL CI run completes successfully.
+
+
+### Successful PostgreSQL lease/fencing E2E evidence
+
+- CI run `43052264884` (report HEAD `f218930a25d9c212addfe2831818073a1b8718e7`) completed the `ai-team-room-service` job with **SUCCESS**.
+- Service check and PostgreSQL integration test command both passed.
+- Test totals from the log: service library **6/6**, service binary **6/6**, PostgreSQL admission integration **3/3**, PostgreSQL auth integration **4/4**, doc tests **0** — **19 passed, 0 failed**.
+- The new test `ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection` passed. It exercised ten simultaneous contenders, exactly one lease winner, active lease renewal, expiry/recovery, reassignment with fencing token 1 → 2, preserved checkpoint, stale token rejection, future token rejection, database trigger rejection of token rollback, one durable resumed handoff record, completion and post-completion write rejection.
+- The handoff tenant cascade correction was included in this successful run; fixture cleanup passed.
+- Keycloak/OIDC live federation job: **SUCCESS**.
+- Windows BAT smoke and Windows `cargo check`: **SUCCESS**.
+- At the time of this evidence update, Windows `cargo test` and Linux foundation `cargo check` were still running; Linux/Windows npm mission tests and build were not yet observed. Overall workflow must not be marked SUCCESS until all four jobs complete.
+- This supersedes the earlier `PENDENTE` classification for the Team Room PostgreSQL lease E2E test only; whole-workflow CI remains `PENDENTE`.
