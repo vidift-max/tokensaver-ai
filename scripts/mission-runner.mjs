@@ -66,6 +66,10 @@ function transition(m, status) {
   m.status = status; m.updated_at = now();
   if (status === "DONE") m.completed_at = now();
 }
+function createCheckpoint(m, description) {
+  const cp={ checkpoint_id:crypto.randomUUID(), at:now(), mission_id:m.mission_id, task_id:m.current_task, responsible_ai:m.responsible_ai, participant_id:m.participant_id, session_id:m.presence.session_id, status:m.status, progress:m.progress, description, task:m.current_task, files_changed:[...m.files_changed], commits:[...m.commits], tests:[...m.tests], last_result:m.last_result, next_action:m.next_action, blockers:JSON.parse(JSON.stringify(m.blockers)) };
+  m.checkpoint=cp; m.checkpoint_history.push(cp); return cp;
+}
 function usage() {
   console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  list\n  register-next <id> <number> <title>\n  switch <mission_id>\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  resolve-blockers\n  set-task <task>\n  record-file <path>\n  record-commit <sha>\n  record-test <result>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  submit-review <result>\n  approve\n  reject <reason>\n  cancel <reason>\n  complete <result> (direct close; use submit-review for review gate)\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered <evidence_reference>");
 }
@@ -119,8 +123,7 @@ function main(args) {
     }
     if (cmd === "checkpoint") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: checkpoint <description>; mission must be IN_PROGRESS");
-      const cp={ checkpoint_id:crypto.randomUUID(), at:now(), mission_id:m.mission_id, task_id:m.current_task, responsible_ai:m.responsible_ai, participant_id:m.participant_id, session_id:m.presence.session_id, status:m.status, progress:m.progress, description:a.join(" "), task:m.current_task, files_changed:[...m.files_changed], commits:[...m.commits], tests:[...m.tests], last_result:m.last_result, next_action:m.next_action, blockers:JSON.parse(JSON.stringify(m.blockers)) };
-      m.checkpoint=cp; m.checkpoint_history.push(cp); m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest checkpoint"; writeState(s,"CHECKPOINT_CREATED",{checkpoint_id:cp.checkpoint_id}); return;
+      const cp=createCheckpoint(m,a.join(" ")); m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest checkpoint"; writeState(s,"CHECKPOINT_CREATED",{checkpoint_id:cp.checkpoint_id}); return;
     }
     if (cmd === "heartbeat") {
       if (!a[0] || !a[0].trim()) throw new Error("usage: heartbeat <session_id>");
@@ -195,7 +198,10 @@ function main(args) {
       if (!a.length) throw new Error("a reason is required");
       if (cmd === "block") m.blockers.push({kind:"BLOCKER",reason:a.join(" "),at:now(),status:"OPEN"});
       else { m.blockers.push({kind:"DISCONNECT",reason:a.join(" "),at:now(),status:"RECORDED",resumed_at:null}); m.presence.state="DISCONNECTED"; m.presence.disconnected_at=now(); }
-      transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED"); m.next_action=cmd==="block"?"resolve blocker and resume":"resume from saved checkpoint"; writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
+      transition(m,cmd==="block"?"BLOCKED":"DISCONNECTED");
+      if (cmd==="disconnect") { createCheckpoint(m,"automatic disconnect checkpoint"); m.next_action="recover checkpoint and enqueue reassignment"; }
+      else m.next_action="resolve blocker and resume";
+      writeState(s,cmd==="block"?"MISSION_BLOCKED":"MISSION_DISCONNECTED"); return;
     }
     if (cmd === "handoff-create") {
       if (!["IN_PROGRESS","DISCONNECTED","RECOVERY_REQUIRED","WAITING_REVIEW"].includes(m.status)) throw new Error("handoff requires an active, disconnected, recovery-required or review-pending mission");
@@ -225,7 +231,7 @@ function main(args) {
     }
     if (cmd === "approve") {
       if (m.status!=="WAITING_REVIEW") throw new Error("mission must be WAITING_REVIEW");
-      m.last_action="review_approved"; m.next_action="register next mission"; transition(m,"DONE"); writeState(s,"MISSION_REVIEW_APPROVED"); return;
+      m.last_action="review_approved"; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_REVIEW_APPROVED"); return;
     }
     if (cmd === "reject" || cmd === "cancel") {
       if (!a.length) throw new Error("reason required");
@@ -235,7 +241,7 @@ function main(args) {
     }
     if (cmd === "complete") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: complete <result>; mission must be IN_PROGRESS");
-      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); writeState(s,"MISSION_COMPLETED"); return;
+      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); createCheckpoint(m,"final completion checkpoint"); writeState(s,"MISSION_COMPLETED"); return;
     }
     if (cmd === "prompt-ready") {
       if (m.status !== "DONE") throw new Error("current mission must be DONE before preparing its successor prompt");
