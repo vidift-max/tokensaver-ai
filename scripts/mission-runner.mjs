@@ -46,7 +46,7 @@ function transition(m, status) {
   if (status === "DONE") m.completed_at = now();
 }
 function usage() {
-  console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  list\n  register-next <id> <number> <title>\n  switch <mission_id>\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  resolve-blockers\n  set-task <task>\n  record-file <path>\n  record-commit <sha>\n  record-test <result>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  complete <result>\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered <evidence_reference>");
+  console.log("Mission Runner (local state orchestration; no AI dispatch)\nCommands:\n  init <id> <number> <title>\n  status\n  list\n  register-next <id> <number> <title>\n  switch <mission_id>\n  assign <responsible_ai> <participant_id>\n  acknowledge\n  start\n  checkpoint <description>\n  resume\n  block <reason>\n  resolve-blockers\n  set-task <task>\n  record-file <path>\n  record-commit <sha>\n  record-test <result>\n  disconnect <reason>\n  handoff-create <target_ai>\n  handoff-accept <participant_id>\n  handoff-complete\n  submit-review <result>\n  approve\n  reject <reason>\n  cancel <reason>\n  complete <result> (direct close; use submit-review for review gate)\n  prompt-ready <next_mission_id> <prompt text>\n  prompt-delivered <evidence_reference>");
 }
 function main(args) {
   const [cmd, ...a] = args;
@@ -73,7 +73,7 @@ function main(args) {
       if (a.length<3 || !safeId(a[0]) || !/^\d+$/.test(a[1])) throw new Error("usage: register-next <safe-id> <number> <title>");
       if (s.missions[a[0]]) throw new Error("mission already exists; refusing duplicate registration");
       const stamp=now(), id=a[0];
-      s.missions[id]={mission_id:id,mission_number:Number(a[1]),title:a.slice(2).join(" "),responsible_ai:null,participant_id:null,current_task:null,subtasks:[],status:"CREATED",progress:0,last_action:"registered",last_result:null,files_changed:[],commits:[],tests:[],evidence:[],blockers:[],next_action:"assign responsible AI",checkpoint:null,started_at:stamp,updated_at:stamp,completed_at:null,handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null},prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null}};
+      s.missions[id]={mission_id:id,mission_number:Number(a[1]),title:a.slice(2).join(" "),responsible_ai:null,participant_id:null,current_task:null,subtasks:[],status:"CREATED",progress:0,last_action:"registered",last_result:null,files_changed:[],commits:[],tests:[],evidence:[],blockers:[],next_action:"assign responsible AI",checkpoint:null,started_at:null,updated_at:stamp,completed_at:null,handoff:{status:"NONE",target_ai:null,participant_id:null,created_at:null,accepted_at:null,completed_at:null},prompt:{status:"NONE",next_mission_id:null,path:null,delivery_evidence:null}};
       s.current_mission_id=id; writeState(s,"NEXT_MISSION_REGISTERED",{previous_mission_id:previous.mission_id,next_mission_id:id}); return;
     }
     if (cmd === "switch") {
@@ -132,9 +132,23 @@ function main(args) {
       if (m.handoff.status!=="HANDOFF_ACCEPTED") throw new Error("handoff must be accepted first");
       m.handoff.status="HANDOFF_COMPLETED"; m.handoff.completed_at=now(); writeState(s,"HANDOFF_COMPLETED"); return;
     }
+    if (cmd === "submit-review") {
+      if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: submit-review <result>; mission must be IN_PROGRESS");
+      m.last_result=a.join(" "); m.last_action="submitted_for_review"; m.progress=100; m.next_action="review and approve or reject"; transition(m,"WAITING_REVIEW"); writeState(s,"MISSION_SUBMITTED_FOR_REVIEW"); return;
+    }
+    if (cmd === "approve") {
+      if (m.status!=="WAITING_REVIEW") throw new Error("mission must be WAITING_REVIEW");
+      m.last_action="review_approved"; m.next_action="register next mission"; transition(m,"DONE"); writeState(s,"MISSION_REVIEW_APPROVED"); return;
+    }
+    if (cmd === "reject" || cmd === "cancel") {
+      if (!a.length) throw new Error("reason required");
+      if (cmd==="reject" && m.status!=="WAITING_REVIEW") throw new Error("mission must be WAITING_REVIEW to reject");
+      if (cmd==="cancel" && ["DONE","CANCELLED","REJECTED"].includes(m.status)) throw new Error("terminal mission cannot be cancelled");
+      m.last_result=a.join(" "); m.last_action=cmd; m.next_action=cmd==="reject"?"revise and resubmit":"none"; transition(m,cmd==="reject"?"REJECTED":"CANCELLED"); writeState(s,cmd==="reject"?"MISSION_REJECTED":"MISSION_CANCELLED"); return;
+    }
     if (cmd === "complete") {
       if (m.status!=="IN_PROGRESS" || !a.length) throw new Error("usage: complete <result>; mission must be IN_PROGRESS");
-      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="review result and explicitly register next mission"; transition(m,"DONE"); writeState(s,"MISSION_COMPLETED"); return;
+      m.last_result=a.join(" "); m.last_action="completed"; m.progress=100; m.next_action="register next mission"; transition(m,"DONE"); writeState(s,"MISSION_COMPLETED"); return;
     }
     if (cmd === "prompt-ready") {
       if (a.length<2 || !safeId(a[0])) throw new Error("usage: prompt-ready <next_mission_id> <prompt text>");
