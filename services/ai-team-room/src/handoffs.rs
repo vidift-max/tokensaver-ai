@@ -568,6 +568,10 @@ mod postgres_tests {
         assert_eq!(handoff.to_session_id,Some(ids[1].session_id));
         assert_eq!(handoff.from_fencing_token,1);
         assert_eq!(handoff.to_fencing_token,None);
+        tasks::renew_lease(&pool,&ids[0],task.task_id,1,60).await.unwrap();
+        tasks::write_checkpoint(&pool,&ids[0],task.task_id,1,serde_json::json!({"progress":60})).await.unwrap();
+        let refreshed_offer=get(&pool,&ids[0],handoff.handoff_id).await.unwrap();
+        assert_eq!(refreshed_offer.checkpoint_reference["checkpoint_version"],1,"source checkpoints while pending must refresh the persisted handoff reference");
         assert!(matches!(create(&pool,&ids[2],task.task_id,request(&ids[1],1)).await,Err(HandoffError::Fenced)),"a non-owner cannot create a handoff for another executor's task");
         let mut spoofed=ids[1].clone();
         spoofed.session_id=Uuid::new_v4();
@@ -598,6 +602,7 @@ mod postgres_tests {
         assert_eq!(completed.status,"COMPLETED");
         assert_eq!(get(&pool,&ids[1],handoff_id).await.unwrap().status,"COMPLETED");
         assert!(matches!(accept(&pool,&ids[1],handoff_id,60).await,Err(HandoffError::Conflict)),"COMPLETED handoff must never reopen");
+        assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(handoff_id).execute(&pool).await.is_err(),"database trigger must reject COMPLETED -> ACCEPTED");
 
         // PENDING -> REJECTED; terminal transitions cannot be reopened.
         let rejected_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"reject transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
@@ -605,6 +610,7 @@ mod postgres_tests {
         let rejected=create(&pool,&ids[0],rejected_task.task_id,request(&ids[1],rejected_lease.task.fencing_token)).await.unwrap();
         assert_eq!(reject(&pool,&ids[1],rejected.handoff_id,"not available".into()).await.unwrap().status,"REJECTED");
         assert!(matches!(accept(&pool,&ids[1],rejected.handoff_id,60).await,Err(HandoffError::Conflict)));
+        assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(rejected.handoff_id).execute(&pool).await.is_err(),"database trigger must reject REJECTED -> ACCEPTED");
 
         // PENDING -> CANCELLED by source; recipient cannot subsequently accept.
         let cancelled_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"cancel transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
@@ -612,6 +618,7 @@ mod postgres_tests {
         let cancelled=create(&pool,&ids[0],cancelled_task.task_id,request(&ids[1],cancelled_lease.task.fencing_token)).await.unwrap();
         assert_eq!(cancel(&pool,&ids[0],cancelled.handoff_id,"owner cancelled".into()).await.unwrap().status,"CANCELLED");
         assert!(matches!(accept(&pool,&ids[1],cancelled.handoff_id,60).await,Err(HandoffError::Conflict)));
+        assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(cancelled.handoff_id).execute(&pool).await.is_err(),"database trigger must reject CANCELLED -> ACCEPTED");
 
         // PENDING -> EXPIRED uses the PostgreSQL timestamp and persists the state.
         let expired_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"expire transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
@@ -620,6 +627,7 @@ mod postgres_tests {
         sqlx::query("UPDATE task_handoffs SET expires_at=NOW()-INTERVAL '1 second' WHERE handoff_id=$1").bind(expired.handoff_id).execute(&pool).await.unwrap();
         assert!(matches!(accept(&pool,&ids[1],expired.handoff_id,60).await,Err(HandoffError::Expired)));
         assert_eq!(get(&pool,&ids[1],expired.handoff_id).await.unwrap().status,"EXPIRED");
+        assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(expired.handoff_id).execute(&pool).await.is_err(),"database trigger must reject EXPIRED -> ACCEPTED");
 
         // ACCEPTED -> CANCELLED releases the candidate lease without reviving A.
         let accepted_cancel_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"accepted cancel transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
@@ -633,6 +641,7 @@ mod postgres_tests {
         let released_status:String=sqlx::query_scalar("SELECT status FROM team_tasks WHERE task_id=$1").bind(accepted_cancel_task.task_id).fetch_one(&pool).await.unwrap();
         assert_eq!(released_status,"UNOWNED");
         assert!(matches!(accept(&pool,&ids[1],accepted_cancel.handoff_id,60).await,Err(HandoffError::Conflict)));
+        assert!(sqlx::query("UPDATE task_handoffs SET status='ACCEPTED' WHERE handoff_id=$1").bind(accepted_cancel.handoff_id).execute(&pool).await.is_err(),"database trigger must reject CANCELLED -> ACCEPTED");
         assert_eq!(accepted_cancel_grant.task.fencing_token,2);
 
         // Recovery workers race to persist the same candidate-bound offer.

@@ -229,6 +229,14 @@ pub async fn write_checkpoint(
       "UPDATE team_tasks SET checkpoint=$3,checkpoint_version=checkpoint_version+1,updated_at=NOW() WHERE task_id=$1 AND fencing_token=$2 RETURNING task_id,mission_id,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_expires_at,checkpoint,checkpoint_version"
     ).bind(task_id).bind(fencing_token).bind(checkpoint).fetch_one(&mut *tx).await?;
     record_event(&mut tx,&updated,identity,"CHECKPOINTED",serde_json::json!({"checkpoint_version":updated.checkpoint_version})).await?;
+    let pending_handoffs=sqlx::query_scalar::<_,Uuid>("UPDATE task_handoffs SET checkpoint_reference=jsonb_build_object('task_id',$1,'checkpoint_version',$2),context=jsonb_build_object('task_id',$1,'checkpoint_version',$2) WHERE task_id=$1 AND status='PENDING' AND expires_at>NOW() RETURNING handoff_id")
+        .bind(task_id).bind(updated.checkpoint_version).fetch_all(&mut *tx).await?;
+    for handoff_id in pending_handoffs {
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'task_handoff',$3,'HANDOFF_CHECKPOINT_UPDATED',$4)")
+            .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(handoff_id)
+            .bind(serde_json::json!({"task_id":task_id,"checkpoint_version":updated.checkpoint_version}))
+            .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(updated)
 }

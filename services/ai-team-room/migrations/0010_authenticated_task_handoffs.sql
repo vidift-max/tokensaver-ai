@@ -52,3 +52,23 @@ CREATE UNIQUE INDEX task_handoff_one_pending_idx
   ON task_handoffs(task_id) WHERE status = 'PENDING';
 CREATE INDEX task_handoff_target_status_idx
   ON task_handoffs(tenant_id, room_id, to_principal_id, status, expires_at);
+
+CREATE OR REPLACE FUNCTION enforce_task_handoff_state_transition() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.status = OLD.status THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.status = 'PENDING' AND NEW.status IN ('ACCEPTED','REJECTED','EXPIRED','CANCELLED') THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.status = 'ACCEPTED' AND NEW.status IN ('COMPLETED','CANCELLED') THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'invalid task handoff state transition: % -> %', OLD.status, NEW.status
+    USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER task_handoff_state_transition_guard
+BEFORE UPDATE OF status ON task_handoffs
+FOR EACH ROW EXECUTE FUNCTION enforce_task_handoff_state_transition();
