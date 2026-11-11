@@ -494,6 +494,36 @@ a93ROy+abL98Yf/fSAlNg3Lw
 -----END PRIVATE KEY-----"#;
 
     const N: &str = "yLl5hgomp60yGxBsQbRb0G9j8YR6YolqOVDww6jCiCGurQ6l_tNmvWhzkYMFkR0fSfROWaoyerLuGlE6RLcDarGSjk0W07kH6dcWtQy5J8BWY9mOzJjcDyMPcSter1ESLucnGbVOFs4Qj-Jq-WqJDsnDkzUSHeZoCiNUggLpx_5DFVc2FLLpqLKWkKr2abcfZLFwlu3wbpEOS3whcBOppZd_K-HAVrYYmwiDDVQVA6E4ilq78pcOrKVdCanLQeRgybykZsalRp9HnN6QsZVwo3k0PHCHopuGoGyFu8ZbBvXz6csm50Koj6ePkT9BZaWm_c94jIxkcikDK5r0hz6P3w";
+    // Independently generated synthetic RSA-2048 keypair used only to prove signing-key rollover.
+    const ROTATED_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDW5yk3js+uRa/l
+vtXPK4ehpPUEbxUTMlF0eJtAGwpNL1zSP/XexoCnxnHLbUPudqtgsSIOAAP9lWkd
+3TN9F4cKHMR/jQD943qFHIRimgN14qySx3qaoA4lUiGhxC4kkT8IDtq4iF7RG8b0
+MH730EOF7ciEHAOqnkGM6xIOy8642sOnOIkXsW2r40Zx1dG+Xoge0oPunNj2SQhh
+KKgA7L+f7N9uNEQ4fL0S8ftU8a6LqbCFJFa2YkKnFLS1Lz/HWxgT6OjFFXnAgeaK
+n3rmVOdH+dA3T03T52o8MPuaV6GHFAwBoAldicYa91//oc4ty0fbVOXH2cZZw+Ec
+Bl3xxYM9AgMBAAECggEABnYj2J5MI0bIH6XJwvVhmhweG9iFLzMTnOdlb5uAh0qV
+xWKT73NTeffvAvlRkhFyXLFmvzoD5LOB2hqFCk1TS5wK0nT4YyncTLVLS7Wqxfgf
+TTh/OLf4ROn/xd/irUnKteDQdbzv8OSfakctAiF6bkP0g/hdqdshSG3m+JfrKsam
+/YCsMsYQAJjX/RWEztEpmja3yZNmb3R5AZvea9uKQpBEF192vctZFEifB9HswKng
+dsdMONJBGbL9AChM4ofnBis1XqAIDBRYQ3ZTrPM8ON7fQo9e8BZwed8PyWI5vVUS
+LrAkW1ByKnxT4y38Rw9kRaTORfCulRCs0uJLK8gdVwKBgQD13OyUe5r76Q81/kYZ
+4OwX7aMEPO+gsT9roIvZ9Es2+LTBsM98DdHqaUiUTDVUx2uzCTrI1wY0sO9cMyeq
+3ePPCq+AT2hDdHaTuhjzhfwVGm0pUIci/NHKvrXuO1fe767Lcg4mUAZR2HFSWY9i
+d+N2dkoOA20R/AbgkZRO8HS9DwKBgQDfw3R2mRDSdoXHUWR4W3g64KkqTQg5hdAQ
+f0fmkvgsNE4NSZDwRvo32bRnj7l7qcmRkYJmjq9GrQ50WyVDFi9N9q5T47qBkbGB
+vUlBYWXa7vuEvglBc3RjflH6aRDknzcQpywoG+UWuqHOksvAeZo2/A9V8vDC8xvK
+W6kSLaUS8wKBgQDdXZfJLO1jSPkAFTwKyt/nv3eaNj9PAKfogLnKeNFL4mvlRQvb
+Vxoco8TMeT0/YvpOTc4WzLtyr6gj7I8XogceADH6JgTrTy4AXnter9FDMvL8UtwJ
+nXZKxKFLqTS5rjZESSICTuURxf5qNecKsoUjwOd2bJFEsxWCFrFgzdFd8wKBgQDT
+NKbiJrolHXBKYT4HCLdkQ5gI8GrZ+L8aQzl3nrOW7cvaaNzgnu4g92F7+sIlwm4a
+85B1AyrX+BLTqxBx0SfXXAbR8fqhwAYfIq5Zgvhj/Pz1H3aXC8YI/zubs74ZPVr5
+YgGg3iuPF5wQ4qhlRaJVUfebtdKhAFzz1S6xlNniFwKBgCOi1mpNaPbhrPwgH70F
+Ep74fgA62azYP5lT+7XDkMwHpMe12mtm1BCZinQ6ATNPcS4wZ0aXrvksUUM6EXr5
+FfOHKxx44ulLvAKdw5TssEeUcC/9lzP77Qb+vnjeH7ljijCyKhBYR2wL8rusPOaN
+rYCbrUTET0soLkbXAVaf4NZm
+-----END PRIVATE KEY-----"#;
+    const ROTATED_N: &str = "1ucpN47PrkWv5b7VzyuHoaT1BG8VEzJRdHibQBsKTS9c0j_13saAp8Zxy21D7narYLEiDgAD_ZVpHd0zfReHChzEf40A_eN6hRyEYpoDdeKsksd6mqAOJVIhocQuJJE_CA7auIhe0RvG9DB-99BDhe3IhBwDqp5BjOsSDsvOuNrDpziJF7Ftq-NGcdXRvl6IHtKD7pzY9kkIYSioAOy_n-zfbjREOHy9EvH7VPGui6mwhSRWtmJCpxS0tS8_x1sYE-joxRV5wIHmip965lTnR_nQN09N0-dqPDD7mlehhxQMAaAJXYnGGvdf_6HOLctH21Tlx9nGWcPhHAZd8cWDPQ";
 
     async fn test_server() -> (String, tokio::task::JoinHandle<()>) {
         let jwks = json!({"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
@@ -508,6 +538,10 @@ a93ROy+abL98Yf/fSAlNg3Lw
     }
 
     fn signed_token(issuer: &str, audience: &str, exp: usize, kid: &str) -> String {
+        signed_token_with_key(issuer, audience, exp, kid, PRIVATE_KEY)
+    }
+
+    fn signed_token_with_key(issuer: &str, audience: &str, exp: usize, kid: &str, pem: &str) -> String {
         let claims = OidcClaims {
             iss: issuer.into(), sub: "agent-subject".into(), aud: json!(audience),
             exp, nbf: Some(Utc::now().timestamp() as usize - 1), iat: Utc::now().timestamp() as usize,
@@ -515,7 +549,7 @@ a93ROy+abL98Yf/fSAlNg3Lw
         };
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(kid.into());
-        encode(&header, &claims, &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap()).unwrap()
+        encode(&header, &claims, &EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap()).unwrap()
     }
 
     #[tokio::test]
@@ -584,10 +618,11 @@ a93ROy+abL98Yf/fSAlNg3Lw
             (Utc::now() + Duration::minutes(2)).timestamp() as usize, "old-key");
         assert!(verify_oidc_token(&config, &old_token).await.is_ok());
 
-        *jwks_state.write().await = json!({"keys":[{"kty":"RSA","kid":"new-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
-        let new_token = signed_token(&config.issuer, &config.audience,
-            (Utc::now() + Duration::minutes(2)).timestamp() as usize, "new-key");
+        *jwks_state.write().await = json!({"keys":[{"kty":"RSA","kid":"new-key","use":"sig","alg":"RS256","n":ROTATED_N,"e":"AQAB"}]});
+        let new_token = signed_token_with_key(&config.issuer, &config.audience,
+            (Utc::now() + Duration::minutes(2)).timestamp() as usize, "new-key", ROTATED_PRIVATE_KEY);
         assert!(verify_oidc_token(&config, &new_token).await.is_ok());
+        assert!(matches!(verify_oidc_token(&config, &old_token).await, Err(AuthError::Unauthorized)));
         server.abort();
     }
 
