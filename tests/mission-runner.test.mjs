@@ -75,3 +75,16 @@ test("blockers can be explicitly resolved before resume", t => {
  const m=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8")).missions["M-126"];
  assert.equal(m.blockers[0].status,"RESOLVED"); assert.equal(m.status,"IN_PROGRESS");
 });
+
+test("supervisor lists missions and registers successor only after completion", t => {
+ const c=env(); t.after(()=>fs.rmSync(c.dir,{recursive:true,force:true}));
+ run(c,"init","M-127","127","First");
+ run(c,"assign","AI-A","p-a"); run(c,"acknowledge"); run(c,"start"); run(c,"complete","done");
+ assert.equal(run(c,"register-next","M-128","128","Second").status,0);
+ const s=JSON.parse(fs.readFileSync(path.join(c.dir,"STATE.json"),"utf8"));
+ assert.equal(s.current_mission_id,"M-128");
+ assert.equal(s.missions["M-127"].status,"DONE");
+ assert.equal(s.missions["M-128"].status,"CREATED");
+ assert.equal(run(c,"list").status,0);
+ assert.equal(run(c,"register-next","M-128","128","Duplicate").status,2);
+});
