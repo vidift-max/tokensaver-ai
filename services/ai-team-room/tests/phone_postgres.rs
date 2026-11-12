@@ -111,6 +111,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let provisioned_again:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(provisioned_again["ai_phone_id"],first.phone.ai_phone_id.to_string());
+    sqlx::query("DELETE FROM principal_permissions WHERE tenant_id=$1 AND principal_id=$2 AND permission='phone.provision'")
+        .bind(tenant).bind(principal).execute(&pool).await.unwrap();
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN,"provisioning without the explicit tenant permission is rejected");
+    grant(&pool,tenant,room,principal,"phone.provision").await;
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"GET /me reads the existing phone without creating it");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
