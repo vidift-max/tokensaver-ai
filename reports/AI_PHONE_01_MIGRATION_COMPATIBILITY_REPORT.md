@@ -15,6 +15,7 @@
 | Message tenant does not match the phone's AI binding | Abort | Reconcile message ownership from audit/business evidence |
 | Attachment tenant does not match the phone's AI binding | Abort | Reconcile endpoint/attachment ownership |
 | Current task belongs to a different tenant than the phone binding | Abort | Reconcile the task pointer; Team Room remains task authority |
+| Current mission pointer differs from the canonical task's mission, or task/mission pointer is only partially set | Abort | Reconcile both pointers from the canonical Team Room task |
 | Mission link references a missing task or incompatible tenant | Abort | Repair from Team Room's canonical task record |
 | Endpoint or attachment ownership cannot be proven | Abort | Produce an explicit reviewed mapping before retrying |
 
