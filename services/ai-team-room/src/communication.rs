@@ -320,7 +320,11 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedI
                     "team_room_channel"=>{
                         channel_type=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1 AND tenant_id=$2 AND room_id=$3")
                             .bind(aggregate_id).bind(tenant).bind(room_id).fetch_optional(&pool).await.unwrap_or(None);
-                        channel_type.is_some()
+                        let payload_channel=payload.get("channel_id")
+                            .or_else(||payload.get("message").and_then(|v|v.get("channel_id")))
+                            .or_else(||payload.get("attachment").and_then(|v|v.get("channel_id")))
+                            .and_then(|v|v.as_str());
+                        channel_type.is_some() && payload_channel==Some(aggregate_id.to_string().as_str())
                     },
                     "team_task"=>{
                         channel_type=None;
@@ -635,6 +639,15 @@ mod postgres_tests {
             "tenant A socket must reject B-owned event even when payload room_id points to A");
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws_b.next()).await.is_err(),
             "tenant B socket must reject an event whose payload room_id contradicts its DB aggregate");
+
+        // Even within the same tenant, the payload cannot substitute a
+        // different channel ID for the channel used as the DB aggregate.
+        let channel_a=Uuid::parse_str(first["channel_id"].as_str().unwrap()).unwrap();
+        let mismatched_channel_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'ADVERSARIAL_CHANNEL_TEST',jsonb_build_object('room_id',$4::text,'channel_id',$5::text,'probe','channel mismatch'))")
+            .bind(mismatched_channel_event).bind(tenant).bind(channel_a).bind(room).bind(channel_b).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "room member must reject payload channel ID that differs from authoritative aggregate channel");
 
         // Composite-FK regression checks: deliberately mismatched tenant/room
         // references must be rejected by PostgreSQL, not merely by handlers.
