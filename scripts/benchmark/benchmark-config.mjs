@@ -5,6 +5,7 @@
  * override file values. Credentials are accepted only through process environment.
  */
 import { readFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 
 const forbidden = /(^|_)(TOKEN|SECRET|PASSWORD|DATABASE_URL|PRIVATE_KEY|API_KEY)($|_)/i;
 let fileConfig = {};

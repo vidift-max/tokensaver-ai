@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   team-room-performance-benchmark:
+    if: inputs.confirm_isolated_environment == true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -69,6 +70,12 @@ jobs:
           BENCH_SEED_DECISIONS: "250"
           BENCH_SEED_ATTACHMENTS: "250"
         run: node scripts/benchmark/seed-team-room.mjs
+      - name: Capture reproducibility manifest
+        env:
+          BENCH_ARTIFACT_DIR: benchmark-artifacts
+          BENCH_CODE_SHA: ${{ github.sha }}
+        run: node scripts/benchmark/capture-run-manifest.mjs
+
       - name: Capture PostgreSQL query plans
         run: |
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \

@@ -131,10 +131,13 @@ if (result.status !== 0) {
   process.exit(result.status || 1);
 }
 
-const envFile = process.env.GITHUB_ENV;
-if (!envFile) throw new Error("GITHUB_ENV is required; refusing to print raw session tokens");
-for (const token of [...tokens, ...otherTokens]) process.stdout.write("::add-mask::" + token + "\n");
-appendFileSync(envFile, [
+const githubEnvFile = process.env.GITHUB_ENV;
+const localEnvFile = process.env.BENCH_ENV_FILE;
+if (!githubEnvFile && !localEnvFile) throw new Error("Set GITHUB_ENV in Actions or BENCH_ENV_FILE to a protected local env file; raw session tokens will never be printed");
+if (githubEnvFile) {
+  for (const token of [...tokens, ...otherTokens]) process.stdout.write("::add-mask::" + token + "\n");
+}
+const envFileContent = [
   `TEAM_ROOM_API_URL=http://127.0.0.1:8081`,
   `TEAM_ROOM_ROOM_ID=${rooms[0]}`,
   `TEAM_ROOM_TENANT_ID=${tenants[0]}`,
@@ -152,7 +155,15 @@ appendFileSync(envFile, [
   `BENCH_SEED_DECISIONS=${decisionCount}`,
   `BENCH_SEED_ATTACHMENTS=${attachmentCount}`,
   ""
-].join("\n"));
+].join("\n");
+if (githubEnvFile) {
+  appendFileSync(githubEnvFile, envFileContent);
+} else {
+  const destination = resolve(localEnvFile);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, envFileContent, { mode: 0o600, flag: "wx" });
+  chmodSync(destination, 0o600);
+}
 
 const artifactDir = resolve(process.env.BENCH_ARTIFACT_DIR || "benchmark-artifacts");
 mkdirSync(artifactDir, { recursive: true });
