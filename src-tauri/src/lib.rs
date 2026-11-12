@@ -14,7 +14,8 @@ mod filesystem;
 mod path_guard;
 mod project_storage;
 mod advanced;
-mod provider_gateway;\nmod usage_ledger;
+mod provider_gateway;
+mod usage_ledger;
 mod team_room_identity;
 
 use error::{AppError, AppResult};
