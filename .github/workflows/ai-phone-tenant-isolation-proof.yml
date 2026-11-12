@@ -76,3 +76,8 @@ jobs:
           path: tenant-isolation-test.log
           if-no-files-found: ignore
           retention-days: 7
+      - name: Fail the job when adversarial tests fail
+        if: steps.adversarial.outcome == 'failure'
+        run: |
+          echo "Adversarial test command failed; inspect the archived log to classify vulnerability versus test/setup failure."
+          exit 1
