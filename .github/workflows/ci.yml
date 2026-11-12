@@ -24,12 +24,12 @@ jobs:
         timeout-minutes: 8
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|azure.archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/apt-mirrors.txt
-            echo "Using Ubuntu package mirror list:"
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g; s|http://mirrors.edge.kernel.org/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/apt-mirrors.txt
+            echo "Using Ubuntu HTTPS package mirror list:"
             cat /etc/apt/apt-mirrors.txt
           fi
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's|azure.archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g; s|http://mirrors.edge.kernel.org/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources
           fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
@@ -37,6 +37,8 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run test:missions
+      - name: Syntax-check benchmark probes
+        run: node --check scripts/benchmark/benchmark-config.mjs && node --test scripts/benchmark/benchmark-config.test.mjs && node --check scripts/benchmark/team-room-http.mjs && node --check scripts/benchmark/team-room-websocket.mjs && node --check scripts/benchmark/seed-team-room.mjs && node --check scripts/benchmark/capture-run-manifest.mjs && node --check scripts/benchmark/redact-service-log.mjs
       - run: npm run build
       - name: Package source ZIP
         run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
@@ -78,6 +80,8 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run test:missions
+      - name: Syntax-check benchmark probes
+        run: node --check scripts/benchmark/team-room-http.mjs && node --check scripts/benchmark/team-room-websocket.mjs
       - run: npm run build
 
 

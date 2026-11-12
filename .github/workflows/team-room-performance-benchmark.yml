@@ -1,0 +1,170 @@
+name: Team Room Performance Benchmark (isolated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_isolated_environment:
+        description: Confirm this is an isolated disposable benchmark environment
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: team-room-performance-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  team-room-performance-benchmark:
+    if: inputs.confirm_isolated_environment == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: team_room
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: team_room_benchmark
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U team_room -d team_room_benchmark"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://team_room:ci-only-password@localhost:5432/team_room_benchmark
+      BENCH_CONFIG_FILE: scripts/benchmark/benchmark-config.example.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Build Team Room service
+        run: cargo build --manifest-path services/ai-team-room/Cargo.toml
+      - name: Start isolated Team Room service
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-artifacts
+          TEAM_ROOM_BIND=127.0.0.1:8081 RUST_LOG=warn ./services/ai-team-room/target/debug/ai-team-room-service > "$RUNNER_TEMP/team-room-benchmark-service.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/team-room-service.pid"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8081/health/ready >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail --show-error http://127.0.0.1:8081/health/ready
+      - name: Seed isolated multi-tenant and multi-participant fixture
+        env:
+          BENCH_ARTIFACT_DIR: benchmark-artifacts
+          BENCH_PARTICIPANTS: "8"
+          BENCH_TENANTS: "20"
+          BENCH_SEED_MESSAGES: "10000"
+          BENCH_SEED_TASKS: "250"
+          BENCH_SEED_DECISIONS: "250"
+          BENCH_SEED_ATTACHMENTS: "250"
+        run: node scripts/benchmark/seed-team-room.mjs
+      - name: Capture reproducibility manifest
+        env:
+          BENCH_ARTIFACT_DIR: benchmark-artifacts
+          BENCH_CODE_SHA: ${{ github.sha }}
+        run: node scripts/benchmark/capture-run-manifest.mjs
+
+      - name: Capture PostgreSQL query plans
+        run: |
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -v tenant_id="$TEAM_ROOM_TENANT_ID" \
+            -v room_id="$TEAM_ROOM_ROOM_ID" \
+            -v channel_id="$TEAM_ROOM_CHANNEL_ID" \
+            -v principal_id="$TEAM_ROOM_PRINCIPAL_ID" \
+            -f scripts/benchmark/team-room-postgres.sql > benchmark-artifacts/postgres-explain.txt
+      - name: Capture database counters before HTTP load
+        run: psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-before-http.json
+      - name: Start service and PostgreSQL resource sampler
+        run: |
+          set -euo pipefail
+          SERVICE_PID="$(cat "$RUNNER_TEMP/team-room-service.pid")"
+          PG_CONTAINER_ID="$(docker ps --filter ancestor=postgres:16 --format '{{.ID}}' | head -n1)"
+          test -n "$PG_CONTAINER_ID"
+          (
+            echo "timestamp_utc,service_cpu_avg_pct_since_start,service_mem_pct,service_rss_kb,postgres_cpu_pct,postgres_mem_usage"
+            while kill -0 "$SERVICE_PID" 2>/dev/null; do
+              service_sample="$(ps -p "$SERVICE_PID" -o %cpu=,%mem=,rss= | awk '{$1=$1; print}')"
+              read -r service_cpu service_mem service_rss <<< "$service_sample"
+              postgres_sample="$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' "$PG_CONTAINER_ID" 2>/dev/null || true)"
+              IFS='|' read -r postgres_cpu postgres_mem <<< "$postgres_sample"
+              printf '%s,%s,%s,%s,%s,%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$service_cpu" "$service_mem" "$service_rss" "$postgres_cpu" "$postgres_mem"
+              sleep 1
+            done
+          ) > benchmark-artifacts/resource-samples.csv &
+          echo $! > "$RUNNER_TEMP/resource-sampler.pid"
+      - name: HTTP benchmark — read and heartbeat repetition 1
+        env:
+          BENCH_CLIENTS: "8"
+          BENCH_EVENTS: "100"
+          BENCH_MESSAGES: "0"
+          BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
+        run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-1.json
+      - name: HTTP benchmark — read and heartbeat repetition 2
+        env:
+          BENCH_CLIENTS: "8"
+          BENCH_EVENTS: "100"
+          BENCH_MESSAGES: "0"
+          BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
+        run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-2.json
+      - name: HTTP benchmark — read and heartbeat repetition 3
+        env:
+          BENCH_CLIENTS: "8"
+          BENCH_EVENTS: "100"
+          BENCH_MESSAGES: "0"
+          BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
+        run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-3.json
+      - name: HTTP benchmark — message writes
+        env:
+          BENCH_CLIENTS: "8"
+          BENCH_EVENTS: "1"
+          BENCH_MESSAGES: "100"
+          BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
+        run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-message-writes.json
+      - name: Capture PostgreSQL counters after HTTP load
+        run: sleep 2 && psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-http.json
+      - name: WebSocket fanout and heartbeat benchmark — 8 independent participants
+        env:
+          BENCH_CLIENTS: "8"
+          BENCH_MESSAGES: "50"
+          BENCH_HEARTBEATS: "8"
+          BENCH_SETTLE_MS: "3000"
+          BENCH_IRRELEVANT_WRITES_PER_ROOM: "5"
+          BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
+        run: node scripts/benchmark/team-room-websocket.mjs > benchmark-artifacts/websocket-fanout.json
+      - name: Preserve sanitized Team Room diagnostics
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/team-room-benchmark-service.log" ]; then
+            node scripts/benchmark/redact-service-log.mjs "$RUNNER_TEMP/team-room-benchmark-service.log" benchmark-artifacts/team-room-service.log
+          fi
+      - name: Stop resource sampler
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/resource-sampler.pid" ]; then kill "$(cat "$RUNNER_TEMP/resource-sampler.pid")" 2>/dev/null || true; fi
+          if [ -f "$RUNNER_TEMP/team-room-service.pid" ]; then kill "$(cat "$RUNNER_TEMP/team-room-service.pid")" 2>/dev/null || true; fi
+      - name: Capture PostgreSQL counters after WebSocket load
+        if: always()
+        run: |
+          sleep 2
+          psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-websocket.json
+      - name: Upload raw benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: team-room-performance-benchmark-${{ github.run_id }}
+          path: benchmark-artifacts/
+          if-no-files-found: warn
+          retention-days: 14

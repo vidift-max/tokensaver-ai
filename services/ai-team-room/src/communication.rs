@@ -274,6 +274,18 @@ async fn websocket(
     Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal,identity.session_id)))
 }
 
+fn event_id_for_room_notification(notification_payload: &str, room_id: Uuid) -> Option<Uuid> {
+    let (event_id_text, room_hint) = notification_payload
+        .split_once('|')
+        .unwrap_or((notification_payload, ""));
+    if let Ok(notified_room) = Uuid::parse_str(room_hint) {
+        if notified_room != room_id {
+            return None;
+        }
+    }
+    Uuid::parse_str(event_id_text).ok()
+}
+
 async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:Uuid,session:Uuid){
     let Ok(mut listener)=PgListener::connect_with(&pool).await else{return;};
     if listener.listen("team_room_outbox").await.is_err(){return;}
@@ -294,7 +306,7 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
             }
             notification=listener.recv()=>{
                 let Ok(notification)=notification else{break;};
-                let Ok(event_id)=Uuid::parse_str(notification.payload()) else{continue;};
+                let Some(event_id)=event_id_for_room_notification(notification.payload(),room_id) else{continue;};
                 let event=sqlx::query("SELECT event_type,payload,aggregate_id FROM outbox_events WHERE outbox_event_id=$1")
                     .bind(event_id).fetch_optional(&pool).await;
                 let Ok(Some(event))=event else{continue;};
@@ -563,5 +575,25 @@ mod postgres_tests {
             .bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+    }
+}
+
+
+#[cfg(test)]
+mod outbox_room_hint_tests {
+    use super::*;
+
+    #[test]
+    fn room_hint_filters_unrelated_notifications_before_outbox_fetch() {
+        let event_id = Uuid::new_v4();
+        let room_id = Uuid::new_v4();
+        let other_room_id = Uuid::new_v4();
+
+        assert_eq!(event_id_for_room_notification(&event_id.to_string(), room_id), Some(event_id));
+        assert_eq!(event_id_for_room_notification(&format!("{event_id}|{room_id}"), room_id), Some(event_id));
+        assert_eq!(event_id_for_room_notification(&format!("{event_id}|{other_room_id}"), room_id), None);
+        // Malformed or legacy hints fall back to the authoritative outbox row check.
+        assert_eq!(event_id_for_room_notification(&format!("{event_id}|not-a-uuid"), room_id), Some(event_id));
+        assert_eq!(event_id_for_room_notification("not-an-event-id|not-a-room-id", room_id), None);
     }
 }
