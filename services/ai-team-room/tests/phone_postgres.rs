@@ -126,6 +126,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let race_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-same-key'")
         .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
     assert_eq!(race_count,1,"concurrent identical retries create exactly one durable row");
+    eprintln!("PASS: concurrent same-key/same-payload requests return 201+200, same message_id, and one row");
 
     // Reusing the same key with a different payload is a conflict, not a second
     // message and not an internal server error.
@@ -135,6 +136,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let conflict_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-same-key'")
         .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
     assert_eq!(conflict_count,1,"conflicting payload cannot create a second message");
+    let preserved_content:Value=sqlx::query_scalar("SELECT content FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-same-key'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(preserved_content,race_body["content"],"409 conflict preserves the original message payload");
+    eprintln!("PASS: same-key/different-payload returns 409 and preserves the original single message");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"repeated provision is idempotent");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
