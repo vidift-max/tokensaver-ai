@@ -15,6 +15,11 @@ const tokenList = process.env.TEAM_ROOM_SESSION_TOKENS_JSON
 const tokens = Array.isArray(tokenList) ? tokenList.filter(value => typeof value === "string" && value.length > 0) : [];
 const participantCount = Number(process.env.BENCH_PARTICIPANTS || tokens.length);
 const requireDistinct = process.env.BENCH_REQUIRE_DISTINCT_PARTICIPANTS === "true";
+const otherRoomIdsValue = process.env.TEAM_ROOM_OTHER_ROOM_IDS_JSON ? JSON.parse(process.env.TEAM_ROOM_OTHER_ROOM_IDS_JSON) : [];
+const otherRoomTokensValue = process.env.TEAM_ROOM_OTHER_ROOM_SESSION_TOKENS_JSON ? JSON.parse(process.env.TEAM_ROOM_OTHER_ROOM_SESSION_TOKENS_JSON) : [];
+const otherRoomIds = Array.isArray(otherRoomIdsValue) ? otherRoomIdsValue.filter(value => typeof value === "string" && value.length > 0) : [];
+const otherRoomTokens = Array.isArray(otherRoomTokensValue) ? otherRoomTokensValue.filter(value => typeof value === "string" && value.length > 0) : [];
+const irrelevantWritesPerRoom = Number(process.env.BENCH_IRRELEVANT_WRITES_PER_ROOM || 0);
 const clients = Number(process.env.BENCH_CLIENTS || 8);
 const messages = Number(process.env.BENCH_MESSAGES || 25);
 const settleMs = Number(process.env.BENCH_SETTLE_MS || 1500);
@@ -23,7 +28,7 @@ if (!base || !roomId || tokens.length === 0) {
   console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, and TEAM_ROOM_SESSION_TOKENS_JSON or TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
-if (![clients, messages, settleMs, heartbeats, participantCount].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0 || participantCount < 1 || (requireDistinct && new Set(tokens).size < clients)) {
+if (![clients, messages, settleMs, heartbeats, participantCount, irrelevantWritesPerRoom].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0 || participantCount < 1 || irrelevantWritesPerRoom < 0 || (requireDistinct && new Set(tokens).size < clients) || otherRoomIds.length !== otherRoomTokens.length) {
   console.error("Invalid BENCH_CLIENTS / BENCH_MESSAGES / BENCH_SETTLE_MS");
   process.exit(2);
 }
@@ -37,6 +42,7 @@ const duplicates = [];
 const failures = [];
 let receivedFrames = 0;
 let presenceChangedFrames = 0;
+let irrelevantRoomFrames = 0;
 
 async function ticket(token) {
   const response = await fetch(`${base}/team-room/${room}/ws-ticket`, { method: "POST", headers: { ...headers, authorization: `Bearer ${token}` }, body: "{}" });
@@ -78,6 +84,8 @@ for (let i = 0; i < clients; i++) {
     receivedFrames++;
     try {
       const frame = JSON.parse(String(event.data));
+      const frameRoomId = frame.payload?.room_id || frame.payload?.message?.room_id;
+      if (frameRoomId && frameRoomId !== roomId) { irrelevantRoomFrames++; return; }
       if (frame.type === "PRESENCE_CHANGED") { presenceChangedFrames++; return; }
       if (frame.type !== "MESSAGE_CREATED") return;
       const messageId = frame.payload?.message?.message_id;
@@ -119,6 +127,20 @@ try {
     const prior = early.get(message.message_id) || [];
     for (const delivery of prior) record(message.message_id, delivery.client, delivery.at);
   }
+  let irrelevantRoomWritesAccepted = 0;
+  for (let roomIndex = 0; roomIndex < otherRoomIds.length; roomIndex++) {
+    for (let messageIndex = 0; messageIndex < irrelevantWritesPerRoom; messageIndex++) {
+      const clientMessageId = randomUUID();
+      const response = await fetch(base + "/team-room/" + encodeURIComponent(otherRoomIds[roomIndex]) + "/messages", {
+        method: "POST",
+        headers: { ...headers, authorization: "Bearer " + otherRoomTokens[roomIndex] },
+        body: JSON.stringify({ client_message_id: clientMessageId, body: "irrelevant-room event " + roomIndex + "-" + messageIndex + " " + clientMessageId, parent_message_id: null }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) irrelevantRoomWritesAccepted++;
+      else failures.push("irrelevant_room_write_http_" + response.status);
+    }
+  }
   let heartbeatWritesAccepted = 0;
   for (let i = 0; i < heartbeats; i++) {
     const response = await fetch(`${base}/team-room/heartbeat`, { method: "POST", headers: { ...headers, authorization: `Bearer ${tokens[i % tokens.length]}` }, body: "{}", signal: AbortSignal.timeout(10000) });
@@ -140,7 +162,7 @@ try {
   console.log(JSON.stringify({
     benchmark: "team-room-websocket-fanout",
     generated_at: new Date().toISOString(),
-    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, dataset: { tenants: Number(process.env.BENCH_TENANTS || 0), rooms: Number(process.env.BENCH_ROOMS || 0), seeded_messages: Number(process.env.BENCH_SEED_MESSAGES || 0), seeded_tasks: Number(process.env.BENCH_SEED_TASKS || 0), seeded_decisions: Number(process.env.BENCH_SEED_DECISIONS || 0), seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0) }, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
+    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, dataset: { tenants: Number(process.env.BENCH_TENANTS || 0), rooms: Number(process.env.BENCH_ROOMS || 0), seeded_messages: Number(process.env.BENCH_SEED_MESSAGES || 0), seeded_tasks: Number(process.env.BENCH_SEED_TASKS || 0), seeded_decisions: Number(process.env.BENCH_SEED_DECISIONS || 0), seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0) }, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, other_room_ids: otherRoomIds, irrelevant_writes_per_room: irrelevantWritesPerRoom, settle_ms: settleMs },
     summary: {
       websocket_connections_opened: sockets.length,
       message_writes_accepted: sendStarts.size,
@@ -154,6 +176,9 @@ try {
       presence_frames_expected: heartbeatWritesAccepted * clients,
       presence_frames_missing: Math.max(0, heartbeatWritesAccepted * clients - presenceChangedFrames),
       presence_frames_per_accepted_heartbeat: heartbeatWritesAccepted ? Number((presenceChangedFrames / heartbeatWritesAccepted).toFixed(3)) : null,
+      irrelevant_room_events_requested: otherRoomIds.length * irrelevantWritesPerRoom,
+      irrelevant_room_events_accepted: irrelevantRoomWritesAccepted,
+      irrelevant_room_frames_received: irrelevantRoomFrames,
       duration_ms: Number(elapsed.toFixed(3)),
       delivery_latency_ms: { p50: pct(0.5), p95: pct(0.95), p99: pct(0.99) },
       delivery_throughput_per_second: elapsed > 0 ? Number((observed / (elapsed / 1000)).toFixed(3)) : null,
@@ -161,7 +186,7 @@ try {
     failures: failures.slice(0, 50),
     duplicate_samples: duplicates.slice(0, 20),
   }, null, 2));
-  if (sendStarts.size === 0 || observed === 0 || observed !== expected || duplicates.length > 0 || failures.length || presenceChangedFrames < heartbeatWritesAccepted * clients) process.exitCode = 1;
+  if (sendStarts.size === 0 || observed === 0 || observed !== expected || duplicates.length > 0 || failures.length || presenceChangedFrames < heartbeatWritesAccepted * clients || irrelevantRoomWritesAccepted !== otherRoomIds.length * irrelevantWritesPerRoom || irrelevantRoomFrames > 0) process.exitCode = 1;
 } finally {
   for (const socket of sockets) { try { socket.close(); } catch {} }
 }
