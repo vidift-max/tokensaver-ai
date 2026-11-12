@@ -2,6 +2,12 @@
 -- Run before and after the WebSocket/heartbeat probe in the same fresh database.
 SELECT json_build_object(
   'captured_at', clock_timestamp(),
+  'server_version', current_setting('server_version'),
+  'settings', (
+    SELECT json_object_agg(name,setting)
+    FROM pg_settings
+    WHERE name IN ('shared_buffers','work_mem','max_connections','effective_cache_size','random_page_cost','seq_page_cost','effective_io_concurrency','track_io_timing','jit','max_parallel_workers_per_gather')
+  ),
   'outbox_table', (
     SELECT json_build_object(
       'seq_scan', seq_scan,
