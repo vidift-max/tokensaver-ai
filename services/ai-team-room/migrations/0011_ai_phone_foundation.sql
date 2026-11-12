@@ -168,6 +168,7 @@ INSERT INTO permission_catalog(permission,description,privileged) VALUES
  ('phone.read','Read the AI-owned phone and its authorized continuity pointer',FALSE),
  ('phone.attach','Attach an authenticated execution endpoint to its own AI phone',FALSE),
  ('phone.detach','Detach the caller current endpoint from its own AI phone',FALSE),
+ ('phone.heartbeat','Refresh last-seen for the currently attached phone endpoint',FALSE),
  ('phone.transfer','Explicitly transfer an AI phone endpoint and fence the previous attachment',TRUE),
  ('phone.message.read','Read messages from the caller own AI phone inbox',FALSE),
  ('phone.message.send','Send a durable message to a phone when separately granted',FALSE),
