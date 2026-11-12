@@ -94,14 +94,18 @@ fn validate_database_target(
     if !parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case(expected_host)) {
         return Err("DATABASE_URL host does not match TEAM_ROOM_EXPECTED_DB_HOST");
     }
+    if !parsed.path().starts_with('/') || parsed.path().starts_with("//") {
+        return Err("DATABASE_URL must contain exactly one database path segment");
+    }
     let database_name = parsed.path().trim_start_matches('/');
     if database_name.is_empty() || database_name.contains('/') || database_name != expected_database {
         return Err("DATABASE_URL database does not match TEAM_ROOM_EXPECTED_DATABASE");
     }
+    let ssl_mode_count = parsed.query_pairs().filter(|(key, _)| key == "sslmode").count();
     let verify_full_count = parsed.query_pairs()
         .filter(|(key, value)| key == "sslmode" && value == "verify-full")
         .count();
-    if verify_full_count != 1 || parsed.fragment().is_some() {
+    if ssl_mode_count != 1 || verify_full_count != 1 || parsed.fragment().is_some() {
         return Err("Staging and production DATABASE_URL must use exactly one sslmode=verify-full parameter");
     }
     Ok(())
@@ -569,6 +573,18 @@ mod http_security_tests {
         assert!(validate_database_target(
             "production",
             "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=require",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=verify-full&sslmode=disable",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432//tokensaver_prod?sslmode=verify-full",
             Some("db.prod.example"),
             Some("tokensaver_prod")
         ).is_err());
