@@ -313,7 +313,7 @@ jobs:
           echo "$TOKEN_SCOPE" | tr ' ' '\n' | grep -Fxq 'team_room:connect'
 
           STAGE="service-startup"
-          export OIDC_ISSUER="$ISSUER" OIDC_AUDIENCE="team-room-api" OIDC_ALLOW_HTTP_LOCALHOST="true"
+          export TEAM_ROOM_ENV="test" OIDC_ISSUER="$ISSUER" OIDC_AUDIENCE="team-room-api" OIDC_ALLOW_HTTP_LOCALHOST="true"
           RUST_LOG=info ./services/ai-team-room/target/debug/ai-team-room-service > ai-team-room-service.log 2>&1 &
           SERVICE_PID=$!
           for attempt in $(seq 1 60); do

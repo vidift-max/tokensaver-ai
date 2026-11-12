@@ -463,22 +463,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
-    let database_url = env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
-    let bind: SocketAddr = env::var("TEAM_ROOM_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:8081".to_string()).parse()?;
-    let environment = env::var("TEAM_ROOM_ENV").unwrap_or_else(|_| "development".to_string());
+    let environment = env::var("TEAM_ROOM_ENV").unwrap_or_else(|_| "production".to_string());
     let require_oidc = environment_requires_oidc(environment.as_str())?;
-
-    let pool = connect_pool(&database_url).await?;
-    migrate(&pool).await?;
     let oidc = match OidcConfig::from_env() {
         Ok(config) => { tracing::info!(%environment, "OIDC workload trust configuration loaded"); Some(config) }
         Err(reason) if require_oidc => {
             return Err(format!("OIDC configuration is mandatory in {environment}: {reason}").into());
         }
-        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled in non-production environment"); None }
+        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled in explicit non-production environment"); None }
     };
+
+    let database_url = env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
+    let bind: SocketAddr = env::var("TEAM_ROOM_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:8081".to_string()).parse()?;
+    let pool = connect_pool(&database_url).await?;
+    migrate(&pool).await?;
     let state = AppState { pool, oidc, require_oidc };
 
     let app = build_router(state);

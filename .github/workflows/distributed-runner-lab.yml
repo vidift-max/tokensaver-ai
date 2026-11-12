@@ -104,7 +104,7 @@ jobs:
             echo "exit_code=99" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          RUST_LOG=info TEAM_ROOM_BIND=127.0.0.1:8081 ./services/ai-team-room/target/debug/ai-team-room-service > distributed-runner-evidence/team-room-service.log 2>&1 &
+          TEAM_ROOM_ENV=test RUST_LOG=info TEAM_ROOM_BIND=127.0.0.1:8081 ./services/ai-team-room/target/debug/ai-team-room-service > distributed-runner-evidence/team-room-service.log 2>&1 &
           SERVICE_PID=$!
           trap 'kill "$SERVICE_PID" 2>/dev/null || true' EXIT
           ready=0
