@@ -478,11 +478,11 @@ async fn message_send_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     if request.idempotency_key.trim().is_empty() || request.idempotency_key.len()>200
         || request.content.to_string().len()>16_384 || contains_secret_key(&request.content) { return Err(StatusCode::BAD_REQUEST); }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let phone = sqlx::query_as::<_, (Uuid, Uuid)>("SELECT p.ai_id,p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals m ON m.ai_id=p.ai_id AND m.tenant_id=p.tenant_id WHERE p.ai_phone_id=$1 AND p.tenant_id=$2 AND m.principal_id=$3 FOR UPDATE OF p")
+    let phone = sqlx::query_as::<_, (Uuid, Uuid)>("SELECT p.ai_id,p.ai_phone_id FROM ai_phones p WHERE p.ai_phone_id=$1 AND p.tenant_id=$2 FOR UPDATE OF p")
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
         .fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
-    let existing = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key=$3")
-        .bind(phone_id).bind(identity.principal_id).bind(&request.idempotency_key).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let existing = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key=$4")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(&request.idempotency_key).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(existing) = existing {
         if existing.content != request.content { return Err(StatusCode::CONFLICT); }
         tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -618,8 +618,6 @@ pub async fn provision_ai_identity(
         .execute(&mut *tx).await?;
     sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2) ON CONFLICT(ai_id,tenant_id) DO NOTHING")
         .bind(existing.0).bind(request.tenant_id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,ai_id) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(existing.0).bind(request.tenant_id).execute(&mut *tx).await?;
     let bound_ai: Uuid = sqlx::query_scalar(
         "SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2"
     ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
@@ -631,6 +629,43 @@ pub async fn provision_ai_identity(
         .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(IdentityProvisionResult { ai_id: existing.0, tenant_id: request.tenant_id, principal_id: request.principal_id })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhoneProvisionRequest { pub principal_id: Uuid }
+
+pub async fn provision_phone(pool: &PgPool, caller: &AuthenticatedIdentity, request: PhoneProvisionRequest)
+    -> Result<(PhoneRecord, bool), PhoneError> {
+    require_permission(pool, caller, "phone.provision").await.map_err(|_| PhoneError::Forbidden)?;
+    let mut tx = pool.begin().await?;
+    validate_live_binding(&mut tx, caller).await?;
+    let ai_id: Uuid = sqlx::query_scalar(
+        "SELECT ip.ai_id FROM ai_identity_principals ip JOIN principals p ON p.tenant_id=ip.tenant_id AND p.principal_id=ip.principal_id WHERE ip.tenant_id=$1 AND ip.principal_id=$2 AND p.principal_kind='AI' AND p.enabled=TRUE FOR UPDATE OF ip"
+    ).bind(caller.tenant_id).bind(request.principal_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?;
+    let inserted = sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,ai_id) DO NOTHING")
+        .bind(Uuid::new_v4()).bind(ai_id).bind(caller.tenant_id).execute(&mut *tx).await?.rows_affected() == 1;
+    let phone = sqlx::query_as::<_, PhoneRecord>(
+        "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 FOR UPDATE"
+    ).bind(caller.tenant_id).bind(ai_id).fetch_one(&mut *tx).await?;
+    if inserted {
+        record_phone_event(&mut tx, caller, phone.ai_phone_id, "PHONE_PROVISIONED", "phone.provisioned",
+            serde_json::json!({"target_principal_id":request.principal_id})).await?;
+    }
+    tx.commit().await?;
+    Ok((phone, inserted))
+}
+
+async fn provision_phone_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<PhoneProvisionRequest>)
+    -> Result<(StatusCode, Json<PhoneRecord>), StatusCode> {
+    let caller = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    provision_phone(&pool, &caller, request).await
+        .map(|(phone, created)| (if created { StatusCode::CREATED } else { StatusCode::OK }, Json(phone)))
+        .map_err(|error| match error {
+            PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
+            PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Invalid => StatusCode::BAD_REQUEST,
+            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        })
 }
 
 async fn provision_identity_handler(
@@ -653,6 +688,7 @@ async fn provision_identity_handler(
 pub fn router(pool: PgPool) -> Router {
     Router::new()
         .route("/ai-phone/identities", post(provision_identity_handler))
+        .route("/ai-phone/provision", post(provision_phone_handler))
         .route("/ai-phone/me", get(get_phone_handler))
         .route("/ai-phone/attach", post(attach_handler))
         .route("/ai-phone/detach", post(detach_handler))
