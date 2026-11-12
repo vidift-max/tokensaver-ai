@@ -137,7 +137,8 @@ console.log(JSON.stringify({
     events_per_read_endpoint: events,
     message_writes: messages,
     timeout_ms: timeoutMs,
-    data_seeded_by_benchmark: false,
+    data_seeded_by_probe: false,
+    fixture_seeded_by_lab: Number(process.env.BENCH_SEED_MESSAGES || 0) > 0,
   },
   summary: {
     requests: total,
