@@ -132,7 +132,9 @@ async function main(args) {
       const lease=m.execution;
       if (!lease?.task_id || !Number.isSafeInteger(lease.fencing_token) || lease.ownership_state==="LOSS_OF_OWNERSHIP") throw new Error("valid remote lease reference required; checkpoint denied");
       try {
-        await new TeamRoomClient().checkpoint(lease,{mission_id:m.mission_id,task_id:lease.task_id,session_id:lease.owner_session_id,workload_execution_id:lease.owner_execution_id,fencing_token:lease.fencing_token,checkpoint:cp,context:{title:m.title,current_task:m.current_task,progress:m.progress},timestamp:now()});
+        // Persist the checkpoint document itself; TeamRoomClient adds the
+        // fencing envelope and the API stores this JSON as the task checkpoint.
+        await new TeamRoomClient().checkpoint(lease,cp);
       } catch (error) { lease.ownership_state="LOSS_OF_OWNERSHIP"; writeState(s,"REMOTE_CHECKPOINT_REJECTED",{code:error.code||"REMOTE_ERROR"}); throw error; }
       m.last_action="checkpoint"; m.progress=Math.min(99,Math.max(m.progress,1)); m.next_action="resume from latest remote checkpoint"; writeState(s,"CHECKPOINT_CREATED_REMOTE",{checkpoint_id:cp.checkpoint_id,fencing_token:lease.fencing_token}); return;
     }

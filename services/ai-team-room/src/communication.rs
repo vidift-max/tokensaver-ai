@@ -557,6 +557,10 @@ mod postgres_tests {
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
         assert_eq!(bad_ws.status(),StatusCode::UNAUTHORIZED,"invalid websocket tickets must be rejected before upgrade parsing");
 
+        // Remove channel memberships first: added_by_principal_id preserves the
+        // actor reference and intentionally has no cascading delete policy.
+        sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
+            .bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
     }

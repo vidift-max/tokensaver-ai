@@ -176,19 +176,15 @@ try{
   console.log("Runner A process exited; waiting for the real 15-second PostgreSQL lease to expire.");
   await new Promise(resolve=>setTimeout(resolve,16000));
   assert.equal(sqlOk(`SELECT CASE WHEN lease_expires_at<=NOW() THEN 'EXPIRED' ELSE 'LIVE' END FROM team_tasks WHERE task_id=${quote(taskId)}`),"EXPIRED","the initial lease must expire by database time, without mutating its expiry timestamp");
-  const recoveryStateResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/recover`,{method:"POST",headers:{authorization:"Bearer "+recoveryWorkerA.token}});
-  assert.equal(recoveryStateResponse.status,200,"authenticated recovery coordinator must persist RECOVERY_REQUIRED before candidate discovery");
-  // Make B the first live candidate and recovery worker A a second live,
-  // independently authorized contender. The previous owner remains last.
+  // Make B the first live candidate and Recovery Worker A a second live,
+  // independently authorized contender. No preflight recovery request is made:
+  // the two real workers must race to persist RECOVERY_REQUIRED themselves.
   for(const [identity,age] of [[owner,60],[replacement,5],[recoveryWorkerA,25],[recoveryWorkerB,35]]){
     sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
       UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '${age} seconds' WHERE execution_id=${quote(identity.executionId)};`);
   }
-  const candidatesResponse=await fetch(apiUrl+`/team-room/${roomId}/tasks/${taskId}/candidates`,{headers:{authorization:"Bearer "+recoveryWorkerA.token}});
-  assert.equal(candidatesResponse.status,200);
-  const liveCandidates=await candidatesResponse.json();
-  assert.ok(liveCandidates.some(candidate=>candidate.principal_id===replacement.principalId),"addressed replacement must be an eligible live candidate");
-  assert.ok(liveCandidates.some(candidate=>candidate.principal_id===recoveryWorkerA.principalId),"competing candidate must also be eligible and authorized");
+  assert.ok(candidateEligible(replacement),"addressed replacement must be an eligible live candidate before recovery starts");
+  assert.ok(candidateEligible(recoveryWorkerA),"competing candidate must independently be eligible before recovery starts");
   const [recoveryResultA,recoveryResultB]=await Promise.all([
     runRecoveryAsync(recoveryWorkerA,roomId,taskId,owner.principalId,"--watch"),
     runRecoveryAsync(recoveryWorkerB,roomId,taskId,owner.principalId,"--watch")
@@ -203,7 +199,7 @@ try{
   assert.equal(recoveryEvidenceA.handoff_status,"PENDING");
   assert.equal(recoveryEvidenceA.selected_candidate_principal_id,replacement.principalId);
   assert.equal(recoveryEvidenceB.selected_candidate_principal_id,replacement.principalId);
-  assert.equal(recoveryEvidenceA.recovery_required+recoveryEvidenceB.recovery_required,1,"two recovery workers must serialize to one recovery transition");
+  assert.deepEqual([recoveryEvidenceA.recovery_required,recoveryEvidenceB.recovery_required].sort((a,b)=>a-b),[0,1],"exactly one independent Recovery Worker must win the PostgreSQL recovery transition");
   const recoveryTaskResponse=await fetch(apiUrl+`/team-room/tasks/by-mission/${missionUuid}`,{headers:{authorization:"Bearer "+replacement.token}});
   assert.equal(recoveryTaskResponse.status,200);
   const recoveryTask=await recoveryTaskResponse.json();
@@ -264,6 +260,8 @@ try{
   mustRun(owner,ownerHandoffA,"start");
   mustRun(owner,ownerHandoffA,"checkpoint","owner checkpoint before authenticated transfer");
   const ownerHandoffTask=stateForMission(ownerHandoffA,ownerHandoffMission).execution.task_id;
+  const persistedOwnerCheckpoint=JSON.parse(sqlOk(`SELECT checkpoint::text FROM team_tasks WHERE task_id=${quote(ownerHandoffTask)}`));
+  assert.equal(persistedOwnerCheckpoint.description,"owner checkpoint before authenticated transfer","PostgreSQL must store the checkpoint document without an extra wrapper");
   assert.equal(stateForMission(ownerHandoffA,ownerHandoffMission).execution.fencing_token,1);
   for(const [identity,age] of [[owner,40],[replacement,5],[recoveryWorkerA,15],[recoveryWorkerB,25]]){
     sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
