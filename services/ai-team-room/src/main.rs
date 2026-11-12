@@ -597,7 +597,7 @@ mod http_security_tests {
             .bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session)
             .bind(format!("{issuer}|{subject}")).execute(&pool).await.unwrap();
 
-        let app = build_router(AppState { pool: pool.clone(), oidc: None });
+        let app = build_router(AppState { pool: pool.clone(), oidc: None, require_oidc: false });
         let auth_response = app.clone().oneshot(
             axum::http::Request::builder().uri("/auth/me")
                 .header("authorization", format!("Bearer {raw_token}"))
