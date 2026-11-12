@@ -10,7 +10,7 @@ admin_psql() { PGPASSWORD="$ADMIN_PASSWORD" psql -X -v ON_ERROR_STOP=1 -U postgr
 reader_psql() { PGPASSWORD="$READER_PASSWORD" psql -X -v ON_ERROR_STOP=1 -U inventory_reader "$@"; }
 
 admin_psql -f "$ROOT/setup.sql" > "$ARTIFACTS/setup.log"
-BASELINE="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SELECT count(*) FROM lab.phone_messages)||':'||(SELECT count(*) FROM lab.outbox_events)||':'||(SELECT md5(string_agg(message_id||content,'|' ORDER BY message_id)) FROM lab.phone_messages)||':'||(SELECT md5(string_agg(event_id||payload,'|' ORDER BY event_id)) FROM lab.outbox_events)")"
+BASELINE="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SELECT md5(string_agg(tenant_id||name,'|' ORDER BY tenant_id)) FROM lab.tenants)||':'||(SELECT count(*) FROM lab.phone_messages)||':'||(SELECT count(*) FROM lab.outbox_events)||':'||(SELECT md5(string_agg(message_id||content,'|' ORDER BY message_id)) FROM lab.phone_messages)||':'||(SELECT md5(string_agg(event_id||payload,'|' ORDER BY event_id)) FROM lab.outbox_events)")"
 
 {
   echo "environment=LOCAL_DISPOSABLE_TEST"
@@ -78,7 +78,7 @@ SQL
 grep -qx 'BYPASSRLS_REJECTED=true' "$ARTIFACTS/role-negative-fixtures.txt"
 grep -qx 'OWNER_REJECTED=true' "$ARTIFACTS/role-negative-fixtures.txt"
 
-AFTER="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SELECT count(*) FROM lab.phone_messages)||':'||(SELECT count(*) FROM lab.outbox_events)||':'||(SELECT md5(string_agg(message_id||content,'|' ORDER BY message_id)) FROM lab.phone_messages)||':'||(SELECT md5(string_agg(event_id||payload,'|' ORDER BY event_id)) FROM lab.outbox_events)")"
+AFTER="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SELECT md5(string_agg(tenant_id||name,'|' ORDER BY tenant_id)) FROM lab.tenants)||':'||(SELECT count(*) FROM lab.phone_messages)||':'||(SELECT count(*) FROM lab.outbox_events)||':'||(SELECT md5(string_agg(message_id||content,'|' ORDER BY message_id)) FROM lab.phone_messages)||':'||(SELECT md5(string_agg(event_id||payload,'|' ORDER BY event_id)) FROM lab.outbox_events)")"
 test "$BASELINE" = "$AFTER"
 echo "PASS: synthetic data unchanged" >> "$ARTIFACTS/write-denials.txt"
 
