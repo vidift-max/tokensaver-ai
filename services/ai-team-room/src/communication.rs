@@ -715,7 +715,6 @@ mod postgres_tests {
             .bind(Sha256::digest(Uuid::new_v4().as_bytes()).to_vec()).bind(tenant).bind(room).bind(a.principal).bind(actor_b.session).execute(&pool).await;
         assert!(bad_ticket.is_err(),"WebSocket ticket FK must bind tenant + room + principal + session");
 
-        ws_b.close(None).await.unwrap();
         server.abort();
 
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
