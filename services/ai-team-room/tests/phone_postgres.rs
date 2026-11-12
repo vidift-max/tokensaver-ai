@@ -76,7 +76,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(principal).execute(&pool).await.unwrap();
 
-    for permission in ["phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack"] {
+    for permission in ["phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
         grant(&pool,tenant,room,principal,permission).await;
     }
 
@@ -216,7 +216,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"cross-tenant presence is concealed");
     let response=http_call(&app,"GET",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"cross-tenant mailbox is concealed");
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/mission",first.phone.ai_phone_id),Some(&token_a),Some(serde_json::json!({"task_id":foreign_task}))).await;
+    let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_a),Some(serde_json::json!({"task_id":foreign_task}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN,"cross-tenant task cannot be linked to tenant-A phone");
     let invalid_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,99,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(foreign_endpoint).bind(tenant).bind(room).bind(principal).bind(participant).bind(session_a).bind(execution_a)
@@ -384,8 +384,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id,checkpoint,checkpoint_version) VALUES($1,$2,$3,$4,'AI-Phone continuity test',$5,$6,1)")
         .bind(task_id).bind(tenant).bind(room).bind(mission_id).bind(principal)
         .bind(serde_json::json!({"step":"persisted","progress":40})).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3")
-        .bind(task_id).bind(mission_id).bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
+    let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_b),Some(serde_json::json!({"task_id":task_id}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"same-tenant mission link remains functional");
+    sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3 AND tenant_id=$4")
+        .bind(task_id).bind(mission_id).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await.unwrap();
     let current = get_my_phone(&pool,&identity_b).await.expect("same phone and mission after reconnect");
     assert_eq!(current.phone.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(current.phone.ai_id,ai_id);
