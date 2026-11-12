@@ -21,7 +21,7 @@ const messages = Number(process.env.BENCH_MESSAGES || 0);
 const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS || 10000);
 
 if (!apiUrl || !roomId || tokens.length === 0) {
-  console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, TEAM_ROOM_SESSION_TOKEN");
+  console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, and TEAM_ROOM_SESSION_TOKENS_JSON or TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
 if (![clients, events, messages, timeoutMs].every(Number.isSafeInteger) ||
