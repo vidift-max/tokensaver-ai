@@ -85,9 +85,9 @@ pub struct MissionLinkRequest {
 
 #[derive(Debug, Serialize)]
 pub struct PhoneSnapshot {
-    phone: PhoneRecord,
-    attachment: Option<AttachmentRecord>,
-    mission: Option<Value>,
+    pub phone: PhoneRecord,
+    pub attachment: Option<AttachmentRecord>,
+    pub mission: Option<Value>,
 }
 
 async fn owned_phone(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, identity: &AuthenticatedIdentity)
