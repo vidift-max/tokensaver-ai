@@ -92,7 +92,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let token_a=bearer_for(&pool,session_a).await;
     let app=ai_team_room_service::phone::router(pool.clone());
 
-    let first = get_my_phone(&pool,&identity_a).await.expect("create permanent phone");
+    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"authenticated phone lookup creates or returns the permanent AI phone");
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let created_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
+    let first = get_my_phone(&pool,&identity_a).await.expect("read permanent phone created through HTTP");
+    assert_eq!(created_snapshot["phone"]["ai_phone_id"],first.phone.ai_phone_id.to_string());
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
@@ -214,9 +219,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Explicit transfer is separately permission-gated and fences endpoint B.
     let endpoint_c = Uuid::new_v4();
+    let response=http_call(&app,"POST","/ai-phone/transfer",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_c,"endpoint_type":"TEST","metadata":{"label":"endpoint-C"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"explicit endpoint transfer is exercised through the HTTP route");
     let transferred = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_c, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-C"}),
-    },true).await.expect("explicit authorized transfer");
+    },true).await.expect("idempotent view of HTTP transfer");
     assert_eq!(transferred.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(transferred.endpoint_fence,3);
     let stale_endpoint = detach(&pool,&identity_b,attached_b.endpoint_fence).await;
