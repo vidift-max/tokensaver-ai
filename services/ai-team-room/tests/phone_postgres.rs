@@ -151,16 +151,16 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Force the outbox write to fail after the message INSERT. The API transaction
     // must roll back the message and audit row; retrying the same key must then work.
-    sqlx::query("CREATE OR REPLACE FUNCTION pg_temp.fail_ai_phone_outbox() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF NEW.aggregate_type='ai_phone' AND NEW.event_type='MESSAGE_RECEIVED' THEN RAISE EXCEPTION 'injected AI-PHONE outbox failure'; END IF; RETURN NEW; END $function$")
+    sqlx::query("CREATE OR REPLACE FUNCTION public.ai_phone_test_fail_outbox() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF NEW.aggregate_type='ai_phone' AND NEW.event_type='MESSAGE_RECEIVED' THEN RAISE EXCEPTION 'injected AI-PHONE outbox failure'; END IF; RETURN NEW; END $function$")
         .execute(&pool).await.unwrap();
-    sqlx::query("CREATE TRIGGER ai_phone_injected_outbox_failure BEFORE INSERT ON outbox_events FOR EACH ROW EXECUTE FUNCTION pg_temp.fail_ai_phone_outbox()")
+    sqlx::query("CREATE TRIGGER ai_phone_injected_outbox_failure BEFORE INSERT ON outbox_events FOR EACH ROW EXECUTE FUNCTION public.ai_phone_test_fail_outbox()")
         .execute(&pool).await.unwrap();
     let failed_retry=http_call(&app,"POST",&race_path,Some(&token_a),Some(serde_json::json!({
         "idempotency_key":"transaction-failure-retry","content":{"text":"retry after injected outbox failure"}
     }))).await;
     assert_eq!(failed_retry.status(),axum::http::StatusCode::INTERNAL_SERVER_ERROR,"injected outbox failure must fail the send transaction");
     sqlx::query("DROP TRIGGER ai_phone_injected_outbox_failure ON outbox_events").execute(&pool).await.unwrap();
-    sqlx::query("DROP FUNCTION pg_temp.fail_ai_phone_outbox()").execute(&pool).await.unwrap();
+    sqlx::query("DROP FUNCTION public.ai_phone_test_fail_outbox()").execute(&pool).await.unwrap();
     let rolled_back:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='transaction-failure-retry'")
         .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
     assert_eq!(rolled_back,0,"failed outbox insert must roll back the preceding message row");
