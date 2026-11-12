@@ -477,8 +477,10 @@ jobs:
             echo "timestamp_utc,service_cpu_avg_pct_since_start,service_mem_pct,service_rss_kb,postgres_cpu_pct,postgres_mem_usage"
             while kill -0 "$SERVICE_PID" 2>/dev/null; do
               service_sample="$(ps -p "$SERVICE_PID" -o %cpu=,%mem=,rss= | awk '{$1=$1; print}')"
+              read -r service_cpu service_mem service_rss <<< "$service_sample"
               postgres_sample="$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' "$PG_CONTAINER_ID" 2>/dev/null || true)"
-              printf '%s,%s,%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$service_sample" "$postgres_sample"
+              IFS='|' read -r postgres_cpu postgres_mem <<< "$postgres_sample"
+              printf '%s,%s,%s,%s,%s,%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$service_cpu" "$service_mem" "$service_rss" "$postgres_cpu" "$postgres_mem"
               sleep 1
             done
           ) > benchmark-artifacts/resource-samples.csv &
