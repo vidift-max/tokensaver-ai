@@ -535,13 +535,13 @@ jobs:
         run: |
           if [ -f "$RUNNER_TEMP/resource-sampler.pid" ]; then kill "$(cat "$RUNNER_TEMP/resource-sampler.pid")" 2>/dev/null || true; fi
           if [ -f "$RUNNER_TEMP/team-room-service.pid" ]; then kill "$(cat "$RUNNER_TEMP/team-room-service.pid")" 2>/dev/null || true; fi
-      - name: Upload raw benchmark evidence
-        if: always()
       - name: Capture PostgreSQL counters after WebSocket load
         if: always()
         run: |
           sleep 2
           psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-websocket.json
+      - name: Upload raw benchmark evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: team-room-performance-benchmark-${{ github.run_id }}
