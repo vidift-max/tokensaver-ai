@@ -796,6 +796,13 @@ mod postgres_tests {
             "a_renew":"REJECTED","a_checkpoint":"REJECTED","a_complete":"REJECTED","a_release":"REJECTED","a_phone_heartbeat":"REJECTED",
             "b_lease":"ACQUIRED","b_checkpoint":"ACCEPTED","b_complete":"ACCEPTED","final_status":completed.status
         }));
+        sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM phone_endpoints WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
 
