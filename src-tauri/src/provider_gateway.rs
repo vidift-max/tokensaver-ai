@@ -261,17 +261,17 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
             if timed_out { "Provider request timed out." } else { "Provider transport failed." }, false, &request_id, None)
     })?;
     let status = response.status();
-    let provider_request_id = response.headers().get("x-request-id").or_else(|| response.headers().get("request-id"))
+    let provider_request_id = response.headers().get("x-request-id").or_else(|| response.headers().get("request-id")).or_else(|| response.headers().get("x-goog-request-id"))
         .and_then(|v| v.to_str().ok()).map(str::to_string);
     let bytes = response.bytes().await.map_err(|_| GatewayError::new("RESPONSE_READ_ERROR", "Could not read provider response.", false, &request_id, Some(status.as_u16())))?;
     if bytes.len() > 4_000_000 {
         return Err(GatewayError::new("RESPONSE_TOO_LARGE", "Provider response exceeded the gateway limit.", false, &request_id, Some(status.as_u16())));
     }
-    let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| GatewayError::new("MALFORMED_RESPONSE", "Provider returned malformed JSON.", false, &request_id, Some(status.as_u16())))?;
     if !status.is_success() {
         // Do not forward provider error bodies: they can contain user content or sensitive diagnostics.
         return Err(GatewayError::new("PROVIDER_HTTP_ERROR", "Provider rejected the request.", retryable_status(status), &request_id, Some(status.as_u16())));
     }
+    let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| GatewayError::new("MALFORMED_RESPONSE", "Provider returned malformed JSON.", false, &request_id, Some(status.as_u16())))?;
     let text = response_text(req.provider, &parsed).ok_or_else(|| GatewayError::new("MALFORMED_RESPONSE", "Provider response did not contain supported text output.", false, &request_id, Some(status.as_u16())))?;
     Ok(ChatResponse { provider: req.provider, model, text, usage: parse_usage(req.provider, &parsed), latency_ms: started.elapsed().as_millis(), request_id, provider_request_id, estimated_cost: None })
 }
