@@ -678,6 +678,26 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(acked,"ACK");
 
+    // Mailbox sequence gaps are preserved as gaps; ACK order is independent of sequence order.
+    let gap_start:i64=sqlx::query_scalar("SELECT COALESCE(MAX(sequence_no),0)+3 FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2")
+        .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
+    let gap_low=Uuid::new_v4();
+    let gap_high=Uuid::new_v4();
+    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content,message_state,delivered_at) VALUES($1,$2,$3,$4,$5,$6,'gap-low',$7,'DELIVERED',NOW()),($8,$2,$3,$4,$5,$9,'gap-high',$10,'DELIVERED',NOW())")
+        .bind(gap_low).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(gap_start)
+        .bind(serde_json::json!({"text":"lower sequence"})).bind(gap_high).bind(gap_start+2)
+        .bind(serde_json::json!({"text":"higher sequence after a gap"})).execute(&pool).await.unwrap();
+    let gap_rows:Vec<i64>=sqlx::query_scalar("SELECT sequence_no FROM phone_messages WHERE message_id IN ($1,$2) ORDER BY sequence_no")
+        .bind(gap_low).bind(gap_high).fetch_all(&pool).await.unwrap();
+    assert_eq!(gap_rows,vec![gap_start,gap_start+2],"mailbox must preserve the actual sequence gap without fabricating a missing message");
+    let ack_high=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,gap_high),Some(&token_b),None).await;
+    assert_eq!(ack_high.status(),axum::http::StatusCode::NO_CONTENT,"higher sequence can be ACKed before lower sequence");
+    let ack_low=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,gap_low),Some(&token_b),None).await;
+    assert_eq!(ack_low.status(),axum::http::StatusCode::NO_CONTENT,"lower sequence remains ACKable after the higher sequence");
+    let gap_states:Vec<String>=sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id IN ($1,$2) ORDER BY sequence_no")
+        .bind(gap_low).bind(gap_high).fetch_all(&pool).await.unwrap();
+    assert_eq!(gap_states,vec!["ACK".to_string(),"ACK".to_string()],"out-of-order ACK does not corrupt durable mailbox state");
+
     // The phone points to the existing canonical task/checkpoint record; it does not copy it.
     let task_id = Uuid::new_v4();
     let mission_id = Uuid::new_v4();
