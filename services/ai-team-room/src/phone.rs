@@ -717,4 +717,27 @@ mod tests {
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn concurrent_attach_allows_exactly_one_phone_owner() {
+        let pool=db().await;
+        let (identity,_token,tenant)=fixture(&pool).await;
+        let phone=register(&pool,&identity,&format!("AI-RACE-{}",Uuid::new_v4())).await.unwrap();
+        let endpoint_a=register_endpoint(&pool,&identity,Uuid::new_v4(),"WORKER").await.unwrap();
+        let endpoint_b=register_endpoint(&pool,&identity,Uuid::new_v4(),"MOBILE").await.unwrap();
+        let request_a=AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:Uuid::new_v4(),lease_seconds:Some(60)};
+        let request_b=AttachRequest{endpoint_id:endpoint_b.endpoint_id,idempotency_key:Uuid::new_v4(),lease_seconds:Some(60)};
+        let (result_a,result_b)=tokio::join!(
+            attach(&pool,&identity,request_a),
+            attach(&pool,&identity,request_b)
+        );
+        assert_eq!(usize::from(result_a.is_ok())+usize::from(result_b.is_ok()),1);
+        let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM ai_phone_attachments WHERE ai_phone_id=$1 AND status='ACTIVE' AND lease_expires_at>NOW()")
+            .bind(phone.ai_phone_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(active,1);
+        sqlx::query("DELETE FROM ai_phones WHERE ai_id IN (SELECT ai_id FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2)").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identities WHERE ai_id NOT IN (SELECT ai_id FROM ai_principal_bindings)").execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+    }
+
 }
