@@ -11,7 +11,7 @@ const positional=args.filter(value=>value!=="--watch");
 const [roomId,taskId,previousOwnerPrincipalId]=positional;
 const pollMs=Number(process.env.TEAM_ROOM_RECOVERY_POLL_MS||"2000");
 const maxWaitMs=Number(process.env.TEAM_ROOM_RECOVERY_MAX_WAIT_MS||"300000");
-const baseUrl=(process.env.TEAM_ROOM_API_URL||"").replace(/\/+$/,"");
+const configuredBaseUrl=process.env.TEAM_ROOM_API_URL||"";
 const token=process.env.TEAM_ROOM_SESSION_TOKEN||"";
 if(!configuredBaseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
    !Number.isSafeInteger(pollMs)||pollMs<250||pollMs>60000||
