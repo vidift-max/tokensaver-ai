@@ -3,6 +3,9 @@
 -- The migration deliberately aborts when legacy endpoint ownership is ambiguous.
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM ai_identity_principals GROUP BY ai_id,tenant_id HAVING COUNT(*)>1) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: one global AI identity has multiple principal bindings in the same tenant';
+    END IF;
     IF EXISTS (SELECT 1 FROM ai_phones p WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id)) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing phone has no tenant principal binding';
     END IF;
@@ -26,11 +29,15 @@ BEGIN
     END IF;
 END $$;
 
+ALTER TABLE ai_identity_principals
+    ADD CONSTRAINT ai_identity_principals_ai_tenant_unique UNIQUE (ai_id,tenant_id);
+
 CREATE TABLE ai_identity_tenants (
     ai_id UUID NOT NULL REFERENCES ai_identities(ai_id) ON DELETE RESTRICT,
-    tenant_id UUID NOT NULL,
+    tenant_id UUID NOT NULL REFERENCES tenants(tenant_id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (ai_id, tenant_id)
+    PRIMARY KEY (ai_id, tenant_id),
+    FOREIGN KEY (ai_id,tenant_id) REFERENCES ai_identity_principals(ai_id,tenant_id) ON DELETE RESTRICT
 );
 INSERT INTO ai_identity_tenants(ai_id, tenant_id) SELECT DISTINCT ai_id, tenant_id FROM ai_identity_principals;
 
