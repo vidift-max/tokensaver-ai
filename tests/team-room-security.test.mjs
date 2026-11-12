@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { TeamRoomClient } from "../scripts/team-room-client.mjs";
 import { normalizeTeamRoomBaseUrl, resolveTeamRoomRequestUrl } from "../scripts/team-room-security.mjs";
 
@@ -79,6 +80,21 @@ test("401 revokes the in-memory client token and requires fresh authentication",
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Recovery Worker rejects remote HTTP configuration without printing the session token", () => {
+  const worker = new URL("../scripts/team-room-recovery-worker.mjs", import.meta.url);
+  const result = spawnSync(process.execPath, [worker.pathname, "room-id", "task-id", "previous-owner"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      TEAM_ROOM_API_URL: "http://api.example.test",
+      TEAM_ROOM_SESSION_TOKEN: "synthetic-recovery-token"
+    }
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /TEAM_ROOM_API_URL is invalid or insecure/);
+  assert.doesNotMatch(result.stderr, /synthetic-recovery-token/);
 });
 
 test("desktop Team Room UI fails closed and contains no manual endpoint or bearer input", () => {
