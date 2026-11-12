@@ -265,7 +265,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     ).await?;
     tx.commit().await?;
     Ok(sqlx::query_as::<_, AttachmentRecord>(
-        "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1"
+        "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3"
     ).bind(attachment_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(pool).await?)
 }
 
@@ -381,26 +381,26 @@ async fn register_endpoint_handler(
         _=>StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
-    let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 FOR UPDATE")
-        .bind(request.endpoint_id).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE")
+        .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(endpoint)=existing {
         if endpoint.endpoint_status=="REVOKED" || endpoint.endpoint_status=="ATTACHED" {
             return Err(StatusCode::CONFLICT);
         }
-        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4")
-            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id)
+        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
+            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
-        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,'REGISTERED',$4)")
-            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(&request.endpoint_type).bind(&request.metadata)
+        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,$5,'REGISTERED',$6)")
+            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(&request.endpoint_type).bind(&request.metadata)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REGISTERED","phone.endpoint.registered",
         serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_type":request.endpoint_type}))
         .await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    let endpoint=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1")
-        .bind(request.endpoint_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let endpoint=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND tenant_id=$2 AND ai_id=$3")
+        .bind(request.endpoint_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED,Json(endpoint)))
 }
 
@@ -442,8 +442,8 @@ async fn endpoint_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
         .fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !owns { return Err(StatusCode::NOT_FOUND); }
-    let endpoints = sqlx::query_as::<_, PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 ORDER BY created_at,endpoint_id")
-        .bind(phone_id).fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let endpoints = sqlx::query_as::<_, PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 AND tenant_id=$2 ORDER BY created_at,endpoint_id")
+        .bind(phone_id).bind(identity.tenant_id).fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(endpoints))
 }
 
@@ -455,8 +455,8 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !owns { return Err(StatusCode::NOT_FOUND); }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments WHERE ai_phone_id=$1 AND session_id=$2 AND attachment_status='ACTIVE' AND endpoint_fence=(SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1))")
-        .bind(phone_id).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.session_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+        .bind(phone_id).bind(identity.tenant_id).bind((SELECT_PLACEHOLDER)).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
     let delivered_count = sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() WHERE ai_phone_id=$1 AND message_state IN ('PENDING','DELIVERED')")
         .bind(phone_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
