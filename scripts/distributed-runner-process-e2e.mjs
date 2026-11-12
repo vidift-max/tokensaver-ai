@@ -139,7 +139,7 @@ function mustRun(identity,stateDir,...args){
 const dirs=[];
 try{
   seed();
-  const client=new TeamRoomClient({TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:runnerA.token,TEAM_ROOM_ROOM_ID:roomId});
+  const client=new TeamRoomClient({TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:runnerA.token,TEAM_ROOM_ROOM_ID:roomId});
   const missionUuid=client.missionUuid(missionLabel);
   const stateA=fs.mkdtempSync(path.join(os.tmpdir(),"runner-a-"));dirs.push(stateA);
   const stateB=fs.mkdtempSync(path.join(os.tmpdir(),"runner-b-"));dirs.push(stateB);
