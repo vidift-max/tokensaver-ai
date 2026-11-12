@@ -685,7 +685,7 @@ mod postgres_tests {
         assert_eq!(serde_json::from_str::<serde_json::Value>(reconnect_frame.into_text().unwrap().as_str()).unwrap()["type"],"MESSAGE_CREATED");
         sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(actor_b.session).execute(&pool).await.unwrap();
         let revoked_frame=tokio::time::timeout(std::time::Duration::from_secs(17),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
-        assert!(matches!(revoked_frame,axum::extract::ws::Message::Close(_)),"revoked session must close its active websocket");
+        assert!(matches!(revoked_frame,tokio_tungstenite::tungstenite::Message::Close(_)),"revoked session must close its active websocket");
 
         // Composite-FK regression checks: deliberately mismatched tenant/room
         // references must be rejected by PostgreSQL, not merely by handlers.
