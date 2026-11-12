@@ -453,7 +453,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(attached_f.endpoint_fence,7);
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
-    assert_eq!(pending,(2,"PENDING".to_string()));
+    assert_eq!(pending,(next_sequence,"PENDING".to_string()));
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
@@ -462,7 +462,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(offline["message_state"],"DELIVERED","offline PENDING message is delivered after endpoint B reconnects");
     assert_eq!(offline["attempt_count"],1);
     let sequences:Vec<i64>=inbox.iter().map(|m|m["sequence_no"].as_i64().unwrap()).collect();
-    assert_eq!(sequences,vec![1,2],"inbox is returned in per-phone sequence order");
+    assert_eq!(sequences,vec![1,2,next_sequence],"inbox is returned in per-phone sequence order");
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
