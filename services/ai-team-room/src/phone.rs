@@ -244,7 +244,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
         serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_fence":next_fence,"session_id":identity.session_id})
     ).await?;
     tx.commit().await?;
-    Ok(sqlx::query_as::<_, AttachmentRecord>
+    Ok(sqlx::query_as::<_, AttachmentRecord>(
         "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1"
     ).bind(attachment_id).fetch_one(pool).await?)
 }
