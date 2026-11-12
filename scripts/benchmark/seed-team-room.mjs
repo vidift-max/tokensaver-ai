@@ -52,9 +52,9 @@ const sql = [
   "INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES " +
     values(workloads.map((id,i) => [id,tenants[0],principals[i],issuer,subjects[i],"ACTIVE"])) + ";",
   "INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES " +
-    sessions.map((id,i) => "(" + [id,tenants[0],rooms[0],principals[i],"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'","decode("+quote(tokenHashes[i])+",'hex')"].join(",") + ")").join(",") + ";",
+    sessions.map((id,i) => "(" + [quote(id),quote(tenants[0]),quote(rooms[0]),quote(principals[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'","decode("+quote(tokenHashes[i])+",'hex')"].join(",") + ")").join(",") + ";",
   "INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES " +
-    executions.map((id,i) => "(" + [id,tenants[0],rooms[0],participants[i],principals[i],sessions[i],quote(issuer+"|"+subjects[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'"].join(",") + ")").join(",") + ";",
+    executions.map((id,i) => "(" + [quote(id),quote(tenants[0]),quote(rooms[0]),quote(participants[i]),quote(principals[i]),quote(sessions[i]),quote(issuer+"|"+subjects[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'"].join(",") + ")").join(",") + ";",
   "INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES " +
     values(participants.map((id,i) => [randomUUID(),tenants[0],rooms[0],id,principals[i],sessions[i],"ACTIVE"])) + ";",
   "INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) SELECT gen_random_uuid()," +
