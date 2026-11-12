@@ -241,6 +241,17 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-B-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B attaches to its own phone");
+    let revoked_endpoint=Uuid::new_v4();
+    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
+        "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED);
+    sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND tenant_id=$2")
+        .bind(revoked_endpoint).bind(foreign_tenant).execute(&pool).await.unwrap();
+    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_c),Some(serde_json::json!({
+        "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot be replayed or reattached");
     let duplicate_principal=Uuid::new_v4();
     sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','duplicate-test',$3)")
         .bind(duplicate_principal).bind(foreign_tenant).bind(format!("duplicate-subject-{duplicate_principal}"))
@@ -506,6 +517,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoints WHERE endpoint_id=$1").bind(foreign_endpoint).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM phone_endpoints WHERE endpoint_id=$1").bind(revoked_endpoint).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2").bind(ai_id).bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1 AND tenant_id=$2").bind(ai_id).bind(foreign_tenant).execute(&pool).await.unwrap();
