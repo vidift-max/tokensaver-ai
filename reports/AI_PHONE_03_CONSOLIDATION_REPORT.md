@@ -62,30 +62,34 @@ Workflow dedicado:
 
 - Run #70: `43305554477`
   - SHA: `cbfba6727d7017d386f733f45fcb2056fd81b7a7`
-  - Job: `postgres-16-security`
-  - PostgreSQL 16 disposable: inicialização e healthcheck concluídos.
+  - Job: `postgres-16-security` — SUCCESS.
+  - PostgreSQL 16.15 descartável; `transaction_read_only = off`.
   - `cargo check --manifest-path services/ai-team-room/Cargo.toml`: SUCCESS.
-  - Suíte `cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output`: estava IN PROGRESS na última leitura; resultado final não disponível.
+  - `cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output`: SUCCESS — 23 passed, 0 failed.
+  - O log registra a exceção exata do guard legado e os testes de continuidade AI-PHONE/Team Room.
 - Run #71: `43305559444`
   - SHA: `b280d055c39611b83cad8d73a76af7036a3b7be6`
   - Cancelado pela política de concorrência do workflow ao chegar commit mais novo.
 - Run #72: `43305696147`
   - SHA: `32f1044f0c6fd94cea9dc1b5988ef67052d25803`
-  - Estado: PENDING na última leitura; job ainda não iniciado.
+  - Estado na última leitura: IN PROGRESS; job em `cargo check`, depois executará a suíte que inclui a corrida concorrente de idempotência.
+- Run #73: `43305974840`
+  - SHA: `a3e93c5f7d549f779eca4b0fa69a2d2fc7c3e282`
+  - Estado: PENDING; é o commit de atualização deste relatório, sem alteração de código.
 
 Links:
 - [Run #70](https://github.com/vidift-max/tokensaver-ai/actions/runs/43305554477)
 - [Run #72](https://github.com/vidift-max/tokensaver-ai/actions/runs/43305696147)
 
-Não declarar PASS para cargo test, migration 0013, teste guard ou concorrência até o run #72 concluir com sucesso no SHA correspondente.
+O Run #70 prova cargo test, migration 0013 e o guard no SHA cbfba672. Não declarar PASS para a corrida concorrente de idempotência até o Run #72 concluir com sucesso no SHA 32f1044.
 
 ## 7. P0 e upgrade legado
 
 ### CROSS_TENANT_VULNERABILITY_CONFIRMED
 
-**NOT PROVEN na árvore consolidada até a conclusão do CI.**
+**ELIMINADO no schema novo consolidado, com limite explícito para legado.**
 
-O código e os testes existentes representam o cenário Tenant A + Tenant B com o mesmo AI_ID e exigem AI_PHONE_IDs distintos. Também há tentativas cross-tenant pela API e constraints compostas no banco. Contudo, a suíte consolidada ainda não concluiu.
+No Run #70, a suíte PostgreSQL 16 aplicou as migrations até 0013 e passou o teste integrado que vincula o mesmo AI_ID a dois tenants e exige AI_PHONE_IDs distintos, além das tentativas cross-tenant pela API. O cenário legado pré-0012 continua sem upgrade comprovado.
 
 ### LEGACY UPGRADE
 
@@ -112,7 +116,7 @@ A migration 0012 declara fail-closed para telefone global compartilhado. Não fo
 ## 9. Limitações remanescentes
 
 1. Fixture legado real e execução da migration 0012 em estado pré-tenant-scope não existem.
-2. A suíte consolidada ainda não concluiu.
+2. A suíte consolidada do SHA 32f1044 ainda está em execução; a execução anterior do SHA cbfba672 passou integralmente.
 3. Não há evidência de browser automation nem validação de viewport.
 4. A concorrência da idempotência foi adicionada, mas não executada com resultado confirmado.
 5. A integração final com Team Room-01 ainda precisa passar pela suíte conjunta PostgreSQL 16.
