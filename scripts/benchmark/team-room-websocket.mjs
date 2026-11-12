@@ -20,7 +20,7 @@ const messages = Number(process.env.BENCH_MESSAGES || 25);
 const settleMs = Number(process.env.BENCH_SETTLE_MS || 1500);
 const heartbeats = Number(process.env.BENCH_HEARTBEATS || 0);
 if (!base || !roomId || tokens.length === 0) {
-  console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, TEAM_ROOM_SESSION_TOKEN");
+  console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, and TEAM_ROOM_SESSION_TOKENS_JSON or TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
 if (![clients, messages, settleMs, heartbeats, participantCount].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0 || participantCount < 1 || (requireDistinct && new Set(tokens).size < clients)) {
