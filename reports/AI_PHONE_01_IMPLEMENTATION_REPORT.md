@@ -240,3 +240,172 @@ No provider credentials are accepted or stored by AI-Phone. Possessing `ai_phone
 The persistent identity/phone foundation, endpoint attach/reconnect/transfer, independent fencing, durable mailbox, heartbeat and task checkpoint pointer have been implemented and passed the PostgreSQL 16 integration test on the recorded implementation SHA.
 
 Conditioning remains because GPT-6 identity enrollment is not real, audio is not implemented, exhaustive HTTP security E2E and delivery retry/presence completeness are still outstanding, and the full CI workflow must be checked on the report's final commit.
+
+
+---
+
+## 17. AI-PHONE-01 — FINAL VALIDATION ADDENDUM (2026-11-12)
+
+This addendum supersedes the earlier status statements in sections 11–16 wherever they conflict. The earlier implementation-SHA results are historical; the final validation evidence is below.
+
+### 17.1 Final SHA and CI
+
+- Requested initial SHA: `d83785f5461f82c335f698311f6d28c8a8cdf61a`
+- The requested SHA was checked independently. TokenSaver AI CI run `43216386393` completed with all four jobs successful.
+- Final implementation/test SHA: `7d072604d777b6ecdf8d0af66cbb4ed85b74915a`
+- Final TokenSaver AI CI run: `43221238250`
+- Result: all four jobs **SUCCESS**:
+  - `ai-team-room-service`
+  - `foundation`
+  - `foundation-windows`
+  - `keycloak-oidc-smoke`
+- The separate Distributed Runner PostgreSQL Lab workflow was not modified as part of this work.
+
+The final implementation SHA was tested after the HTTP, mailbox and cross-tenant test additions. The report-only commit that follows this addendum does not change application code.
+
+### 17.2 PostgreSQL and Rust results
+
+The CI service job used a real PostgreSQL 16.15 service container and ran migrations through the service test setup. No PostgreSQL mock was used.
+
+On SHA `7d072604d777b6ecdf8d0af66cbb4ed85b74915a`:
+- `cargo check --manifest-path services/ai-team-room/Cargo.toml`: PASS
+- `cargo test --manifest-path services/ai-team-room/Cargo.toml`: PASS
+- Library tests: 6 passed
+- Binary tests: 9 passed
+- `admission_postgres`: 3 passed
+- `auth_postgres`: 4 passed
+- `phone_postgres`: 1 passed
+- Doc tests: 0 failures
+
+The PostgreSQL log also records expected rejections from negative fencing, handoff-state and AI/HUMAN mapping checks. These are expected test outcomes, not suite failures.
+
+### 17.3 HTTP E2E coverage
+
+The integration test invokes the actual Axum router and handlers using HTTP requests with a persisted bearer-token hash and a real PostgreSQL database. It is router-level HTTP E2E using Tower `oneshot`; it is not a socket-level test against a separately deployed service process.
+
+Covered successful routes:
+- `GET /ai-phone/me` — creates or returns the permanent phone
+- `POST /ai-phone/attach`
+- `POST /ai-phone/endpoints/register`
+- `GET /ai-phone/{phone_id}/endpoints`
+- `GET /ai-phone/{phone_id}/presence`
+- `POST /ai-phone/heartbeat`
+- `POST /ai-phone/reconnect`
+- `POST /ai-phone/transfer`
+- `POST /ai-phone/{phone_id}/messages`
+- `GET /ai-phone/{phone_id}/messages`
+- `POST /ai-phone/{phone_id}/messages/{message_id}/ack`
+- `POST /ai-phone/detach`
+
+Negative HTTP/database cases:
+- invalid bearer token: `401`;
+- expired session A after B reconnects: `401`;
+- unknown or cross-tenant phone ID for endpoint lookup/message send: `404`;
+- stale/detached endpoint heartbeat: `412`;
+- stale endpoint/fence after transfer: rejected;
+- duplicate ACK: idempotent `204`;
+- HUMAN principal mapped to AI identity: rejected by the PostgreSQL trigger.
+
+The privileged AI identity provisioning handler and mission-link handler are not each independently covered by a dedicated HTTP E2E case in this round. The underlying AI identity mapping and canonical mission pointer are covered by PostgreSQL tests.
+
+### 17.4 Concurrency and endpoint fencing
+
+The PostgreSQL attach race starts two concurrent attach operations for different endpoint IDs against the same phone. The database lock and uniqueness invariant produce exactly one winner and one conflict. The test is concurrent requests from one test process; it does not claim two independent OS processes or two physical devices.
+
+Phone fencing is independent of task fencing:
+- endpoint A attaches with phone fence 1;
+- endpoint B reconnects/transfers with phone fence 2;
+- old endpoint/session/fence operations are rejected.
+
+The existing task lease fencing mechanism remains separate and unchanged except for the narrow recovery-handoff eligibility correction described below.
+
+### 17.5 Mission continuity — real task lease proof
+
+The PostgreSQL test `postgres_same_ai_phone_session_rotation_recovers_real_task_lease_and_fences_old_session` passed on the final implementation SHA.
+
+Test sequence:
+1. One stable AI identity and AI_PHONE_ID attach endpoint A under session A.
+2. Session A owns a real Team Room task lease and writes checkpoint version 1.
+3. Session A and its execution expire; the phone row and mission pointer remain persistent.
+4. Session B is created for the same AI principal with a different session and execution.
+5. Session B reconnects to the same AI_PHONE_ID on endpoint B; phone fencing advances from 1 to 2.
+6. The existing recovery path marks the task recoverable; an authorized Recovery Worker identity creates the normal recovery handoff to B.
+7. B accepts the handoff through the existing task transition/lease machinery. Task fencing advances from 1 to 2.
+8. B writes checkpoint version 2 and completes the task.
+9. A's lease renewal, checkpoint, completion, release and phone heartbeat are rejected.
+
+The test uses the existing PostgreSQL-backed recovery/handoff functions and their authorization checks. It does not directly overwrite the task owner, lease or fencing token to manufacture success. It exercises the Recovery Worker identity and recovery functions in-process, not a separately deployed worker daemon.
+
+### 17.6 Mailbox and ordering
+
+The final HTTP/PostgreSQL test now proves the offline path:
+- an offline message is persisted as `PENDING`;
+- endpoint B reconnects to the same phone;
+- authenticated inbox GET changes it to `DELIVERED`;
+- attempt count increments;
+- HTTP ACK changes it to `ACK`;
+- duplicate ACK remains idempotent;
+- inbox sequence order is `1 → 2`.
+
+A second poll re-presents unacknowledged `DELIVERED` messages and increments `attempt_count`, providing a simple at-least-once retry mechanism.
+
+Limit: there is still no scheduled retry worker, exponential backoff, dead-letter policy, explicit delivery-failure HTTP operation, or bounded pagination. The `FAILED` state is not evidence that a complete failure/retry subsystem exists.
+
+### 17.7 Presence
+
+The authenticated phone presence endpoint distinguishes the six requested phone states:
+- `REGISTERED`
+- `CONNECTED`
+- `ATTACHED`
+- `OFFLINE`
+- `RECONNECTING`
+- `DISCONNECTED`
+
+The state is derived from phone existence, endpoint registry state, active attachment, session/execution validity and endpoint heartbeat age. Phone identity remains persistent when session presence expires. The integration test exercises all six transitions, including stale endpoint heartbeat and explicit detach.
+
+Presence is a phone-level derived view; it is not a claim that the user/session presence subsystem has been replaced.
+
+### 17.8 Security review
+
+Implemented and exercised:
+- tenant/principal mapping checks on message send and endpoint lookup;
+- cross-tenant phone ID concealment with HTTP `404`;
+- authenticated session and execution checks;
+- explicit phone permissions;
+- AI-only identity binding enforced by database trigger;
+- phone fencing independent from task fencing;
+- stale endpoint/session rejection;
+- idempotent message send and ACK;
+- credential-like metadata/content key rejection;
+- monotonic task fencing and stale lease rejection in the existing task suite.
+
+Still not fully proven:
+- exhaustive per-route permission-denial matrix;
+- two independent external client processes racing the same phone;
+- exhaustive replay/IDOR fuzzing and production security review;
+- real external AI provider enrollment and production deployment.
+
+### 17.9 Final 10-round disposition
+
+| Round | Result | Evidence / limitation |
+|---|---|---|
+| 1 — SHA final | PASS | Requested SHA checked; final implementation SHA and CI run recorded above |
+| 2 — PostgreSQL | PASS | PostgreSQL 16.15; migrations, cargo check/test and integration suites passed |
+| 3 — HTTP E2E | GO CONDITIONED | Actual Axum route tests cover core phone, endpoint, presence, transfer, reconnect and mailbox routes; not every privileged route or socket-level deployment |
+| 4 — Concurrency | GO CONDITIONED | PostgreSQL race gives one winner/one conflict; same-process concurrent requests, not independent OS clients |
+| 5 — Mission continuity | PASS | Session B legitimately accepts recovery handoff, acquires new task fence, checkpoints and completes |
+| 6 — Old session attack | PASS | Old A renew/checkpoint/complete/release/heartbeat rejected |
+| 7 — Mailbox | GO CONDITIONED | Offline delivery, retry-on-poll, ordering and duplicate ACK pass; no failure worker/dead-letter/backoff |
+| 8 — Presence | PASS | Six phone-level presence states exercised |
+| 9 — Security | GO CONDITIONED | Tenant IDOR, AI/HUMAN, auth, stale fence and idempotency tests pass; exhaustive matrix not complete |
+| 10 — Report | PASS | This addendum records the final evidence and remaining limitations |
+
+### 17.10 Final classification
+
+**GO CONDITIONED**
+
+The requested structural objective is demonstrated: the same permanent AI_PHONE_ID survives session rotation, reconnects on a new endpoint, receives offline mailbox messages and resumes a real existing mission through authorized task recovery/handoff with a new task fencing token. The old session is fenced out.
+
+Conditions remain for independent-process concurrency proof, exhaustive HTTP authorization/security coverage, full mailbox failure handling, production identity enrollment and production rollout.
+
+No WebRTC/audio stack was implemented. No real GPT-6 identity was invented. AI Gateway and benchmark code were not modified. PR #7 remains open and Draft; no merge was performed.
