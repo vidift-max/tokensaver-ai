@@ -1,6 +1,6 @@
 # Team Room Performance Benchmark Lab
 
-This lab sends real authenticated HTTP and WebSocket traffic to an already-running Team Room service and profiles a pre-seeded PostgreSQL database. It does not create tenants, identities, permissions, rooms, participants, or seed data.
+The HTTP and WebSocket probes send real authenticated traffic to an already-running Team Room service and the SQL script profiles a pre-seeded PostgreSQL database. The standalone probes do not provision identities or seed data. The dedicated GitHub Actions benchmark job uses `seed-team-room.mjs` to create a disposable, isolated test fixture and short-lived opaque sessions.
 
 ## Requirements
 
