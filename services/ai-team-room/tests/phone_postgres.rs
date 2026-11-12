@@ -406,7 +406,9 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
             .bind(ai_id).bind(tenant).bind(principal)
             .execute(pool).await.unwrap();
 
-        grant(pool, tenant, room, principal, "phone.read").await;
+        for permission in ["phone.read","phone.attach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack"] {
+            grant(pool, tenant, room, principal, permission).await;
+        }
         let (session, _execution) = add_session(pool, tenant, room, principal, participant).await;
         sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
             .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(participant).bind(principal).bind(session)
@@ -447,6 +449,113 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
     .bind(ai_id).fetch_all(&pool).await.unwrap();
     eprintln!("ADVERSARIAL persisted_phone_rows={} tenant_a_phone={} tenant_b_phone={}", persisted.len(), phone_a, phone_b);
 
+    assert_eq!(persisted.len(), 1, "global ai_id uniqueness leaves only one persisted phone in the current schema");
+
+    // Register different synthetic endpoints through each authenticated tenant context.
+    let endpoint_a = Uuid::new_v4();
+    let endpoint_b = Uuid::new_v4();
+    for (token, endpoint_id, label) in [(&token_a, endpoint_a, "tenant-A-endpoint"), (&token_b, endpoint_b, "tenant-B-endpoint")] {
+        let response = http_call(&app, "POST", "/ai-phone/endpoints/register", Some(token), Some(serde_json::json!({
+            "endpoint_id": endpoint_id, "endpoint_type": "TEST", "metadata": {"label": label}
+        }))).await;
+        eprintln!("ADVERSARIAL endpoint_register label={label} status={}", response.status());
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+    }
+
+    // Tenant A can enumerate Tenant B's endpoint because the handler scopes only by shared phone_id.
+    let response = http_call(&app, "GET", &format!("/ai-phone/{phone_a}/endpoints"), Some(&token_a), None).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    eprintln!("ADVERSARIAL tenant=A list_endpoints status={status} body={}", String::from_utf8_lossy(&body));
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let endpoints: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    assert!(endpoints.iter().any(|item| item["endpoint_id"] == endpoint_b.to_string()),
+        "Tenant A must not see Tenant B's endpoint");
+
+    // Tenant A attaches its endpoint. Tenant B's GET /me then exposes A's attachment.
+    let response = http_call(&app, "POST", "/ai-phone/attach", Some(&token_a), Some(serde_json::json!({
+        "endpoint_id": endpoint_a, "endpoint_type": "TEST", "metadata": {"label": "tenant-A-endpoint"}
+    }))).await;
+    let attach_status = response.status();
+    let attach_body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    eprintln!("ADVERSARIAL tenant=A attach status={attach_status} body={}", String::from_utf8_lossy(&attach_body));
+    assert_eq!(attach_status, axum::http::StatusCode::CREATED);
+    let attach_json: Value = serde_json::from_slice(&attach_body).unwrap();
+    let fence_a = attach_json["endpoint_fence"].as_i64().expect("attachment fence");
+
+    let response = http_call(&app, "GET", "/ai-phone/me", Some(&token_b), None).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    eprintln!("ADVERSARIAL tenant=B get_me_while_A_attached status={status} body={}", String::from_utf8_lossy(&body));
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let snapshot_b: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(snapshot_b["attachment"]["endpoint_id"], endpoint_a.to_string(),
+        "Tenant B must not observe Tenant A's attachment");
+
+    // Tenant B sends a message into the shared mailbox; Tenant A polls, receives DELIVERED,
+    // and ACKs a message whose tenant_id is B.
+    let send_body = serde_json::json!({"idempotency_key":"cross-tenant-mailbox-1","content":{"text":"synthetic-message-from-B"}});
+    let response = http_call(&app, "POST", &format!("/ai-phone/{phone_b}/messages"), Some(&token_b), Some(send_body.clone())).await;
+    let send_status = response.status();
+    let send_bytes = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    eprintln!("ADVERSARIAL tenant=B send_message status={send_status} body={}", String::from_utf8_lossy(&send_bytes));
+    assert_eq!(send_status, axum::http::StatusCode::CREATED);
+    let sent: Value = serde_json::from_slice(&send_bytes).unwrap();
+    let message_id = sent["message_id"].as_str().expect("message id").to_string();
+
+    let duplicate = http_call(&app, "POST", &format!("/ai-phone/{phone_b}/messages"), Some(&token_b), Some(send_body)).await;
+    assert_eq!(duplicate.status(), axum::http::StatusCode::OK, "same sender/idempotency key returns the original message");
+
+    let response = http_call(&app, "GET", &format!("/ai-phone/{phone_a}/messages"), Some(&token_a), None).await;
+    let read_status = response.status();
+    let read_bytes = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    eprintln!("ADVERSARIAL tenant=A read_mailbox status={read_status} body={}", String::from_utf8_lossy(&read_bytes));
+    assert_eq!(read_status, axum::http::StatusCode::OK);
+    let inbox: Vec<Value> = serde_json::from_slice(&read_bytes).unwrap();
+    assert!(inbox.iter().any(|item| item["message_id"] == message_id),
+        "Tenant A must not read Tenant B's message");
+
+    let delivered_state: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1 AND tenant_id=$2")
+        .bind(Uuid::parse_str(&message_id).unwrap()).bind(tenant_b).fetch_one(&pool).await.unwrap();
+    assert_eq!(delivered_state, "DELIVERED", "Tenant A's poll changed Tenant B's message to DELIVERED");
+
+    let response = http_call(&app, "POST", &format!("/ai-phone/{phone_a}/messages/{message_id}/ack"), Some(&token_a), None).await;
+    eprintln!("ADVERSARIAL tenant=A ack_tenant_B_message status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    let ack_state: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1 AND tenant_id=$2")
+        .bind(Uuid::parse_str(&message_id).unwrap()).bind(tenant_b).fetch_one(&pool).await.unwrap();
+    assert_eq!(ack_state, "ACK", "Tenant A's ACK changed Tenant B's message");
+
+    // Tenant B transfers the shared phone to its endpoint. Tenant A can then transfer
+    // the same phone back to endpoint A, fencing B's active attachment.
+    let response = http_call(&app, "POST", "/ai-phone/transfer", Some(&token_b), Some(serde_json::json!({
+        "endpoint_id": endpoint_b, "endpoint_type": "TEST", "metadata": {"label": "tenant-B-endpoint"}
+    }))).await;
+    eprintln!("ADVERSARIAL tenant=B transfer status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    let transfer_b: Value = serde_json::from_slice(&body).unwrap();
+    let fence_b = transfer_b["endpoint_fence"].as_i64().expect("Tenant B transfer fence");
+
+    let response = http_call(&app, "POST", "/ai-phone/transfer", Some(&token_a), Some(serde_json::json!({
+        "endpoint_id": endpoint_a, "endpoint_type": "TEST", "metadata": {"label": "tenant-A-endpoint"}
+    }))).await;
+    eprintln!("ADVERSARIAL tenant=A takes over B attachment status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::OK,
+        "Tenant A must not be able to transfer the phone away from Tenant B");
+    let body = axum::body::to_bytes(response.into_body(), 100_000).await.unwrap();
+    let transfer_a: Value = serde_json::from_slice(&body).unwrap();
+    let fence_a2 = transfer_a["endpoint_fence"].as_i64().expect("Tenant A takeover fence");
+    assert!(fence_a2 > fence_b);
+
+    let response = http_call(&app, "POST", "/ai-phone/heartbeat", Some(&token_b), Some(serde_json::json!({"endpoint_fence": fence_b}))).await;
+    eprintln!("ADVERSARIAL tenant=B stale heartbeat after A takeover status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::PRECONDITION_FAILED);
+    let response = http_call(&app, "POST", "/ai-phone/heartbeat", Some(&token_a), Some(serde_json::json!({"endpoint_fence": fence_a2}))).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    // Final expected Architecture B assertion. Reached only after mailbox and endpoint
+    // adversarial operations have generated their independent evidence.
     assert_ne!(
         phone_a, phone_b,
         "CROSS-TENANT ISOLATION FAILURE: distinct tenant principals sharing one AI_ID resolved the same AI_PHONE_ID"
