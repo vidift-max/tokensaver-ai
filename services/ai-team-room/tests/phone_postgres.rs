@@ -82,7 +82,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     // Session A expires. Its phone attachment remains persisted, but it is no longer authoritative.
     sqlx::query("UPDATE sessions SET expires_at=NOW()-INTERVAL '1 second',status='EXPIRED' WHERE session_id=$1")
         .bind(session_a).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE workload_executions SET expires_at=NOW()-INTERVAL '1 second',status='EXPIRED' WHERE execution_id=$1")
+    sqlx::query("UPDATE workload_executions SET heartbeat_at=NOW()-INTERVAL '2 minutes',expires_at=NOW()-INTERVAL '1 second',status='EXPIRED' WHERE execution_id=$1")
         .bind(execution_a).execute(&pool).await.unwrap();
 
     let (session_b, execution_b) = add_session(&pool,tenant,room,principal,participant).await;
