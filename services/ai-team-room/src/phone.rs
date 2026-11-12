@@ -61,6 +61,12 @@ pub struct PhoneEndpoint {
     pub detached_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PhonePresence {
+    pub ai_phone_id: Uuid,
+    pub presence_state: String,
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct PhoneMessage {
     pub message_id: Uuid,
@@ -357,6 +363,75 @@ async fn detach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(req
             _ => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
+async fn register_endpoint_handler(
+    State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>,
+) -> Result<(StatusCode, Json<PhoneEndpoint>), StatusCode> {
+    let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
+    require_permission(&pool,&identity,"phone.attach").await.map_err(|_|StatusCode::FORBIDDEN)?;
+    if !valid_endpoint_type(&request.endpoint_type) || !request.metadata.is_object()
+        || request.metadata.to_string().len()>4096 || contains_secret_key(&request.metadata) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx,&identity).await.map_err(|e|match e {
+        PhoneError::InvalidSession=>StatusCode::UNAUTHORIZED,
+        PhoneError::NotFound=>StatusCode::NOT_FOUND,
+        _=>StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
+    let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 FOR UPDATE")
+        .bind(request.endpoint_id).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(endpoint)=existing {
+        if endpoint.endpoint_status=="REVOKED" || endpoint.endpoint_status=="ATTACHED" {
+            return Err(StatusCode::CONFLICT);
+        }
+        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4")
+            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id)
+            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,'REGISTERED',$4)")
+            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(&request.endpoint_type).bind(&request.metadata)
+            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REGISTERED","phone.endpoint.registered",
+        serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_type":request.endpoint_type}))
+        .await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let endpoint=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1")
+        .bind(request.endpoint_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((StatusCode::CREATED,Json(endpoint)))
+}
+
+async fn presence_handler(
+    State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap,
+) -> Result<Json<PhonePresence>,StatusCode> {
+    let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
+    require_permission(&pool,&identity,"phone.read").await.map_err(|_|StatusCode::FORBIDDEN)?;
+    let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai_phones p JOIN ai_identity_principals m ON m.ai_id=p.ai_id WHERE p.ai_phone_id=$1 AND m.tenant_id=$2 AND m.principal_id=$3)")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !owns{return Err(StatusCode::NOT_FOUND);}
+    let state:String=sqlx::query_scalar(r#"
+        SELECT CASE
+          WHEN NOT EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id) THEN 'REGISTERED'
+          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.endpoint_status='REGISTERED') THEN 'RECONNECTING'
+          WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
+                JOIN workload_executions w ON w.execution_id=a.execution_id AND w.session_id=a.session_id
+                WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                  AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
+                  AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()) THEN
+              CASE WHEN EXISTS(SELECT 1 FROM phone_endpoints e JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id
+                    WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                      AND e.last_seen_at>NOW()-INTERVAL '90 seconds') THEN 'CONNECTED' ELSE 'ATTACHED' END
+          WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
+                WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                  AND (s.status<>'ACTIVE' OR s.revoked_at IS NOT NULL OR s.expires_at<=NOW())) THEN 'OFFLINE'
+          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.endpoint_status='DETACHED') THEN 'DISCONNECTED'
+          ELSE 'OFFLINE'
+        END FROM ai_phones p WHERE p.ai_phone_id=$1
+    "#).bind(phone_id).fetch_optional(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(PhonePresence{ai_phone_id:phone_id,presence_state:state}))
+}
+
 async fn endpoint_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap)
     -> Result<Json<Vec<PhoneEndpoint>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -578,6 +653,8 @@ pub fn router(pool: PgPool) -> Router {
         .route("/ai-phone/heartbeat", post(heartbeat_handler))
         .route("/ai-phone/reconnect", post(reconnect_handler))
         .route("/ai-phone/transfer", post(transfer_handler))
+        .route("/ai-phone/endpoints/register", post(register_endpoint_handler))
+        .route("/ai-phone/{phone_id}/presence", get(presence_handler))
         .route("/ai-phone/{phone_id}/endpoints", get(endpoint_list_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
         .route("/ai-phone/{phone_id}/messages/{message_id}/ack", post(ack_handler))
