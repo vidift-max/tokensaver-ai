@@ -19,11 +19,8 @@ BASELINE="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SE
   echo "schema=lab"
   echo "role=$(reader_psql -Atc 'SELECT current_user')"
   echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  SETTINGS="$(reader_psql -Atq -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='2s'; SET LOCAL idle_in_transaction_session_timeout='10s'; SET LOCAL row_security=off; SELECT current_setting('transaction_isolation')||'|'||current_setting('transaction_read_only')||'|'||current_setting('statement_timeout')||'|'||current_setting('lock_timeout')||'|'||current_setting('idle_in_transaction_session_timeout')||'|'||current_setting('row_security'); COMMIT")"
-  test "$SETTINGS" = "repeatable read|on|5s|2s|10s|off"
-  echo "transaction_settings=$SETTINGS"
-  echo "inventory_results:"
-  reader_psql -f "$ROOT/inventory.sql"
+  echo "inventory_results (single REPEATABLE READ READ ONLY transaction):"
+  reader_psql -Atq -f "$ROOT/inventory-transaction.sql"
 } > "$ARTIFACTS/inventory-report.txt"
 
 # Effective privilege checks: column-level SELECT on safe views only; no base-table content.
@@ -91,7 +88,7 @@ if grep -E 'PRIVATE_(PHONE_CONTENT|TEAM_MESSAGE_BODY|TEAM_ROOM_BODY|OUTBOX_PAYLO
 fi
 
 EXECUTOR_SHA="$(sha256sum "$ROOT/run-lab.sh" | awk '{print $1}')"
-SQL_SHA="$(cat "$ROOT/setup.sql" "$ROOT/inventory.sql" | sha256sum | awk '{print $1}')"
+SQL_SHA="$(cat "$ROOT/setup.sql" "$ROOT/inventory.sql" "$ROOT/inventory-transaction.sql" | sha256sum | awk '{print $1}')"
 REPORT_SHA="$(sha256sum "$ARTIFACTS/inventory-report.txt" | awk '{print $1}')"
 cat > "$ARTIFACTS/manifest.json" <<EOF
 {
@@ -113,7 +110,7 @@ cat > "$ARTIFACTS/manifest.json" <<EOF
   "report_sha256": "$REPORT_SHA"
 }
 EOF
-sha256sum "$ROOT/run-lab.sh" "$ROOT/setup.sql" "$ROOT/inventory.sql" "$ARTIFACTS/inventory-report.txt" > "$ARTIFACTS/recomputed-sha256.txt"
+sha256sum "$ROOT/run-lab.sh" "$ROOT/setup.sql" "$ROOT/inventory.sql" "$ROOT/inventory-transaction.sql" "$ARTIFACTS/inventory-report.txt" > "$ARTIFACTS/recomputed-sha256.txt"
 sha256sum -c "$ARTIFACTS/recomputed-sha256.txt"
 test "$(sha256sum "$ARTIFACTS/inventory-report.txt" | awk '{print $1}')" = "$REPORT_SHA"
 echo "PASS: manifest and independently recomputed SHA-256 hashes" > "$ARTIFACTS/hash-verification.txt"
