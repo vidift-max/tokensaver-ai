@@ -17,7 +17,7 @@ The Team Room service accepts these explicit values for `TEAM_ROOM_ENV`. If the 
 
 Unknown environment names fail startup. Do not use `development` or `test` for a deployed service. Developers and CI must opt in explicitly by setting `TEAM_ROOM_ENV=development` or `TEAM_ROOM_ENV=test`.
 
-Staging/production require valid `OIDC_ISSUER` and `OIDC_AUDIENCE`; `OIDC_JWKS_URL`, when supplied, must use HTTPS. Do not place OIDC client secrets, private keys, bearer tokens, or database passwords in source files, mission state, screenshots, logs, or release artifacts. Inject operational credentials through the deployment secret manager.
+Staging/production require valid `OIDC_ISSUER` and `OIDC_AUDIENCE`; `OIDC_JWKS_URL`, when supplied, must use HTTPS. `OIDC_ALLOW_HTTP_LOCALHOST=true` is rejected in staging/production even if the issuer itself is HTTPS. Do not place OIDC client secrets, private keys, bearer tokens, or database passwords in source files, mission state, screenshots, logs, or release artifacts. Inject operational credentials through the deployment secret manager.
 
 ## Desktop and Team Room
 

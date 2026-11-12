@@ -76,6 +76,10 @@ fn oidc_configuration_ready(required: bool, configured: bool) -> bool {
     !required || configured
 }
 
+fn production_oidc_transport_safe(required: bool, allow_http_localhost: bool) -> bool {
+    !required || !allow_http_localhost
+}
+
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     if oidc_configuration_ready(state.require_oidc, state.oidc.is_some()) && readiness(&state.pool).await {
         (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "ready" }))
@@ -466,6 +470,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let environment = env::var("TEAM_ROOM_ENV").unwrap_or_else(|_| "production".to_string());
     let require_oidc = environment_requires_oidc(environment.as_str())?;
     let oidc = match OidcConfig::from_env() {
+        Ok(config) if !production_oidc_transport_safe(require_oidc, config.allow_http_localhost) => {
+            return Err("OIDC_ALLOW_HTTP_LOCALHOST must be disabled in staging and production".into());
+        }
         Ok(config) => { tracing::info!(%environment, "OIDC workload trust configuration loaded"); Some(config) }
         Err(reason) if require_oidc => {
             return Err(format!("OIDC configuration is mandatory in {environment}: {reason}").into());
@@ -514,6 +521,9 @@ mod http_security_tests {
         assert!(!oidc_configuration_ready(true, false));
         assert!(oidc_configuration_ready(true, true));
         assert!(oidc_configuration_ready(false, false));
+        assert!(!production_oidc_transport_safe(true, true));
+        assert!(production_oidc_transport_safe(true, false));
+        assert!(production_oidc_transport_safe(false, true));
     }
 
     #[tokio::test]
