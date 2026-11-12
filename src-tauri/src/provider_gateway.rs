@@ -264,7 +264,7 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
     };
 
     let started = Instant::now();
-    let response = builder.json(&body).send().await.map_err(|e| {
+    let mut response = builder.json(&body).send().await.map_err(|e| {
         let timed_out = e.is_timeout();
         GatewayError::new(if timed_out { "TIMEOUT" } else { "TRANSPORT_ERROR" },
             if timed_out { "Provider request timed out." } else { "Provider transport failed." }, false, &request_id, None)
