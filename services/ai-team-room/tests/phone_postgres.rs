@@ -100,6 +100,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let provisioned:Value=serde_json::from_slice(&bytes).unwrap();
     let first = get_my_phone(&pool,&identity_a).await.expect("read explicitly provisioned permanent phone");
     assert_eq!(provisioned["ai_phone_id"],first.phone.ai_phone_id.to_string());
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+        Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"offline message is durably queued before endpoint attach");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"repeated provision is idempotent");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
@@ -143,14 +146,20 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
+    assert!(inbox.iter().any(|m|m["idempotency_key"]=="offline-queued"),"offline message is recovered after endpoint attach");
     let http_message=inbox.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
     assert_eq!(http_message["message_state"],"DELIVERED");
     let message_id=http_message["message_id"].as_str().unwrap();
+    let response=http_call(&app,"GET","/ai-phone/sent",Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"durable sender history is available");
+    let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
+    let sent:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
+    assert!(sent.iter().any(|m|m["message_id"]==message_id),"sender history contains the persisted outgoing message");
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),None).await;
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let retried:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
     let retried_message=retried.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
-    assert_eq!(retried_message["attempt_count"],2,"unacknowledged delivery is retried on the next authenticated poll");
+    assert_eq!(retried_message["attempt_count"],1,"repeated history polling does not inflate delivery attempts");
     assert_eq!(retried_message["message_state"],"DELIVERED");
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
