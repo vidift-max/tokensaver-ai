@@ -2,6 +2,8 @@ name: Distributed Runner PostgreSQL Lab
 
 permissions:
   contents: read
+env:
+  MISSION_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 on:
   push:
@@ -59,7 +61,9 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p distributed-runner-evidence
-          printf 'commit=%s\ntest=Rust PostgreSQL lease concurrency\n' "$GITHUB_SHA" > distributed-runner-evidence/test.log
+          printf 'commit=%s\n' "$MISSION_SOURCE_SHA" > distributed-runner-evidence/test.log
+          printf 'merge_commit=%s\n' "$GITHUB_SHA" >> distributed-runner-evidence/test.log
+          printf 'test=Rust PostgreSQL lease concurrency\n' >> distributed-runner-evidence/test.log
           set +e
           cargo test --manifest-path services/ai-team-room/Cargo.toml ten_concurrent_executors_one_winner_then_expiry_reassignment_and_old_fence_rejection -- --nocapture 2>&1 | tee -a distributed-runner-evidence/test.log
           result=${PIPESTATUS[0]}
@@ -141,7 +145,8 @@ jobs:
             process_evidence="$(cat distributed-runner-evidence/runner-process-evidence.json)"
           fi
           jq -n \
-            --arg sha "$GITHUB_SHA" \
+            --arg sha "$MISSION_SOURCE_SHA" \
+            --arg merge_sha "$GITHUB_SHA" \
             --argjson rust_exit "${RUST_EXIT:-99}" \
             --argjson build_exit "${BUILD_EXIT:-99}" \
             --argjson handoff_exit "${HANDOFF_EXIT:-99}" \
@@ -149,6 +154,7 @@ jobs:
             --argjson process "$process_evidence" \
             '{
               commit_sha:$sha,
+              merge_commit_sha:$merge_sha,
               workflow:"Distributed Runner PostgreSQL Lab",
               database:"PostgreSQL 16 shared service container",
               team_room:"real Axum service process",

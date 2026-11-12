@@ -374,7 +374,7 @@ try{
   };
   const outputDir=process.env.DISTRIBUTED_EVIDENCE_DIR||"distributed-runner-evidence";
   fs.mkdirSync(outputDir,{recursive:true});
-  fs.writeFileSync(path.join(outputDir,"runner-process-evidence.json"),JSON.stringify({commit_sha:process.env.GITHUB_SHA||null,...evidence},null,2)+"\n");
+  fs.writeFileSync(path.join(outputDir,"runner-process-evidence.json"),JSON.stringify({commit_sha:process.env.MISSION_SOURCE_SHA||process.env.GITHUB_SHA||null,merge_commit_sha:process.env.GITHUB_SHA||null,...evidence},null,2)+"\n");
   console.log("RUNNER_PROCESS_EVIDENCE="+JSON.stringify(evidence));
 }catch(error){
   console.error(error instanceof Error?error.stack:String(error));
