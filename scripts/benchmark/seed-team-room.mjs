@@ -5,8 +5,8 @@
  * The raw tokens are exported only to the current GitHub Actions job environment.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const databaseUrl = process.env.DATABASE_URL;

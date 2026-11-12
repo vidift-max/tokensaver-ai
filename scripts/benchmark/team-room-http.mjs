@@ -6,6 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { benchNumber, benchBoolean, benchValue, createRateGate, messageOfBytes } from "./benchmark-config.mjs";
 
 const apiUrl = (process.env.TEAM_ROOM_API_URL || "").replace(/\/$/, "");
 const roomId = process.env.TEAM_ROOM_ROOM_ID || "";
@@ -13,12 +14,15 @@ const tokenList = process.env.TEAM_ROOM_SESSION_TOKENS_JSON
   ? JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON)
   : [process.env.TEAM_ROOM_SESSION_TOKEN || ""];
 const tokens = Array.isArray(tokenList) ? tokenList.filter(value => typeof value === "string" && value.length > 0) : [];
-const participantCount = Number(process.env.BENCH_PARTICIPANTS || tokens.length);
-const requireDistinct = process.env.BENCH_REQUIRE_DISTINCT_PARTICIPANTS === "true";
-const clients = Number(process.env.BENCH_CLIENTS || 8);
-const events = Number(process.env.BENCH_EVENTS || 100);
-const messages = Number(process.env.BENCH_MESSAGES || 0);
-const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS || 10000);
+const participantCount = benchNumber("BENCH_PARTICIPANTS", tokens.length, { min: 1 });
+const requireDistinct = benchBoolean("BENCH_REQUIRE_DISTINCT_PARTICIPANTS", false);
+const clients = benchNumber("BENCH_CLIENTS", 8, { min: 1 });
+const events = benchNumber("BENCH_EVENTS", 100, { min: 1 });
+const messages = benchNumber("BENCH_MESSAGES", 0);
+const timeoutMs = benchNumber("BENCH_TIMEOUT_MS", 10000, { min: 1 });
+const durationSeconds = benchNumber("BENCH_DURATION_SECONDS", 0, { integer: false });
+const ratePerSecond = benchNumber("BENCH_RATE_PER_SECOND", 0, { integer: false });
+const messageBytes = benchNumber("BENCH_MESSAGE_BYTES", 256, { min: 1 });
 
 if (!apiUrl || !roomId || tokens.length === 0) {
   console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, and TEAM_ROOM_SESSION_TOKENS_JSON or TEAM_ROOM_SESSION_TOKEN");
@@ -48,7 +52,7 @@ for (let i = 0; i < messages; i++) jobs.push({
   name: "message_write",
   method: "POST",
   path: `/team-room/${room}/messages`,
-  body: { client_message_id: randomUUID(), body: `benchmark message ${i} ${randomUUID()}`, parent_message_id: null },
+  body: { client_message_id: randomUUID(), body: messageOfBytes(`benchmark message ${i} ${randomUUID()} `, messageBytes), parent_message_id: null },
 });
 
 const measurements = new Map();
@@ -58,6 +62,8 @@ for (const job of jobs) {
 const failures = [];
 let cursor = 0;
 const started = performance.now();
+const rateGate = createRateGate(ratePerSecond);
+const deadline = durationSeconds > 0 ? started + durationSeconds * 1000 : Number.POSITIVE_INFINITY;
 
 async function execute(job, index, clientIndex) {
   const begin = performance.now();
@@ -87,7 +93,9 @@ async function execute(job, index, clientIndex) {
 async function worker(clientIndex) {
   while (true) {
     const index = cursor++;
-    if (index >= jobs.length) return;
+    if (index >= jobs.length || performance.now() >= deadline) return;
+    await rateGate();
+    if (performance.now() >= deadline) return;
     await execute(jobs[index], index, clientIndex);
   }
 }
@@ -114,7 +122,7 @@ for (const [name, samples] of measurements) {
     },
   };
 }
-const total = jobs.length;
+const total = [...measurements.values()].reduce((sum, samples) => sum + samples.length, 0);
 const successful = [...measurements.values()].flat().filter(x => x.ok).length;
 console.log(JSON.stringify({
   benchmark: "team-room-http",
@@ -135,13 +143,17 @@ console.log(JSON.stringify({
       seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0),
     },
     events_per_read_endpoint: events,
-    message_writes: messages,
+    message_writes_requested: messages,
+    duration_limit_seconds: durationSeconds,
+    rate_limit_requests_per_second: ratePerSecond,
+    message_size_bytes: messageBytes,
     timeout_ms: timeoutMs,
     data_seeded_by_probe: false,
     fixture_seeded_by_lab: Number(process.env.BENCH_SEED_MESSAGES || 0) > 0,
   },
   summary: {
     requests: total,
+    requests_planned: jobs.length,
     success: successful,
     errors: total - successful,
     duration_ms: Number(elapsedMs.toFixed(3)),
