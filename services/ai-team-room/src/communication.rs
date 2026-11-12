@@ -271,18 +271,23 @@ async fn websocket(
     // extractor-level 426 response.
     let (mut parts,_body)=request.into_parts();
     let ws=WebSocketUpgrade::from_request_parts(&mut parts,&pool).await.map_err(|_|StatusCode::UPGRADE_REQUIRED)?;
-    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal,identity.session_id)))
+    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,identity)))
 }
 
-async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:Uuid,session:Uuid){
+async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedIdentity){
+    // Keep the complete authenticated scope for the lifetime of the connection.
+    let tenant=identity.tenant_id;
+    let room_id=identity.room_id;
+    let principal=identity.principal_id;
+    let session=identity.session_id;
     let Ok(mut listener)=PgListener::connect_with(&pool).await else{return;};
     if listener.listen("team_room_outbox").await.is_err(){return;}
     let mut revalidate=tokio::time::interval(std::time::Duration::from_secs(15));
     loop{
         tokio::select!{
             _=revalidate.tick()=>{
-                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id JOIN room_memberships m ON m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
-                    .bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
+                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.tenant_id=s.tenant_id AND w.room_id=s.room_id AND w.session_id=s.session_id JOIN room_memberships m ON m.tenant_id=s.tenant_id AND m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.tenant_id=$1 AND s.session_id=$2 AND s.room_id=$3 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
+                    .bind(tenant).bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                 if !active{let _=socket.send(Message::Close(None)).await;break;}
             }
             incoming=socket.recv()=>{
@@ -295,20 +300,50 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
             notification=listener.recv()=>{
                 let Ok(notification)=notification else{break;};
                 let Ok(event_id)=Uuid::parse_str(notification.payload()) else{continue;};
-                let event=sqlx::query("SELECT event_type,payload,aggregate_id FROM outbox_events WHERE outbox_event_id=$1")
+                let event=sqlx::query("SELECT tenant_id,aggregate_type,aggregate_id,event_type,payload FROM outbox_events WHERE outbox_event_id=$1")
                     .bind(event_id).fetch_optional(&pool).await;
                 let Ok(Some(event))=event else{continue;};
+                // The outbox row, not its JSON payload or NOTIFY message, is the
+                // authority for tenant scope. Fail closed on every mismatch.
+                let event_tenant:Uuid=match event.try_get("tenant_id"){Ok(value)=>value,Err(_)=>continue};
+                if event_tenant!=tenant{continue;}
+                let aggregate_type:String=match event.try_get("aggregate_type"){Ok(value)=>value,Err(_)=>continue};
+                let aggregate_id:Uuid=match event.try_get("aggregate_id"){Ok(value)=>value,Err(_)=>continue};
                 let payload:serde_json::Value=event.try_get("payload").unwrap_or_default();
-                if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
-                let channel_id:Option<Uuid>=event.try_get("aggregate_id").ok();
-                if let Some(channel)=channel_id{
-                    let channel_type:Option<String>=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1")
-                        .bind(channel).fetch_optional(&pool).await.unwrap_or(None);
-                    if channel_type.as_deref()==Some("PRIVATE"){
-                        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members cm JOIN team_room_channels ch ON ch.channel_id=cm.channel_id JOIN principal_permissions pp ON pp.tenant_id=ch.tenant_id AND pp.principal_id=cm.principal_id AND pp.permission='private_chat' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=ch.room_id) WHERE cm.channel_id=$1 AND cm.principal_id=$2)")
-                            .bind(channel).bind(principal).fetch_one(&pool).await.unwrap_or(false);
-                        if !allowed{continue;}
-                    }
+                let channel_type:Option<String>;
+                let aggregate_matches=match aggregate_type.as_str(){
+                    "room"=>{
+                        channel_type=None;
+                        aggregate_id==room_id && sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM rooms WHERE tenant_id=$1 AND room_id=$2)")
+                            .bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    "team_room_channel"=>{
+                        channel_type=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1 AND tenant_id=$2 AND room_id=$3")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_optional(&pool).await.unwrap_or(None);
+                        channel_type.is_some()
+                    },
+                    "team_task"=>{
+                        channel_type=None;
+                        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM team_tasks WHERE task_id=$1 AND tenant_id=$2 AND room_id=$3)")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    "task_handoff"=>{
+                        channel_type=None;
+                        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM task_handoffs h JOIN team_tasks t ON t.task_id=h.task_id AND t.tenant_id=h.tenant_id AND t.room_id=h.room_id WHERE h.handoff_id=$1 AND h.tenant_id=$2 AND h.room_id=$3)")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    _=>{channel_type=None;false}
+                };
+                if !aggregate_matches{continue;}
+                if channel_type.as_deref()==Some("PRIVATE"){
+                    let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members cm JOIN team_room_channels ch ON ch.channel_id=cm.channel_id AND ch.tenant_id=$2 AND ch.room_id=$3 JOIN principal_permissions pp ON pp.tenant_id=ch.tenant_id AND pp.principal_id=cm.principal_id AND pp.permission='private_chat' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=ch.room_id) WHERE cm.channel_id=$1 AND cm.principal_id=$4)")
+                        .bind(aggregate_id).bind(tenant).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
+                    if !allowed{continue;}
+                }
+                // A payload room_id is only a consistency check; it never
+                // grants access without the tenant + aggregate DB checks above.
+                if let Some(payload_room)=payload.get("room_id").and_then(|v|v.as_str()){
+                    if payload_room!=room_id.to_string(){continue;}
                 }
                 let raw_type:String=event.try_get("event_type").unwrap_or_default();
                 let event_type=match raw_type.as_str(){"participant.admitted"|"participant.reconnected"=>"PARTICIPANT_JOINED","participant.left"=>"PARTICIPANT_LEFT",other=>other};
