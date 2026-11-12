@@ -23,7 +23,7 @@ Local seeding now supports a protected `BENCH_ENV_FILE` (0600, no overwrite) as 
 
 ## 3. Reproducibility and measurement method
 
-Added a JSON configuration file contract with environment-variable overrides. Added explicit duration cap, aggregate request/write rate cap and message payload byte size to HTTP and WebSocket probes. Fixed-count remains the default when duration/rate are zero. HTTP output records planned vs executed requests; WebSocket records connection/participant counts, accepted writes, expected/observed/missing/duplicate deliveries and heartbeat frame counts.
+Added a JSON configuration file contract with environment-variable overrides. Added explicit duration cap, aggregate request/write rate cap and message payload byte size to HTTP and WebSocket probes. Fixed-count remains the default when duration/rate are zero. HTTP output records planned vs executed requests, successful throughput and attempted RPS separately; WebSocket records connection/participant counts, accepted writes, expected/observed/missing/duplicate deliveries, message-write throughput and heartbeat frame counts. The run manifest rejects a deployed-SHA mismatch.
 
 The runbook defines percentile nearest-rank, throughput, error rate, fanout, heartbeat amplification, locks, buffers, WAL, EXPLAIN ANALYZE, and what cannot be inferred for lease/fencing. No arbitrary SLO was introduced.
 

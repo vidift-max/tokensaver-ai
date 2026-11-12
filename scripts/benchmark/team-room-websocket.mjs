@@ -197,6 +197,7 @@ try {
       duration_ms: Number(elapsed.toFixed(3)),
       delivery_latency_ms: { p50: pct(0.5), p95: pct(0.95), p99: pct(0.99) },
       delivery_throughput_per_second: elapsed > 0 ? Number((observed / (elapsed / 1000)).toFixed(3)) : null,
+      accepted_message_writes_per_second: elapsed > 0 ? Number((sendStarts.size / (elapsed / 1000)).toFixed(3)) : null,
     },
     failures: failures.slice(0, 50),
     duplicate_samples: duplicates.slice(0, 20),

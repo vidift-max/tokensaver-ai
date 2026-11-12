@@ -7,7 +7,11 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const sha = process.env.BENCH_CODE_SHA || process.env.GITHUB_SHA || "";
+const deployedSha = process.env.BENCH_DEPLOYED_SHA || process.env.GITHUB_SHA || "";
 if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error("BENCH_CODE_SHA or GITHUB_SHA must be the exact 40-character source SHA");
+if (!/^[a-f0-9]{40}$/i.test(deployedSha) || deployedSha.toLowerCase() !== sha.toLowerCase()) {
+  throw new Error("BENCH_DEPLOYED_SHA must match the exact source SHA under test");
+}
 const api = process.env.TEAM_ROOM_API_URL || "";
 const databaseUrl = process.env.DATABASE_URL || "";
 if (!api || !databaseUrl) throw new Error("TEAM_ROOM_API_URL and DATABASE_URL are required");
@@ -37,7 +41,7 @@ mkdirSync(artifactDir, { recursive: true });
 const manifest = {
   run_id: process.env.BENCH_RUN_ID || process.env.GITHUB_RUN_ID || "local-" + new Date().toISOString().replace(/[:.]/g,"-"),
   captured_at: new Date().toISOString(),
-  source: { sha, branch: process.env.GITHUB_REF_NAME || process.env.BENCH_BRANCH || null },
+  source: { sha, deployed_sha: deployedSha, branch: process.env.GITHUB_REF_NAME || process.env.BENCH_BRANCH || null },
   environment: { runner_os: process.platform, node: process.version, psql: spawnSync("psql", ["--version"], { encoding: "utf8" }).stdout.trim(), api_origin: apiUrl.origin, database_host: dbUrl.hostname, database_port: dbUrl.port || "5432", database_name: decodeURIComponent(dbUrl.pathname.slice(1)) },
   postgres: JSON.parse(pg.stdout.trim()),
   workload,
