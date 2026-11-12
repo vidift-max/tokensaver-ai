@@ -10,9 +10,6 @@ on:
     branches: [v2-saas-alpha]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
   group: distributed-runner-lab-${{ github.ref }}
   cancel-in-progress: false
