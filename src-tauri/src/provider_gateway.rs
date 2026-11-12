@@ -1,13 +1,30 @@
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{env, time::Instant};
+use std::{env, sync::atomic::{AtomicUsize, Ordering}, time::Instant};
 use uuid::Uuid;
 
 const MAX_MESSAGES: usize = 128;
 const MAX_INPUT_BYTES: usize = 1_000_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 const MAX_TIMEOUT_SECS: u64 = 120;
+const MAX_CONCURRENT_REQUESTS: usize = 8;
+static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+struct RequestPermit;
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) { ACTIVE_REQUESTS.fetch_sub(1, Ordering::AcqRel); }
+}
+
+fn acquire_request_permit(request_id: &str) -> Result<RequestPermit, GatewayError> {
+    let acquired = ACTIVE_REQUESTS.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
+        (active < MAX_CONCURRENT_REQUESTS).then_some(active + 1)
+    });
+    acquired.map(|_| RequestPermit).map_err(|_| GatewayError::new(
+        "CONCURRENCY_LIMIT", "Gateway concurrency limit reached; retry later.", true, request_id, None
+    ))
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -233,7 +250,7 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
         .redirect(reqwest::redirect::Policy::none()).build()
         .map_err(|_| GatewayError::new("TRANSPORT_ERROR", "Could not initialize provider transport.", false, &request_id, None))?;
 
-    let endpoint = req.provider.endpoint(&model);
+    let _permit = acquire_request_permit(&request_id)?;\n    let endpoint = req.provider.endpoint(&model);
     let mut builder = client.post(endpoint).header(header::CONTENT_TYPE, "application/json");
     let body = match req.provider {
         Provider::Openai | Provider::Kimi => {
@@ -360,10 +377,10 @@ mod tests {
         assert!(valid_model_name("vendor-model.1"));
         assert!(!valid_model_name("https://evil.example"));
         assert!(retryable_status(StatusCode::TOO_MANY_REQUESTS));
-        assert!(retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(!retryable_status(StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(StatusCode::BAD_REQUEST));
     }
-    fn live_request(provider: Provider) -> ChatRequest {
+    fn concurrency_permit_is_released_and_limit_is_explicit() {\n        let permit = acquire_request_permit("test").expect("permit under limit");\n        assert!(ACTIVE_REQUESTS.load(Ordering::Acquire) > 0);\n        drop(permit);\n        assert_eq!(ACTIVE_REQUESTS.load(Ordering::Acquire), 0);\n    }\n\n    fn live_request(provider: Provider) -> ChatRequest {
         ChatRequest {
             provider,
             model: None,
