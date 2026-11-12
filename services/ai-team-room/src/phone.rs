@@ -480,7 +480,7 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
             "phone.message.delivered", serde_json::json!({"count":delivered_count})
         ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
-    let rows = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 ORDER BY sequence_no")
+    let rows = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND message_state <> 'ACK' ORDER BY sequence_no")
         .bind(phone_id).bind(identity.tenant_id).fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(rows))
