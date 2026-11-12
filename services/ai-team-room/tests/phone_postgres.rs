@@ -246,14 +246,14 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(ai_id).bind(tenant).bind(sender).execute(&pool).await;
     assert!(human_mapping.is_err(), "a HUMAN principal must never bind to a global AI identity");
     let message_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,1,'offline-msg-1',$6)")
+    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,2,'offline-msg-1',$6)")
         .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     let state: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(state,"PENDING");
 
-    let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,2,'offline-msg-1',$6) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
+    let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,3,'offline-msg-1',$6) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     assert_eq!(duplicate.rows_affected(),0);
@@ -270,7 +270,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(attached_f.endpoint_fence,7);
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
-    assert_eq!(pending,(1,"PENDING".to_string()));
+    assert_eq!(pending,(2,"PENDING".to_string()));
     sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=NOW(),attempt_count=attempt_count+1 WHERE message_id=$1")
         .bind(message_id).execute(&pool).await.unwrap();
     sqlx::query("UPDATE phone_messages SET message_state='ACK',acknowledged_at=NOW() WHERE message_id=$1")
