@@ -613,15 +613,15 @@ pub async fn provision_ai_identity(
     if existing.1 != request.identity_kind || existing.2 != request.display_label {
         return Err(PhoneError::Conflict);
     }
-    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,principal_id) DO NOTHING")
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(existing.0).bind(request.tenant_id).bind(request.principal_id)
         .execute(&mut *tx).await?;
+    let bound_ai: Option<Uuid> = sqlx::query_scalar(
+        "SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2"
+    ).bind(request.tenant_id).bind(request.principal_id).fetch_optional(&mut *tx).await?;
+    if bound_ai != Some(existing.0) { return Err(PhoneError::Conflict); }
     sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2) ON CONFLICT(ai_id,tenant_id) DO NOTHING")
         .bind(existing.0).bind(request.tenant_id).execute(&mut *tx).await?;
-    let bound_ai: Uuid = sqlx::query_scalar(
-        "SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2"
-    ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
-    if bound_ai != existing.0 { return Err(PhoneError::Conflict); }
 
     sqlx::query("INSERT INTO audit_events(audit_event_id,tenant_id,room_id,actor_principal_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,$3,$4,'ai.identity.bound','ai_identity',$5,'SUCCESS',$6)")
         .bind(Uuid::new_v4()).bind(caller.tenant_id).bind(caller.room_id).bind(caller.principal_id)
