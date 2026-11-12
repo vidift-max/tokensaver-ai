@@ -84,7 +84,7 @@ pub struct MissionLinkRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct PhoneSnapshot {
+pub struct PhoneSnapshot {
     phone: PhoneRecord,
     attachment: Option<AttachmentRecord>,
     mission: Option<Value>,
