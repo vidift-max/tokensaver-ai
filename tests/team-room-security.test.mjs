@@ -95,7 +95,7 @@ test("Recovery Worker rejects remote HTTP configuration without printing the ses
   });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /TEAM_ROOM_API_URL is invalid or insecure/);
-  assert.doesNotMatch(source, /<input|fetch\\s*\\(|new WebSocket|authorization\\s*:|apiUrl|setToken|http:\\/\\//i);
+  assert.doesNotMatch(source, /<input|fetch\s*\(|new WebSocket|authorization\s*:|apiUrl|setToken|http:\/\//i);
 });
 
 test("desktop Team Room UI fails closed and contains no manual endpoint or bearer input", () => {
