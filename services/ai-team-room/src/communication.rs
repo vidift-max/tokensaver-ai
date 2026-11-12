@@ -320,11 +320,15 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedI
                     "team_room_channel"=>{
                         channel_type=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1 AND tenant_id=$2 AND room_id=$3")
                             .bind(aggregate_id).bind(tenant).bind(room_id).fetch_optional(&pool).await.unwrap_or(None);
-                        let payload_channel=payload.get("channel_id")
-                            .or_else(||payload.get("message").and_then(|v|v.get("channel_id")))
-                            .or_else(||payload.get("attachment").and_then(|v|v.get("channel_id")))
-                            .and_then(|v|v.as_str());
-                        channel_type.is_some() && payload_channel==Some(aggregate_id.to_string().as_str())
+                        let expected_channel=aggregate_id.to_string();
+                        let payload_channels=[
+                            payload.get("channel_id").and_then(|v|v.as_str()),
+                            payload.get("message").and_then(|v|v.get("channel_id")).and_then(|v|v.as_str()),
+                            payload.get("attachment").and_then(|v|v.get("channel_id")).and_then(|v|v.as_str()),
+                        ];
+                        let has_payload_channel=payload_channels.iter().any(|value|value.is_some());
+                        let payload_channels_match=payload_channels.iter().flatten().all(|value|*value==expected_channel.as_str());
+                        channel_type.is_some() && has_payload_channel && payload_channels_match
                     },
                     "team_task"=>{
                         channel_type=None;
@@ -653,6 +657,14 @@ mod postgres_tests {
             .bind(mismatched_channel_event).bind(tenant).bind(channel_a).bind(room).bind(channel_b).execute(&pool).await.unwrap();
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
             "room member must reject payload channel ID that differs from authoritative aggregate channel");
+
+        // Top-level channel scope cannot mask a different channel embedded in
+        // the private message body itself.
+        let mismatched_nested_channel_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'ADVERSARIAL_NESTED_CHANNEL_TEST',jsonb_build_object('room_id',$4::text,'channel_id',$3::text,'message',jsonb_build_object('channel_id',$5::text,'body','must-not-leak')))")
+            .bind(mismatched_nested_channel_event).bind(tenant).bind(channel_a).bind(room).bind(channel_b).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "private channel members must reject a body whose embedded message belongs to another channel");
 
         // Concurrent outbox notifications are independently delivered to B;
         // the idempotent HTTP retry above already proves duplicate requests
