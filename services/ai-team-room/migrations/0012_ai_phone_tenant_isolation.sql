@@ -86,7 +86,7 @@ ALTER TABLE phone_endpoints ADD COLUMN tenant_id UUID;
 ALTER TABLE phone_endpoints ADD COLUMN ai_id UUID;
 UPDATE phone_endpoints e SET tenant_id=b.tenant_id,ai_id=b.ai_id
 FROM ai_phone_tenant_backfill b
-WHERE b.legacy_phone_id=e.ai_phone_id AND b.tenant_ordinal=1;
+WHERE b.legacy_phone_id=e.ai_phone_id;
 
 ALTER TABLE phone_attachments DROP CONSTRAINT phone_attachments_ai_phone_id_endpoint_id_fkey;
 ALTER TABLE phone_mission_links ADD COLUMN tenant_id UUID;
