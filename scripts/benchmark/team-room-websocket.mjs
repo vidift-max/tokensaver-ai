@@ -13,11 +13,12 @@ const token = process.env.TEAM_ROOM_SESSION_TOKEN || "";
 const clients = Number(process.env.BENCH_CLIENTS || 8);
 const messages = Number(process.env.BENCH_MESSAGES || 25);
 const settleMs = Number(process.env.BENCH_SETTLE_MS || 1500);
+const heartbeats = Number(process.env.BENCH_HEARTBEATS || 0);
 if (!base || !roomId || !token) {
   console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
-if (![clients, messages, settleMs].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0) {
+if (![clients, messages, settleMs, heartbeats].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0) {
   console.error("Invalid BENCH_CLIENTS / BENCH_MESSAGES / BENCH_SETTLE_MS");
   process.exit(2);
 }
@@ -30,6 +31,7 @@ const sendStarts = new Map();
 const duplicates = [];
 const failures = [];
 let receivedFrames = 0;
+let presenceChangedFrames = 0;
 
 async function ticket() {
   const response = await fetch(`${base}/team-room/${room}/ws-ticket`, { method: "POST", headers, body: "{}" });
@@ -55,6 +57,7 @@ for (let i = 0; i < clients; i++) {
     receivedFrames++;
     try {
       const frame = JSON.parse(String(event.data));
+      if (frame.type === "PRESENCE_CHANGED") { presenceChangedFrames++; return; }
       if (frame.type !== "MESSAGE_CREATED") return;
       const messageId = frame.payload?.message?.message_id;
       if (!messageId) return;
@@ -93,6 +96,12 @@ try {
     const prior = early.get(message.message_id) || [];
     for (const delivery of prior) record(message.message_id, delivery.client, delivery.at);
   }
+  let heartbeatWritesAccepted = 0;
+  for (let i = 0; i < heartbeats; i++) {
+    const response = await fetch(`${base}/team-room/heartbeat`, { method: "POST", headers, body: "{}", signal: AbortSignal.timeout(10000) });
+    if (response.ok) heartbeatWritesAccepted++;
+    else failures.push(`heartbeat_http_${response.status}`);
+  }
   await new Promise(resolve => setTimeout(resolve, settleMs));
   const elapsed = performance.now() - writeStart;
   const latencies = [];
@@ -108,7 +117,7 @@ try {
   console.log(JSON.stringify({
     benchmark: "team-room-websocket-fanout",
     generated_at: new Date().toISOString(),
-    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, message_writes_requested: messages, settle_ms: settleMs },
+    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
     summary: {
       websocket_connections_opened: sockets.length,
       message_writes_accepted: sendStarts.size,
@@ -117,6 +126,9 @@ try {
       missing_deliveries: expected - observed,
       duplicate_deliveries: duplicates.length,
       received_frames_total: receivedFrames,
+      heartbeat_writes_accepted: heartbeatWritesAccepted,
+      presence_changed_frames: presenceChangedFrames,
+      presence_frames_per_accepted_heartbeat: heartbeatWritesAccepted ? Number((presenceChangedFrames / heartbeatWritesAccepted).toFixed(3)) : null,
       duration_ms: Number(elapsed.toFixed(3)),
       delivery_latency_ms: { p50: pct(0.5), p95: pct(0.95), p99: pct(0.99) },
       delivery_throughput_per_second: elapsed > 0 ? Number((observed / (elapsed / 1000)).toFixed(3)) : null,
