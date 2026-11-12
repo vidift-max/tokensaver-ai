@@ -209,18 +209,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(foreign_tenant).bind(foreign_principal).bind(format!("foreign-subject-{foreign_principal}"))
         .execute(&pool).await.unwrap();
-    let (foreign_session,foreign_execution)=add_session(&pool,foreign_tenant,foreign_room,foreign_principal,foreign_participant).await;
+    let (foreign_session,_foreign_execution)=add_session(&pool,foreign_tenant,foreign_room,foreign_principal,foreign_participant).await;
     sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(foreign_tenant).bind(foreign_room).bind(foreign_participant).bind(foreign_principal).bind(foreign_session)
         .execute(&pool).await.unwrap();
     for permission in ["ai.identity.provision","phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
         grant(&pool,foreign_tenant,foreign_room,foreign_principal,permission).await;
     }
-    let identity_c=AuthenticatedIdentity {
-        tenant_id:foreign_tenant,participant_id:foreign_participant,principal_id:foreign_principal,
-        session_id:foreign_session,execution_id:foreign_execution,room_id:foreign_room,
-        issuer:"test-only".into(),subject:"foreign-test-only".into(),
-    };
     let token_c=bearer_for(&pool,foreign_session).await;
     let response=http_call(&app,"POST","/ai-phone/identities",Some(&token_c),Some(serde_json::json!({
         "identity_key":identity_key,"identity_kind":"TEST","display_label":"AI-PHONE-TEST-IDENTITY",
