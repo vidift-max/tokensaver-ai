@@ -90,6 +90,25 @@ pub struct PhoneSnapshot {
     pub mission: Option<Value>,
 }
 
+
+async fn record_phone_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    identity: &AuthenticatedIdentity,
+    phone_id: Uuid,
+    event_type: &str,
+    action: &str,
+    metadata: Value,
+) -> Result<(), PhoneError> {
+    sqlx::query("INSERT INTO audit_events(audit_event_id,tenant_id,room_id,actor_principal_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,$3,$4,$5,'ai_phone',$6,'SUCCESS',$7)")
+        .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(identity.room_id)
+        .bind(identity.principal_id).bind(action).bind(phone_id).bind(metadata.clone())
+        .execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'ai_phone',$3,$4,$5)")
+        .bind(Uuid::new_v4()).bind(identity.tenant_id).bind(phone_id).bind(event_type).bind(metadata)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+
 async fn owned_phone(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, identity: &AuthenticatedIdentity)
     -> Result<PhoneRecord, PhoneError> {
     let ai_id: Uuid = sqlx::query_scalar(
@@ -219,8 +238,13 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     ).bind(attachment_id).bind(phone.ai_phone_id).bind(request.endpoint_id).bind(identity.tenant_id)
       .bind(identity.room_id).bind(identity.principal_id).bind(identity.participant_id).bind(identity.session_id)
       .bind(identity.execution_id).bind(next_fence).execute(&mut *tx).await?;
+    record_phone_event(&mut tx, identity, phone.ai_phone_id,
+        if had_current { "PHONE_TRANSFERRED" } else { "PHONE_CONNECTED" },
+        if had_current { "phone.endpoint.transferred" } else { "phone.endpoint.attached" },
+        serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_fence":next_fence,"session_id":identity.session_id})
+    ).await?;
     tx.commit().await?;
-    Ok(sqlx::query_as::<_, AttachmentRecord>(
+    Ok(sqlx::query_as::<_, AttachmentRecord>
         "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1"
     ).bind(attachment_id).fetch_one(pool).await?)
 }
@@ -228,6 +252,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
 pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64) -> Result<(), PhoneError> {
     require_permission(pool, identity, "phone.detach").await.map_err(|_| PhoneError::Forbidden)?;
     let mut tx = pool.begin().await?;
+    validate_live_binding(&mut tx, identity).await?;
     let phone = owned_phone(&mut tx, identity).await?;
     let phone = sqlx::query_as::<_, PhoneRecord>(
         "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE ai_phone_id=$1 FOR UPDATE"
@@ -242,6 +267,10 @@ pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64)
         .bind(active.1).execute(&mut *tx).await?;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1")
         .bind(phone.ai_phone_id).execute(&mut *tx).await?;
+    record_phone_event(&mut tx, identity, phone.ai_phone_id, "PHONE_DISCONNECTED",
+        "phone.endpoint.detached",
+        serde_json::json!({"endpoint_id":active.1,"endpoint_fence":fence+1})
+    ).await?;
     tx.commit().await?;
     Ok(())
 }
