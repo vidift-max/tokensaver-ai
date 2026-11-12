@@ -5,6 +5,9 @@ concurrency:
   group: tokensaver-ai-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [v2-saas-alpha]
