@@ -529,26 +529,7 @@ jobs:
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/team-room-benchmark-service.log" ]; then
-            cp "$RUNNER_TEMP/team-room-benchmark-service.log" benchmark-artifacts/team-room-service.log
-            node --input-type=module - <<'NODE'
-            import { readFileSync, writeFileSync } from "node:fs";
-            const path = "benchmark-artifacts/team-room-service.log";
-            let log = readFileSync(path, "utf8");
-            let tokens = [];
-            try { tokens = JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON || "[]"); } catch {}
-            for (const token of tokens) if (token) log = log.split(token).join("[REDACTED_SESSION]");
-            log = log.replace(/Bearer\\s+[^\\s]+/gi, "Bearer [REDACTED]");
-            log = log.replace(/postgres(?:ql)?:\\/\\/[^\\s]+/gi, "[REDACTED_DATABASE_URL]");
-            writeFileSync(path, log);
-            NODE
-            if [ -n "${TEAM_ROOM_SESSION_TOKENS_JSON:-}" ]; then
-              node --input-type=module - <<'NODE'
-              import { readFileSync } from "node:fs";
-              const log = readFileSync("benchmark-artifacts/team-room-service.log", "utf8");
-              const tokens = JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON || "[]");
-              if (tokens.some(token => token && log.includes(token))) process.exit(1);
-              NODE
-            fi
+            node scripts/benchmark/redact-service-log.mjs "$RUNNER_TEMP/team-room-benchmark-service.log" benchmark-artifacts/team-room-service.log
           fi
       - name: Stop resource sampler
         if: always()
