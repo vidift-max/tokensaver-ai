@@ -106,6 +106,35 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"offline message is durably queued before endpoint attach");
+
+    // Two simultaneous requests with the same idempotency key and payload must
+    // converge on one durable message; the phone row lock serializes the race.
+    let race_path=format!("/ai-phone/{}/messages",first.phone.ai_phone_id);
+    let race_body=serde_json::json!({"idempotency_key":"concurrent-same-key","content":{"text":"one durable message"}});
+    let (race_left,race_right)=tokio::join!(
+        http_call(&app,"POST",&race_path,Some(&token_a),Some(race_body.clone())),
+        http_call(&app,"POST",&race_path,Some(&token_a),Some(race_body.clone()))
+    );
+    let race_statuses=[race_left.status(),race_right.status()];
+    assert!(race_statuses.contains(&axum::http::StatusCode::CREATED));
+    assert!(race_statuses.contains(&axum::http::StatusCode::OK));
+    let left_bytes=axum::body::to_bytes(race_left.into_body(),100_000).await.unwrap();
+    let right_bytes=axum::body::to_bytes(race_right.into_body(),100_000).await.unwrap();
+    let left_json:Value=serde_json::from_slice(&left_bytes).unwrap();
+    let right_json:Value=serde_json::from_slice(&right_bytes).unwrap();
+    assert_eq!(left_json["message_id"],right_json["message_id"],"concurrent identical retries return the same message ID");
+    let race_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-same-key'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(race_count,1,"concurrent identical retries create exactly one durable row");
+
+    // Reusing the same key with a different payload is a conflict, not a second
+    // message and not an internal server error.
+    let conflicting=http_call(&app,"POST",&race_path,Some(&token_a),
+        Some(serde_json::json!({"idempotency_key":"concurrent-same-key","content":{"text":"different payload"}}))).await;
+    assert_eq!(conflicting.status(),axum::http::StatusCode::CONFLICT);
+    let conflict_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-same-key'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(conflict_count,1,"conflicting payload cannot create a second message");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"repeated provision is idempotent");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
