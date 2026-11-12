@@ -2,7 +2,7 @@ name: AI-PHONE-01 Disposable Inventory Lab
 
 on:
   pull_request:
-    branches: [v2-saas-alpha]
+    branches: [mission/ai-phone-01]
     paths:
       - "tools/ai-phone-inventory-lab/**"
       - ".github/workflows/ai-phone-inventory-lab.yml"
