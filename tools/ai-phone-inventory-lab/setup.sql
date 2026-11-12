@@ -1,5 +1,6 @@
 \set ON_ERROR_STOP on
 CREATE ROLE inventory_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+ALTER ROLE inventory_reader PASSWORD 'lab-only-password';
 CREATE SCHEMA lab AUTHORIZATION postgres;
 REVOKE ALL ON SCHEMA lab FROM PUBLIC;
 GRANT USAGE ON SCHEMA lab TO inventory_reader;
@@ -40,7 +41,7 @@ INSERT INTO lab.checkpoints VALUES
 INSERT INTO lab.audit_events VALUES
  ('audit-a','tenant-a','phone.attach','SUCCESS',now(),'PRIVATE_AUDIT_METADATA_CANARY');
 INSERT INTO lab.outbox_events VALUES
- ('outbox-a','tenant-a','phone','now()'::timestamptz,'PRIVATE_OUTBOX_PAYLOAD_CANARY');
+ ('outbox-a','tenant-a','phone',now(),'PRIVATE_OUTBOX_PAYLOAD_CANARY');
 
 CREATE VIEW lab.inventory_tenants AS SELECT tenant_id,name FROM lab.tenants;
 CREATE VIEW lab.inventory_identities AS SELECT ai_id,identity_kind FROM lab.identities;
