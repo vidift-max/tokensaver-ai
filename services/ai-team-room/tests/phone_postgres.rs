@@ -531,8 +531,16 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let queued_id=queued_message["message_id"].as_str().unwrap().to_string();
     let inbox=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
     assert_eq!(inbox.status(),axum::http::StatusCode::OK);
-    sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=NOW() WHERE message_id=$1 AND tenant_id=$2")
-        .bind(Uuid::parse_str(&queued_id).unwrap()).bind(tenant).execute(&pool).await.unwrap();
+    let history_send=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),
+        Some(serde_json::json!({"idempotency_key":"acked-history-probe","content":{"text":"must remain in received history after ACK"}}))).await;
+    assert_eq!(history_send.status(),axum::http::StatusCode::CREATED);
+    let history_send_bytes=axum::body::to_bytes(history_send.into_body(),100_000).await.unwrap();
+    let history_send_json:Value=serde_json::from_slice(&history_send_bytes).unwrap();
+    let history_message_id=history_send_json["message_id"].as_str().unwrap().to_string();
+    let history_inbox=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(history_inbox.status(),axum::http::StatusCode::OK);
+    let ack_history=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,history_message_id),Some(&token_b),None).await;
+    assert_eq!(ack_history.status(),axum::http::StatusCode::NO_CONTENT,"ACK removes the message from pending inbox but retains durable history");
     sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3")
         .bind(endpoint_c).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await.unwrap();
     let heartbeat_after_revoke=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
@@ -561,7 +569,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(received_history.status(),axum::http::StatusCode::OK,"received history is independent of the pending inbox endpoint state");
     let history_bytes=axum::body::to_bytes(received_history.into_body(),100_000).await.unwrap();
     let history:Vec<Value>=serde_json::from_slice(&history_bytes).unwrap();
-    assert!(history.iter().any(|m|m["message_id"]==queued_id),"received history retains messages after ACK state transitions");
+    assert!(history.iter().any(|m|m["message_id"]==history_message_id && m["message_state"]=="ACK"),"received history retains ACKed messages after they leave the pending inbox");
+    assert!(history.iter().any(|m|m["message_id"]==queued_id),"received history also retains unacknowledged delivered messages");
 
     let endpoint_d=Uuid::new_v4();
     let register_d=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_b),Some(serde_json::json!({
