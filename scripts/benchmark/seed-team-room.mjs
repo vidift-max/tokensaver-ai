@@ -58,13 +58,13 @@ const sql = [
   "INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES " +
     values(participants.map((id,i) => [randomUUID(),tenants[0],rooms[0],id,principals[i],sessions[i],"ACTIVE"])) + ";",
   "INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) SELECT gen_random_uuid()," +
-    quote(tenants[0]) + "::uuid,p," + quote(rooms[0]) + "::uuid,perm FROM unnest(" + uuidArray(principals) + ") p CROSS JOIN unnest(ARRAY['room.read','room.write','task.read','attachment.read','attachment.upload','decision.propose','presence.update']::text[]) perm;",
+    quote(tenants[0]) + "::uuid,actor.principal_id," + quote(rooms[0]) + "::uuid,perms.permission FROM unnest(" + uuidArray(principals) + ") AS actor(principal_id) CROSS JOIN unnest(ARRAY['room.read','room.write','task.read','attachment.read','attachment.upload','decision.propose','presence.update']::text[]) AS perms(permission);",
   "INSERT INTO team_room_channels(channel_id,tenant_id,room_id,channel_type,created_by_principal_id) VALUES (" +
     [quote(channelId),quote(tenants[0]),quote(rooms[0]),"'GENERAL'",quote(principals[0])].join(",") + ");",
   "INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body,created_at) " +
     "SELECT md5('bench-message-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid," + quote(channelId) + "::uuid," +
     " " + uuidArray(principals) + "[((g-1)%" + participantCount + ")+1],md5('bench-client-'||g)::uuid,'seeded benchmark message '||g,NOW()-(g||' seconds')::interval FROM generate_series(1," + messageCount + ") g;",
-  "INSERT INTO team_room_message_reads(channel_id,principal_id,last_read_at) SELECT " + quote(channelId) + "::uuid,p,NOW()-INTERVAL '1 day' FROM unnest(" + uuidArray(principals) + ") p;",
+  "INSERT INTO team_room_message_reads(channel_id,principal_id,last_read_at) SELECT " + quote(channelId) + "::uuid,actor.principal_id,NOW()-INTERVAL '1 day' FROM unnest(" + uuidArray(principals) + ") AS actor(principal_id);",
   "INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id,created_at,updated_at) " +
     "SELECT md5('bench-task-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid,md5('bench-mission-'||g)::uuid,'Benchmark task '||g," + quote(principals[0]) + "::uuid,NOW()-(g||' seconds')::interval,NOW()-(g||' seconds')::interval FROM generate_series(1," + taskCount + ") g;",
   "INSERT INTO team_room_decisions(decision_id,tenant_id,room_id,author_principal_id,title,decision,created_at) " +
@@ -90,7 +90,7 @@ if (result.status !== 0) {
 
 const envFile = process.env.GITHUB_ENV;
 if (!envFile) throw new Error("GITHUB_ENV is required; refusing to print raw session tokens");
-for (const token of tokens) appendFileSync(envFile, `\n::add-mask::${token}`);
+for (const token of tokens) process.stdout.write("::add-mask::" + token + "\n");
 appendFileSync(envFile, [
   `TEAM_ROOM_API_URL=http://127.0.0.1:8081`,
   `TEAM_ROOM_ROOM_ID=${rooms[0]}`,
