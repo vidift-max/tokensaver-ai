@@ -587,6 +587,54 @@ mod postgres_tests {
             .json(&json!({"client_message_id":Uuid::new_v4(),"body":"private event must not fan out to C","parent_message_id":null})).send().await.unwrap();
         assert_eq!(private_event.status(),reqwest::StatusCode::CREATED);
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
+
+        // Independent tenant B: each socket must receive only events whose
+        // persisted tenant + aggregate scope matches its authenticated ticket.
+        let tenant_b=Uuid::new_v4();let room_b=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'communication-tenant-b')").bind(tenant_b).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,'communication-room-b')").bind(room_b).bind(tenant_b).execute(&pool).await.unwrap();
+        let actor_b=actor(&pool,tenant_b,room_b,"Tenant B Agent",&grants).await;
+        let ticket_b=request(app.clone(),"POST",format!("/team-room/{room_b}/ws-ticket"),&actor_b.token,Some(json!({}))).await;
+        assert_eq!(ticket_b.status(),StatusCode::OK);
+        let ticket_b_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(ticket_b.into_body(),4096).await.unwrap()).unwrap();
+        let ws_b_url=format!("ws://{address}/team-room/{room_b}/ws?ticket={}",ticket_b_json["ticket"].as_str().unwrap());
+        let mut ws_b_request=ws_b_url.into_client_request().unwrap();
+        ws_b_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut ws_b,_)=tokio_tungstenite::connect_async(ws_b_request).await.expect("tenant B websocket handshake");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        // An authenticated B principal cannot use the HTTP API to publish into A's room.
+        let cross_room_http=client.post(format!("http://{address}/team-room/{room}/messages"))
+            .bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"cross-tenant attempt","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(cross_room_http.status(),reqwest::StatusCode::FORBIDDEN);
+
+        // A normal B event is delivered to B and never to A.
+        let b_message=client.post(format!("http://{address}/team-room/{room_b}/messages"))
+            .bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"tenant B only","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(b_message.status(),reqwest::StatusCode::CREATED);
+        let b_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_b.next()).await.unwrap().unwrap().unwrap();
+        let b_event:serde_json::Value=serde_json::from_str(b_frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(b_event["type"],"MESSAGE_CREATED");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "tenant A socket must not receive tenant B's valid event");
+
+        // Adversarial database fixture: B-owned outbox row, B room aggregate,
+        // but attacker-controlled/inconsistent payload points at A's room.
+        // This proves consumer behavior for malformed persisted data, not an
+        // HTTP exploit. The API attempt above is tested independently.
+        let forged_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'ADVERSARIAL_TEST',jsonb_build_object('room_id',$4::text,'probe','must-not-cross-tenants'))")
+            .bind(forged_event).bind(tenant_b).bind(room_b).bind(room).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "tenant A socket must reject B-owned event even when payload room_id points to A");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws_b.next()).await.is_err(),
+            "tenant B socket must reject an event whose payload room_id contradicts its DB aggregate");
+
+        ws_b.close(None).await.unwrap();
         server.abort();
 
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
