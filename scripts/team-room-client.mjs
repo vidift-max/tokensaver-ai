@@ -45,9 +45,14 @@ export class TeamRoomClient {
   }
 
   async request(method, route, body) {
+    let requestUrl;
+    try {
+      requestUrl = resolveTeamRoomRequestUrl(this.baseUrl, route);
+    } catch {
+      throw new TeamRoomError("Team Room route is invalid or outside the configured origin", 0, "CONFIG_INVALID");
+    }
     let response;
     try {
-      const requestUrl = resolveTeamRoomRequestUrl(this.baseUrl, route);
       response = await fetch(requestUrl, {
         method,
         headers: { authorization: "Bearer " + this.token, accept: "application/json", ...(body === undefined ? {} : {"content-type":"application/json"}) },
@@ -56,7 +61,7 @@ export class TeamRoomClient {
         signal: AbortSignal.timeout(10000)
       });
     } catch {
-      throw new TeamRoomError("Team Room request failed; execution is fail-closed", 0, "NETWORK_FAILURE");
+      throw new TeamRoomError("Team Room request failed or redirect was rejected; execution is fail-closed", 0, "NETWORK_FAILURE");
     }
     if (response.status === 401) {
       this.token = "";

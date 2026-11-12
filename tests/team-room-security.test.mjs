@@ -37,7 +37,7 @@ test("rejects insecure or ambiguous Team Room origins", () => {
 test("request routes cannot escape the configured origin or traverse paths", () => {
   const base = "https://team-room.example.test";
   assert.equal(resolveTeamRoomRequestUrl(base, "/auth/me"), "https://team-room.example.test/auth/me");
-  for (const route of ["//evil.test/steal", "https://evil.test/steal", "/../steal", "/%2e%2e/steal", "/auth/me?x=1", "/auth/me#x", "/\\\\evil.test"]) {
+  for (const route of ["//evil.test/steal", "https://evil.test/steal", "/../steal", "/%2e%2e/steal", "/auth/me?x=1", "/auth/me#x", "/\\evil.test"]) {
     assert.throws(() => resolveTeamRoomRequestUrl(base, route), undefined, route);
   }
 });

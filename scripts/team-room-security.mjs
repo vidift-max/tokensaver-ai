@@ -12,7 +12,7 @@ export function normalizeTeamRoomBaseUrl(value) {
     throw new TypeError("Team Room API URL must be absolute");
   }
 
-  const hostname = parsed.hostname.toLowerCase().replace(/^\\[|\\]$/g, "");
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const loopback = LOOPBACK_HOSTS.has(hostname);
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
     throw new TypeError("Team Room API must use HTTPS except explicit loopback development");
@@ -26,8 +26,8 @@ export function normalizeTeamRoomBaseUrl(value) {
 
 export function resolveTeamRoomRequestUrl(baseUrl, route) {
   if (typeof route !== "string" || !route.startsWith("/") || route.startsWith("//") ||
-      route.includes("\\\\") || route.includes("?") || route.includes("#") ||
-      /[\\u0000-\\u001f\\u007f]/.test(route)) {
+      route.includes("\\") || route.includes("?") || route.includes("#") ||
+      /[\u0000-\u001f\u007f]/.test(route)) {
     throw new TypeError("Team Room API route must be an absolute path on the configured origin");
   }
 
