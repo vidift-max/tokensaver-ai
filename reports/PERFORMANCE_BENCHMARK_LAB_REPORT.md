@@ -357,3 +357,224 @@ Do not merge PR #6 as proof of performance improvement. Run the probes against a
 9. Atualizar este relatório com resultados numéricos derivados dos artefatos e decidir GO / GO CONDITIONED / NO-GO. Até lá, manter **NO-GO** para sign-off de desempenho e entrega externa.
 
 **Classificação do checkpoint:** laboratório executado e artefato preservado — **TESTADO**; resultados quantitativos ainda não analisados — **PENDENTE**; entrega externa de relatórios — **PENDENTE**; missão — **CHECKPOINT_PARTIAL / NO-GO**.
+
+
+---
+
+# QUANTITATIVE ARTIFACT ANALYSIS — 2026-11-12
+
+**Status:** `PERFORMANCE_PARTIAL`  
+**Artifact:** `13944119889` — `team-room-performance-benchmark-43219293235`  
+**Workflow run:** `43219293235`  
+**Artifact SHA-256 verified after download:** `4ad05211bf5f61e825853c52d19aff70d88999dfa5a1368ddba642e326f89f81`  
+**Workflow source SHA:** `23ac3c138562875736f831a5401b457d1dd5c87e`  
+**Report branch HEAD at this update:** `2129750de88bf04117bde1be568c104ffd420ae6`
+
+This section supersedes earlier statements in sections E–H and the prior checkpoint that the artifact had not yet been analyzed or that no multi-room noise-isolation scenario had run. The benchmark itself is not rerun here. The workflow artifact was downloaded, its ZIP digest was independently checked, and all 12 files listed below were inspected. The run's recorded source SHA is `23ac3c1...`; the current branch HEAD `2129750...` is a later report/checkpoint commit, not the SHA on which the benchmark workload ran.
+
+## 1. Artifact inventory
+
+All files found in the ZIP (12 total):
+
+1. `http-read-1.json`
+2. `http-read-2.json`
+3. `http-read-3.json`
+4. `http-message-writes.json`
+5. `websocket-fanout.json`
+6. `postgres-explain.txt`
+7. `postgres-stats-before-http.json`
+8. `postgres-stats-after-http.json`
+9. `postgres-stats-after-websocket.json`
+10. `resource-samples.csv`
+11. `seed-metadata.json`
+12. `team-room-service.log`
+
+The ZIP digest matched the GitHub artifact digest exactly. The artifact is retained in GitHub Actions; it was not deleted or overwritten.
+
+## 2. Dataset and execution envelope
+
+The benchmark ran against the isolated Team Room service at loopback `127.0.0.1:8081`, backed by PostgreSQL `16.15`. The fixture metadata records:
+
+- 20 tenants and 20 rooms;
+- 8 distinct authenticated participants/sessions in the target room;
+- 4 additional room IDs with 4 other-room participants/tokens;
+- 10,000 seeded messages;
+- 250 tasks, 250 decisions and 250 attachment references;
+- 8 active target-room presence memberships.
+
+This is an isolated CI fixture, not a production-like network deployment or a production capacity test.
+
+## 3. HTTP results
+
+### Read + heartbeat repetitions
+
+Each repetition used 8 concurrent workers and 100 requests per endpoint across seven endpoints (messages/history+unread, presence, heartbeat, participants, tasks, decisions and attachment references): 700 requests per repetition, 2,100 total. All three runs reported zero errors.
+
+| Run | Requests | Duration | Throughput | Errors |
+|---|---:|---:|---:|---:|
+| Read 1 | 700 | 2,427.582 ms | 288.353 req/s | 0 / 700 |
+| Read 2 | 700 | 1,042.315 ms | 671.582 req/s | 0 / 700 |
+| Read 3 | 700 | 993.634 ms | 704.484 req/s | 0 / 700 |
+| Combined active durations | 2,100 | 4,463.531 ms | 470.480 req/s | 0 / 2,100 |
+
+The combined throughput is total requests divided by the sum of the three measured run durations; it is not a continuous soak-test throughput. Percentiles below are the **median of the three per-run percentile summaries**, not pooled percentiles. Raw per-request latency samples were not included in the artifact, so exact pooled p50/p95/p99 are `NOT_AVAILABLE`.
+
+| Endpoint (300 requests total) | Median run p50 | Median run p95 | Median run p99 | Maximum observed |
+|---|---:|---:|---:|---:|
+| Messages history + unread | 18.673 ms | 33.581 ms | 40.419 ms | 234.197 ms |
+| Presence | 7.559 ms | 10.351 ms | 13.751 ms | 17.061 ms |
+| Heartbeat | 8.565 ms | 13.238 ms | 14.811 ms | 392.842 ms |
+| Participants | 7.281 ms | 10.808 ms | 13.185 ms | 17.644 ms |
+| Tasks | 12.201 ms | 16.304 ms | 17.973 ms | 19.718 ms |
+| Decisions | 11.824 ms | 15.315 ms | 16.817 ms | 52.428 ms |
+| Attachment references | 12.197 ms | 15.465 ms | 16.794 ms | 21.001 ms |
+
+Important tail observations:
+- Messages/history+unread run-1 p95/p99 were 227.070/233.528 ms, versus 33.351/40.419 ms and 33.581/37.194 ms in runs 2 and 3.
+- Heartbeat run-1 p95/p99/max were 286.120/376.737/392.842 ms. Runs 2 and 3 were 13.238/14.811/16.189 ms and 9.401/10.959/12.079 ms.
+- This first-run tail spike is real in the artifact. Its cause is **not established**; warm-up, contention or another transient cause must not be asserted without an isolated repeat and correlated traces.
+
+### Message writes
+
+The write run used 8 workers, 100 message writes and one request to each of the seven read endpoints: 107 total requests. It recorded 107 successes, zero errors, 0% error rate and 409.753 req/s over 261.133 ms.
+
+The `message_write` endpoint recorded:
+- p50: 14.531 ms
+- p95: 38.742 ms
+- p99: 90.337 ms
+- max: 92.811 ms
+- errors: 0 / 100
+
+The 409.753 req/s figure includes the seven auxiliary read requests; it is not message-write-only throughput.
+
+## 4. WebSocket and fanout
+
+The artifact records 8 sockets with 8 distinct session tokens and distinct participants, 50 accepted target-room message writes and 3,000 ms settling time.
+
+Observed:
+- Expected same-room deliveries: 400
+- Observed same-room deliveries: 400
+- Missing deliveries: 0
+- Duplicate deliveries: 0
+- Total received frames: 464
+- Delivery latency: p50 6.761 ms, p95 52.142 ms, p99 107.602 ms
+- Observed delivery throughput: 109.173 deliveries/s over 3,663.905 ms
+- Failures: none; duplicate samples: none
+
+The 464 frames reconcile to 400 message deliveries plus 64 presence frames. The test observed 8 accepted heartbeat writes and 64 `PRESENCE_CHANGED` frames (8 per heartbeat), with 0 missing presence frames.
+
+This is measured evidence for the tested eight-participant, one-target-room fanout scenario. It is not evidence of sustained high connection counts, reconnect/replay guarantees, or production network latency.
+
+## 5. Multi-room isolation — existing scenario found; no rerun required
+
+The existing workflow already passed four other room IDs and credentials to the WebSocket probe. During the target-room socket test it submitted 5 writes to each of those four rooms:
+
+- Other-room events requested: 20
+- Other-room writes accepted: 20
+- Frames from other rooms received by target-room sockets: 0
+
+This is a real cross-room noise/isolation check, not merely a source-level assertion. Therefore the requested conditional implementation was unnecessary and no new multi-room benchmark was added or repeated.
+
+Scope limitation: the probe did not open subscriber sockets in all four other rooms and verify each room's positive delivery independently. It proves that, in this execution, events written to four other rooms did not leak into the eight target-room sockets. It does not establish multi-room throughput scaling or quantify global PostgreSQL notification-channel cost.
+
+Source inspection at the artifact's code SHA also found `event_id_for_room_notification`, which rejects a notification carrying a different room hint before fetching its outbox row. The test `room_hint_filters_unrelated_notifications_before_outbox_fetch` covers that filter in code. The artifact's zero cross-room frames is runtime evidence for the exercised path.
+
+## 6. Heartbeat attribution and contamination
+
+HTTP heartbeat was not isolated from the other read routes: each of the three HTTP repetitions concurrently exercised 100 heartbeat calls and 100 calls to each of six other endpoints. Therefore overall read-run throughput is a mixed workload, not pure read throughput.
+
+The endpoint-specific heartbeat measurements are available above. The first repetition has a pronounced tail spike (p95 286.120 ms, p99 376.737 ms, max 392.842 ms), while repetitions 2 and 3 are materially lower. This is sufficient to flag heartbeat tail latency as an investigation target, but not to attribute the spike to database writes, outbox processing, or WebSocket fanout.
+
+The WebSocket phase provides a narrower attribution:
+- 8 heartbeat requests were accepted;
+- the outbox event-type count increased from 301 to 309 `PRESENCE_CHANGED` between the after-HTTP and after-WebSocket snapshots (+8);
+- 64 `PRESENCE_CHANGED` frames were observed, exactly 8 per accepted heartbeat across 8 sockets.
+
+This supports the expected 1 event per accepted heartbeat and 1 broadcast per connected target-room socket for this eight-heartbeat scenario. It does not measure isolated heartbeat request latency or isolate heartbeat-only PostgreSQL CPU/WAL cost. A dedicated heartbeat-only load test remains pending; do not repeat the existing mixed HTTP/WebSocket workloads.
+
+## 7. PostgreSQL query-plan analysis
+
+The captured fixture cardinalities were: 10,000 messages, 250 tasks, 250 decisions, 250 attachment references, 8 active room memberships and 1 target room/channel. Six query plans were captured with `EXPLAIN (ANALYZE, BUFFERS, WAL, SETTINGS)`.
+
+| Query | Execution time | Shared buffers | Observed plan |
+|---|---:|---:|---|
+| Message history | 0.054 ms | 20 hits | `team_room_messages_history_idx` index scan; nested loop and Memoize (43 hits, 8 misses) |
+| Unread count | 2.054 ms | 214 hits | Sequential scan of 10,000-message relation; 8,750 rows passed filter, 1,250 removed; nested-loop left join |
+| Presence snapshot | 0.127 ms | 23 hits | Hash joins, 8 output rows, 26 kB quicksort; task subquery uses `team_tasks_owner_lease_idx` |
+| Tasks | 0.089 ms | 6 hits | Sequential scan of 250 rows; top-N heapsort, 38 kB |
+| Decisions | 0.072 ms | 6 hits | Sequential scan of 250 rows; top-N heapsort, 50 kB |
+| Attachment references | 0.125 ms | 8 hits | Sequential scan of 250 rows, hash join, top-N heapsort, 50 kB |
+
+Findings:
+1. Message history uses the intended history index and stops after 51 rows; no missing index is demonstrated by this plan.
+2. Unread count is the dominant measured query in this six-query sample at 2.054 ms. Its message-table sequential scan reads 213 shared buffers and processes 8,750 rows. The join estimate is 2,917 rows versus 8,750 actual (approximately 3x under-estimation). This is a candidate for later index/query-shape evaluation at larger message cardinalities, not proof that an index is currently missing or that the query is a production bottleneck.
+3. Sequential scans on 250-row task, decision and attachment fixtures are not unexpected at this small scale; their measured execution times are below 0.13 ms.
+4. Presence uses an index for the correlated task lease lookup; no expensive sort/hash spill is visible. All observed sorts are small in-memory quicksort/top-N operations.
+5. The captured plans show shared-buffer hits; no per-plan disk read buffers or sort spills are shown. The SELECT plans do not provide write-WAL evidence.
+6. No lock wait or ungranted lock was observed in the final query/lock snapshot. This is a point-in-time snapshot, not a contention profile.
+
+PostgreSQL 16.15 counters:
+- Before HTTP: 252,174 shared hits, 354 shared reads, 79 commits, 0 deadlocks, 0 rollbacks, 0 temp files/bytes; outbox event count empty.
+- After HTTP: 425,020 shared hits, 393 shared reads, 11,833 commits, 0 deadlocks, 0 rollbacks, 0 temp files/bytes; event counts 301 `PRESENCE_CHANGED` and 100 `MESSAGE_CREATED`.
+- After WebSocket: 452,468 shared hits, 395 shared reads, 16,205 commits, 0 deadlocks, 0 rollbacks, 0 temp files/bytes; event counts 309 `PRESENCE_CHANGED` and 170 `MESSAGE_CREATED`.
+- WAL bytes reported by `pg_stat_wal`: 16,765,424 before HTTP; 17,321,836 after HTTP; 17,659,235 after WebSocket.
+- The outbox table snapshot reported 464 index scans after WebSocket and 401 sequential tuples read. The snapshots do not fully reconcile all table insertion counters with event-type counts (notably after HTTP); therefore do not assign every outbox counter increment to a specific endpoint.
+
+No SQL, schema, index, or service optimization was made.
+
+## 8. CPU and memory samples
+
+The artifact contains 8 one-second-ish samples, not a high-resolution profiler:
+- Team Room process RSS: 17,348–21,248 KiB.
+- Team Room process CPU sample: 0.1–43.4% (the CSV column is process CPU average since start).
+- PostgreSQL CPU sample: 0.03–68.54%.
+- PostgreSQL container memory: 37.18–125.9 MiB.
+
+These are coarse observations for this short CI run. They cannot be used as steady-state capacity, peak allocation, or production resource sizing.
+
+## 9. External report delivery
+
+Source/report inspection confirms distinct mechanisms:
+- Mission Runner stores local mission state, event history, checkpoints and prompt files.
+- Its `prompt-delivered` transition is disabled/fail-closed until a verified provider dispatch adapter exists.
+- Team Room persists general/private messages, uses `client_message_id` idempotency and a transactional outbox, and sends authorized notifications to connected WebSocket clients.
+
+Not found/proven in this mission:
+- external report dispatch to an AI/provider recipient;
+- durable recipient-level ACK/receipt;
+- retry policy and durable retry state;
+- idempotent recipient processing;
+- ordering/delivery cursor;
+- recovery/replay of pending external report deliveries after disconnection.
+
+**Classification:** local report/prompt preparation — IMPLEMENTED; Team Room message persistence/outbox/WebSocket — IMPLEMENTED; end-to-end external report delivery + ACK + retry + recovery — BLOCKED (no verified provider delivery adapter or recipient-ACK pipeline in the audited code).
+
+## 10. Communication between AIs
+
+The evidence distinguishes the layers:
+- **Team Room:** authenticated principals/participants, room membership and permission checks, persistent messages, idempotent message writes and outbox events — implemented and integration-tested.
+- **Mailbox:** no independent external-agent mailbox with recipient delivery receipts/ACK/retry was demonstrated by this mission's evidence.
+- **WebSocket:** authenticated transport and room-scoped fanout to connected test sessions — runtime-tested with 8 distinct test participants.
+- **Model/provider integration:** no evidence in this benchmark run that a model provider was invoked as an independent agent and that its generated response was delivered back into Team Room.
+- **Effective external AI-to-AI communication:** NOT VALIDATED. Endpoints and transport infrastructure alone do not prove two independently running external agents exchanged and acknowledged messages.
+
+## 11. Baseline comparison and optimization decision
+
+`BASELINE_COMPARISON_NOT_AVAILABLE`
+
+The artifact contains three repetitions of the same workload, which provide within-run repeatability observations, not a pre-change baseline. No comparable pre-optimization run, post-optimization run, or production workload baseline exists. No before/after latency, throughput, error, resource, database or WebSocket improvement can be calculated.
+
+No optimization is implemented in this update. Evidence-backed candidates for a future controlled experiment:
+1. Isolate heartbeat-only traffic and correlate each request with outbox insert count, `PRESENCE_CHANGED`, WebSocket sends, DB time and WAL. Investigate the first-run tail spike before changing cadence or semantics.
+2. Benchmark unread count at materially larger per-channel message cardinalities; compare the current scan and row-estimate error with candidate indexes/query rewrites using before/after plans.
+3. Scale multi-room subscribers and irrelevant events independently to quantify global LISTEN/fanout cost. The current four-room noise test proves no observed leakage but not scaling cost.
+4. Retain raw per-request latency samples in future runs so pooled percentiles and histograms can be calculated without reconstructing distributions from summaries.
+5. Keep message history and small task/decision/attachment scans unchanged unless larger realistic datasets show a regression.
+
+## 12. Final verdict
+
+`PERFORMANCE_PARTIAL`
+
+Reason: the existing artifact provides real HTTP, WebSocket, limited cross-room isolation, heartbeat-event and PostgreSQL measurements with verified provenance. However, the benchmark is a short isolated CI run; heartbeat was not tested in isolation; multi-room subscribers/scaling were not tested; resource sampling is coarse; no comparable baseline exists; external report ACK/retry/recovery and effective communication between independently running external AIs are not proven. Therefore the evidence is insufficient for `PERFORMANCE_VALIDATED`.
+
+**No benchmark was repeated. No production code, migration, schema, index, or workflow was changed. PR #6 was not merged or closed.**
