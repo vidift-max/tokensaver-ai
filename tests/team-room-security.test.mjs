@@ -99,13 +99,15 @@ test("Team Room requests reject redirects and keep the bearer on the configured 
   }
 });
 
-test("401 revokes the in-memory client token and requires fresh authentication", async () => {
-  const client = new TeamRoomClient(validEnv());
+test("401 revokes the in-memory client token and clears its injected environment source", async () => {
+  const env = validEnv();
+  const client = new TeamRoomClient(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("{}", { status: 401 });
   try {
     await assert.rejects(client.request("GET", "/auth/me"), error => error.code === "SESSION_INVALID");
     assert.equal(client.token, "");
+    assert.equal(env.TEAM_ROOM_SESSION_TOKEN, "");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -129,5 +131,5 @@ test("Recovery Worker rejects remote HTTP configuration without printing the ses
 test("desktop Team Room UI fails closed and contains no manual endpoint or bearer input", () => {
   const source = fs.readFileSync(new URL("../src/TeamRoom.tsx", import.meta.url), "utf8");
   assert.match(source, /acesso desktop suspenso/);
-  assert.doesNotMatch(source, /fetch\s*\(|new WebSocket|authorization\\s*:|Bearer|apiUrl|setToken|http:\/\//i);
+  assert.doesNotMatch(source, /<input|fetch\s*\(|new WebSocket|authorization\s*:|apiUrl|setToken|http:\/\//i);
 });

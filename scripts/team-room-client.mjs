@@ -27,6 +27,7 @@ export class TeamRoomError extends Error {
 export class TeamRoomClient {
   constructor(env = process.env) {
     this.baseUrl = (env.TEAM_ROOM_API_URL || "").replace(/\/+$/, "");
+    this.tokenSource = env;
     this.token = env.TEAM_ROOM_SESSION_TOKEN || "";
     this.allowHttpLoopback = env.TEAM_ROOM_ALLOW_HTTP_LOOPBACK === "true";
     this.environment = env.TEAM_ROOM_ENV || "production";
@@ -67,6 +68,9 @@ export class TeamRoomClient {
     }
     if (response.status === 401) {
       this.token = "";
+      if (this.tokenSource && typeof this.tokenSource.TEAM_ROOM_SESSION_TOKEN === "string") {
+        this.tokenSource.TEAM_ROOM_SESSION_TOKEN = "";
+      }
       throw new TeamRoomError("Team Room session expired or was revoked; the in-memory token was cleared", 401, "SESSION_INVALID");
     }
     const raw = await response.text();
