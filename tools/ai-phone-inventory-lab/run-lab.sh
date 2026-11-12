@@ -61,7 +61,7 @@ expect_denied SECRET "SELECT secret_value FROM lab.private_materials"
 test "$denials" -eq 19
 
 # row_security=off must fail rather than return a silently filtered partial inventory.
-if reader_psql -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL row_security=off; SELECT * FROM lab.rls_probe; COMMIT" > "$ARTIFACTS/rls-probe.log" 2>&1; then
+if reader_psql -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL row_security=off; SELECT * FROM lab.inventory_rls_probe; COMMIT" > "$ARTIFACTS/rls-probe.log" 2>&1; then
   echo "FAIL: RLS partial read did not fail closed" >&2; exit 1
 fi
 grep -qi 'row-level security' "$ARTIFACTS/rls-probe.log"
