@@ -149,6 +149,30 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(triple_count,1,"three concurrent requests must persist exactly one row");
     eprintln!("PASS: three concurrent identical idempotency retries converge on one durable row");
 
+    // Force the outbox write to fail after the message INSERT. The API transaction
+    // must roll back the message and audit row; retrying the same key must then work.
+    sqlx::query("CREATE OR REPLACE FUNCTION pg_temp.fail_ai_phone_outbox() RETURNS trigger LANGUAGE plpgsql AS $ BEGIN IF NEW.aggregate_type='ai_phone' AND NEW.aggregate_id=$1::uuid AND NEW.event_type='MESSAGE_RECEIVED' THEN RAISE EXCEPTION 'injected AI-PHONE outbox failure'; END IF; RETURN NEW; END $")
+        .bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
+    sqlx::query("CREATE TRIGGER ai_phone_injected_outbox_failure BEFORE INSERT ON outbox_events FOR EACH ROW EXECUTE FUNCTION pg_temp.fail_ai_phone_outbox()")
+        .execute(&pool).await.unwrap();
+    let failed_retry=http_call(&app,"POST",&race_path,Some(&token_a),Some(serde_json::json!({
+        "idempotency_key":"transaction-failure-retry","content":{"text":"retry after injected outbox failure"}
+    }))).await;
+    assert_eq!(failed_retry.status(),axum::http::StatusCode::INTERNAL_SERVER_ERROR,"injected outbox failure must fail the send transaction");
+    sqlx::query("DROP TRIGGER ai_phone_injected_outbox_failure ON outbox_events").execute(&pool).await.unwrap();
+    sqlx::query("DROP FUNCTION pg_temp.fail_ai_phone_outbox()").execute(&pool).await.unwrap();
+    let rolled_back:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='transaction-failure-retry'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(rolled_back,0,"failed outbox insert must roll back the preceding message row");
+    let retry_ok=http_call(&app,"POST",&race_path,Some(&token_a),Some(serde_json::json!({
+        "idempotency_key":"transaction-failure-retry","content":{"text":"retry after injected outbox failure"}
+    }))).await;
+    assert_eq!(retry_ok.status(),axum::http::StatusCode::CREATED,"same idempotency key can be retried after full transaction rollback");
+    let committed_retry:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='transaction-failure-retry'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(committed_retry,1,"retry after rollback commits exactly one message row");
+    eprintln!("PASS: injected outbox failure rolled back message; same idempotency key retried successfully");
+
     // Reusing the same key with a different payload is a conflict, not a second
     // message and not an internal server error.
     let conflicting=http_call(&app,"POST",&race_path,Some(&token_a),
