@@ -353,13 +353,19 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedI
                 if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
                 // Revalidate at the delivery boundary, not only on the 15s timer.
                 // Revocation during aggregate/ACL checks must close this socket before any payload is emitted.
-                let still_authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.tenant_id=s.tenant_id AND w.room_id=s.room_id AND w.session_id=s.session_id JOIN room_memberships m ON m.tenant_id=s.tenant_id AND m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.tenant_id=$1 AND s.session_id=$2 AND s.room_id=$3 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
-                    .bind(tenant).bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
-                if !still_authorized { let _=socket.send(Message::Close(None)).await; break; }
+                // Hold shared authorization locks through the actual socket write.
+                // A concurrent session/permission revocation therefore linearizes
+                // either before this check (no delivery) or after this write.
+                let mut delivery_tx=match pool.begin().await { Ok(tx)=>tx,Err(_)=>break };
+                let authorized_session:Option<Uuid>=sqlx::query_scalar("SELECT s.session_id FROM sessions s JOIN workload_executions w ON w.tenant_id=s.tenant_id AND w.room_id=s.room_id AND w.session_id=s.session_id JOIN room_memberships m ON m.tenant_id=s.tenant_id AND m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id JOIN principal_permissions pp ON pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id) WHERE s.tenant_id=$1 AND s.session_id=$2 AND s.room_id=$3 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' FOR SHARE OF s,w,m,pp")
+                    .bind(tenant).bind(session).bind(room_id).bind(principal).fetch_optional(&mut *delivery_tx).await.unwrap_or(None);
+                if authorized_session.is_none() { let _=delivery_tx.rollback().await; let _=socket.send(Message::Close(None)).await; break; }
                 let raw_type:String=event.try_get("event_type").unwrap_or_default();
                 let event_type=match raw_type.as_str(){"participant.admitted"|"participant.reconnected"=>"PARTICIPANT_JOINED","participant.left"=>"PARTICIPANT_LEFT",other=>other};
                 let data=serde_json::json!({"event_id":event_id,"type":event_type,"payload":payload});
-                if socket.send(Message::Text(data.to_string().into())).await.is_err(){break;}
+                let sent=socket.send(Message::Text(data.to_string().into())).await;
+                let committed=delivery_tx.commit().await;
+                if sent.is_err() || committed.is_err(){break;}
             }
         }
     }
