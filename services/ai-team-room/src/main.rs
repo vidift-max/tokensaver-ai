@@ -1,6 +1,7 @@
 mod tasks;
 mod handoffs;
 mod communication;
+mod phone;
 
 use ai_team_room_service::{
     admit_authenticated_participant, leave_participant, auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
@@ -441,7 +442,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(state.clone());
-    base.merge(communication::router(state.pool))
+    base.merge(communication::router(state.pool.clone())).merge(phone::router(state.pool))
 }
 
 #[tokio::main]
