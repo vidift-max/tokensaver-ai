@@ -234,8 +234,8 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
         .execute(&mut *tx).await?;
     let attachment_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO phone_attachments(attachment_id,ai_phone_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE')"
-    ).bind(attachment_id).bind(phone.ai_phone_id).bind(request.endpoint_id).bind(identity.tenant_id)
+        "INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE')"
+    ).bind(attachment_id).bind(phone.ai_phone_id).bind(phone.ai_id).bind(request.endpoint_id).bind(identity.tenant_id)
       .bind(identity.room_id).bind(identity.principal_id).bind(identity.participant_id).bind(identity.session_id)
       .bind(identity.execution_id).bind(next_fence).execute(&mut *tx).await?;
     record_phone_event(&mut tx, identity, phone.ai_phone_id,
