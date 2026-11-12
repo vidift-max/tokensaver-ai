@@ -616,3 +616,88 @@ No job failures were reported in either workflow. This is a statement about thes
 The successful CI and Runner workflows add confidence in build, platform, OIDC, PostgreSQL lease/fencing, handoff/recovery and independent Runner integration. They do not close the benchmark evidence gaps already documented: no comparable performance baseline; no isolated heartbeat-only load; no multi-room positive subscriber/scaling test; coarse resource sampling; no end-to-end external report delivery with recipient ACK/retry/recovery; and no demonstrated exchange between independently running external model agents. The original benchmark artifact remains the only performance workload evidence in this report. Therefore `PERFORMANCE_VALIDATED` is not justified.
 
 PR #6 remains unmerged and open. No benchmark was repeated and no production code or database structure was changed.
+
+
+---
+
+# MISSION 9.2 — PERFORMANCE CLOSURE (2026-11-12)
+
+## Scope and guardrails
+
+- Required branch: `mission-9/performance-benchmark-lab`.
+- Rebaseline SHA before this documentation-only closure: `bb114754cd7f15cf1f1ed91b072fa5f7b280a4ae`.
+- PR #6 remains open and unmerged.
+- No HTTP/WS benchmark was repeated.
+- No Rust source, production behavior, migration, schema, index, benchmark probe, or workflow was changed in this closure.
+- The existing benchmark artifact is reused as the source of performance measurements.
+
+## Round 1 — Rebaseline: COMPLETE
+
+- Branch exists and was compared against `bb114754cd7f15cf1f1ed91b072fa5f7b280a4ae`; immediately before this closure update, branch and baseline were identical (0 commits ahead, 0 behind).
+- CI #748, run `43330035775`: **SUCCESS**, 4/4 jobs completed, no pending jobs.
+- Runner PostgreSQL #271, run `43330034918`: **SUCCESS**, 1/1 job completed, no pending jobs.
+- PR #6 was returned by an open-PR search; it remains open and is not merged.
+
+## Round 2 — Isolated heartbeat: BLOCKED
+
+No isolated heartbeat-only workload was run. The existing HTTP measurements combine heartbeat calls with six other endpoint classes. The WebSocket phase also contains other message traffic. The artifact therefore cannot yield uncontaminated heartbeat-only throughput or p50/p95/p99/max. The repository CI workflow only syntax-checks benchmark probes; the available PostgreSQL/Runner workflow does not execute an isolated heartbeat benchmark. A dedicated isolated workload execution and its raw request samples are required. No values are inferred from the mixed workload.
+
+## Round 3 — Positive fanout: COMPLETE FROM EXISTING ARTIFACT
+
+The existing benchmark artifact (workflow run `43219293235`, artifact `team-room-performance-benchmark-43219293235`, artifact ID `13944119889`) already contains a positive same-room fanout scenario:
+- 8 connected sockets and 8 distinct participant/session identities;
+- 50 accepted same-room message writes;
+- expected deliveries: 400;
+- observed deliveries: 400;
+- missing deliveries: 0;
+- duplicate deliveries: 0;
+- delivery latency: p50 6.761 ms, p95 52.142 ms, p99 107.602 ms;
+- delivery throughput: 109.173 deliveries/s over 3,663.905 ms.
+
+This closes the requested positive fanout proof for one room using existing evidence. The workload was not repeated.
+
+## Round 4 — Multi-room positive isolation: BLOCKED / PARTIAL EVIDENCE
+
+The existing probe emitted 5 events to each of 4 other room IDs (20 accepted other-room events); target-room sockets received zero frames from those other rooms. This is useful negative isolation evidence only. It does not prove simultaneous positive delivery to legitimate subscribers in each of multiple rooms, nor per-room expected/received/duplicate counts and latency. The requested multi-room scenario remains unexecuted; no claim of multi-room fanout validation is made.
+
+## Round 5 — Comparison: BASELINE_UNAVAILABLE
+
+The artifact has three repetitions of the same benchmark workload, but these are within-run repetitions, not a historical pre-change baseline. No comparable pre-change run exists for the same fixture cardinalities, concurrency, software revision, and measurement method. No before/after improvement or regression percentage is calculated. Classification: `BASELINE_UNAVAILABLE`.
+
+## Round 6 — External ACK/retry/recovery: BLOCKED
+
+The audited implementation has local Mission Runner state/checkpoints and Team Room persisted messages, idempotency, transactional outbox, and WebSocket notifications. The missing component is a verified external provider/recipient dispatch adapter plus durable recipient-level delivery state: ACK/receipt, retry schedule/state, idempotent recipient processing, ordering/cursor, and recovery/replay after disconnection. The existing `prompt-delivered` transition remains fail-closed without verified provider dispatch. Chat persistence/outbox is not external report delivery. No ACK/retry test was fabricated.
+
+## Round 7 — Independent external AI agents: EXTERNAL_AGENT_COMMUNICATION_BLOCKED
+
+Runner PostgreSQL #271 proves two independent Mission Runner processes against shared PostgreSQL. It does not prove two independently running external AI/model agents participating in Team Room or exchanging generated messages. No verified external model-provider invocation/identity/dispatch integration and no two-agent end-to-end evidence were present. Two sockets from one process are not substituted for agents. Classification: `EXTERNAL_AGENT_COMMUNICATION_BLOCKED`.
+
+## Round 8 — Integrity: COMPLETE
+
+- The branch compared equal to the supplied initial SHA before this report-only update: 0 ahead / 0 behind, no changed paths.
+- The existing final closure commit `bb114754cd7f15cf1f1ed91b072fa5f7b280a4ae` changed only this report file.
+- This Mission 9.2 update changes only `reports/PERFORMANCE_BENCHMARK_LAB_REPORT.md`.
+- No production source, Rust, migration, schema, index, benchmark probe, or workflow change was made.
+- Existing benchmark data came from a disposable PostgreSQL 16 CI fixture; no persistent production database was targeted.
+- PR #6 was not merged or closed.
+
+## Round 9 — Final CI: PENDING AT REPORT COMMIT
+
+The report-only commit is pushed to the required PR branch. Exact-SHA CI and Runner results must be recorded from the workflows triggered by the PR update. Earlier CI #748 and Runner #271 remain SUCCESS, but are not substituted for checks on the new report commit. If the PR event does not trigger a workflow, record that limitation rather than claiming exact-SHA validation.
+
+## Round 10 — Final classification
+
+`PERFORMANCE_PARTIAL`
+
+The existing artifact proves measured HTTP/WS performance, positive same-room fanout, zero observed cross-room leakage in the tested negative scenario, PostgreSQL query plans/counters, and limited resource samples. The positive same-room fanout gap is closed from existing evidence. However, isolated heartbeat, positive multi-room subscriber delivery, a comparable historical baseline, external report ACK/retry/recovery, and real independent external AI-agent communication remain unproven or blocked. The evidence therefore does not satisfy `PERFORMANCE_VALIDATED`. The mission is not wholly blocked because substantial valid performance evidence already exists; the correct conservative result is `PERFORMANCE_PARTIAL`.
+
+## Provenance
+
+- Existing benchmark run: `43219293235`; source SHA `23ac3c138562875736f831a5401b457d1dd5c87e`.
+- Benchmark artifact ID: `13944119889`; SHA-256 `4ad05211bf5f61e825853c52d19aff70d88999dfa5a1368ddba642e326f89f81`.
+- Rebaseline commit: `bb114754cd7f15cf1f1ed91b072fa5f7b280a4ae`.
+- CI #748: `43330035775` — SUCCESS (4/4).
+- Runner #271: `43330034918` — SUCCESS (1/1).
+- PR #6: open, unmerged.
+
+**No benchmark was repeated. No production code or database behavior was changed. Do not merge PR #6.**
