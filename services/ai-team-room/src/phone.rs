@@ -419,20 +419,20 @@ async fn presence_handler(
     if !owns{return Err(StatusCode::NOT_FOUND);}
     let state:String=sqlx::query_scalar(r#"
         SELECT CASE
-          WHEN NOT EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id) THEN 'REGISTERED'
-          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.endpoint_status='REGISTERED') THEN 'RECONNECTING'
+          WHEN NOT EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id) THEN 'REGISTERED'
+          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND e.endpoint_status='REGISTERED') THEN 'RECONNECTING'
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
                 JOIN workload_executions w ON w.execution_id=a.execution_id AND w.session_id=a.session_id
-                WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                   AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
                   AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()) THEN
               CASE WHEN EXISTS(SELECT 1 FROM phone_endpoints e JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id
-                    WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                    WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                       AND e.last_seen_at>NOW()-INTERVAL '90 seconds') THEN 'CONNECTED' ELSE 'ATTACHED' END
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
-                WHERE a.ai_phone_id=p.ai_phone_id AND a.attachment_status='ACTIVE'
+                WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                   AND (s.status<>'ACTIVE' OR s.revoked_at IS NOT NULL OR s.expires_at<=NOW())) THEN 'OFFLINE'
-          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.endpoint_status='DETACHED') THEN 'DISCONNECTED'
+          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND e.endpoint_status='DETACHED') THEN 'DISCONNECTED'
           ELSE 'OFFLINE'
         END FROM ai_phones p WHERE p.ai_phone_id=$1 AND p.tenant_id=$2
     "#).bind(phone_id).bind(identity.tenant_id).fetch_optional(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
@@ -557,6 +557,7 @@ async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Js
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
     require_permission(&pool, &identity, "task.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
     let phone = owned_phone(&mut tx, &identity).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let task = sqlx::query_as::<_, (Uuid,Uuid)>("SELECT mission_id,task_id FROM team_tasks WHERE task_id=$1 AND room_id=$2 AND tenant_id=$3 AND owner_principal_id=$4 AND status IN ('OWNED','REASSIGNED','HANDOFF_PENDING','RECOVERY_REQUIRED','LEASE_EXPIRED')")
         .bind(request.task_id).bind(identity.room_id).bind(identity.tenant_id).bind(identity.principal_id)
