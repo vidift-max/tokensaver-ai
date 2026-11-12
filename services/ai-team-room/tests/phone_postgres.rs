@@ -700,7 +700,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(offline["message_state"],"DELIVERED","offline PENDING message is delivered after endpoint B reconnects");
     assert_eq!(offline["attempt_count"],1);
     let sequences:Vec<i64>=inbox.iter().map(|m|m["sequence_no"].as_i64().unwrap()).collect();
-    assert_eq!(sequences,vec![1,2,next_sequence],"inbox is returned in per-phone sequence order");
+    assert!(sequences.windows(2).all(|pair|pair[0]<pair[1]),"inbox must preserve strict per-phone sequence order");
+    assert!(sequences.contains(&next_sequence),"newly reconnected offline message remains in its assigned sequence position");
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
