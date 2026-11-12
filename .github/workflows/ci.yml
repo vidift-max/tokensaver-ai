@@ -488,21 +488,21 @@ jobs:
       - name: HTTP benchmark — read and heartbeat repetition 1
         env:
           BENCH_CLIENTS: "8"
-          BENCH_EVENTS: "40"
+          BENCH_EVENTS: "100"
           BENCH_MESSAGES: "0"
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-1.json
       - name: HTTP benchmark — read and heartbeat repetition 2
         env:
           BENCH_CLIENTS: "8"
-          BENCH_EVENTS: "40"
+          BENCH_EVENTS: "100"
           BENCH_MESSAGES: "0"
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-2.json
       - name: HTTP benchmark — read and heartbeat repetition 3
         env:
           BENCH_CLIENTS: "8"
-          BENCH_EVENTS: "40"
+          BENCH_EVENTS: "100"
           BENCH_MESSAGES: "0"
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-read-3.json
