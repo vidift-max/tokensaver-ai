@@ -138,7 +138,7 @@ if (githubEnvFile) {
   for (const token of [...tokens, ...otherTokens]) process.stdout.write("::add-mask::" + token + "\n");
 }
 const envFileContent = [
-  `TEAM_ROOM_API_URL=http://127.0.0.1:8081`,
+  `TEAM_ROOM_API_URL=${process.env.TEAM_ROOM_API_URL || "http://127.0.0.1:8081"}`,
   `TEAM_ROOM_ROOM_ID=${rooms[0]}`,
   `TEAM_ROOM_TENANT_ID=${tenants[0]}`,
   `TEAM_ROOM_CHANNEL_ID=${channelId}`,

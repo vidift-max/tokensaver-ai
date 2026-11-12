@@ -37,6 +37,7 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgres://team_room:ci-only-password@localhost:5432/team_room_benchmark
+      BENCH_CONFIG_FILE: scripts/benchmark/benchmark-config.example.json
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
