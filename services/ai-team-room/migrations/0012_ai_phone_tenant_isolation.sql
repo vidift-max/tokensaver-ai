@@ -1,10 +1,17 @@
 -- AI-PHONE-01 tenant isolation (forward-only).
 -- Global AI_ID remains global. Every tenant binding owns a separate AI_PHONE_ID.
--- The migration deliberately aborts when legacy endpoint ownership is ambiguous.
+-- The migration fails closed for every already-provisioned phone shared by multiple tenants.
+-- It never guesses which tenant keeps a legacy AI_PHONE_ID or silently rekeys another tenant.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM ai_identity_principals GROUP BY ai_id,tenant_id HAVING COUNT(*)>1) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: one global AI identity has multiple principal bindings in the same tenant';
+    END IF;
+    IF EXISTS (
+        SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id
+        GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants; an operator must approve an explicit tenant-to-phone identity mapping before migration';
     END IF;
     IF EXISTS (SELECT 1 FROM ai_phones p WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id)) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing phone has no tenant principal binding';
@@ -16,6 +23,24 @@ BEGIN
            OR EXISTS (SELECT 1 FROM phone_attachments a WHERE a.ai_phone_id=p.ai_phone_id)
     ) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: shared legacy phone has endpoint/attachment history without tenant ownership; reviewed endpoint backfill required';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id
+        WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id AND ip.tenant_id=m.tenant_id)
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: a legacy message tenant does not match the phone AI identity binding';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id
+        WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id AND ip.tenant_id=a.tenant_id)
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: a legacy attachment tenant does not match the phone AI identity binding';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM ai_phones p JOIN team_tasks t ON t.task_id=p.current_task_id
+        WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id AND ip.tenant_id=t.tenant_id)
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: current task tenant does not match the phone AI identity binding';
     END IF;
     IF EXISTS (SELECT 1 FROM phone_mission_links l LEFT JOIN team_tasks t ON t.task_id=l.task_id WHERE t.task_id IS NULL) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: mission link references a missing Team Room task';
@@ -45,33 +70,17 @@ ALTER TABLE ai_phones ADD COLUMN tenant_id UUID;
 ALTER TABLE ai_phones DROP CONSTRAINT ai_phones_ai_id_key;
 CREATE TEMP TABLE ai_phone_tenant_backfill ON COMMIT DROP AS
 SELECT p.ai_phone_id AS legacy_phone_id, p.ai_id, p.current_task_id AS legacy_current_task_id,
-       p.current_mission_id AS legacy_current_mission_id, tenants.tenant_id,
-       CASE WHEN row_number() OVER (PARTITION BY p.ai_id ORDER BY tenants.tenant_id)=1
-            THEN p.ai_phone_id ELSE gen_random_uuid() END AS target_phone_id,
-       row_number() OVER (PARTITION BY p.ai_id ORDER BY tenants.tenant_id) AS tenant_ordinal
+       p.current_mission_id AS legacy_current_mission_id, ip.tenant_id,
+       p.ai_phone_id AS target_phone_id
 FROM ai_phones p
-JOIN (SELECT DISTINCT ai_id, tenant_id FROM ai_identity_principals) tenants ON tenants.ai_id=p.ai_id;
+JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id;
 
+-- Existing AI_PHONE_ID values are preserved exactly. Shared legacy phone rows
+-- were rejected above and require an operator-approved tenant rekey plan.
 UPDATE ai_phones p
-SET tenant_id=m.tenant_id,
-    current_task_id=CASE WHEN (SELECT t.tenant_id FROM team_tasks t WHERE t.task_id=m.legacy_current_task_id)=m.tenant_id THEN m.legacy_current_task_id ELSE NULL END,
-    current_mission_id=CASE WHEN (SELECT t.tenant_id FROM team_tasks t WHERE t.task_id=m.legacy_current_task_id)=m.tenant_id THEN m.legacy_current_mission_id ELSE NULL END
+SET tenant_id=m.tenant_id
 FROM ai_phone_tenant_backfill m
-WHERE p.ai_phone_id=m.legacy_phone_id AND m.tenant_ordinal=1;
-
-INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at)
-SELECT m.target_phone_id,p.ai_id,m.tenant_id,p.phone_status,p.version,p.endpoint_fence,
-       CASE WHEN t.tenant_id=m.tenant_id THEN m.legacy_current_mission_id ELSE NULL END,
-       CASE WHEN t.tenant_id=m.tenant_id THEN m.legacy_current_task_id ELSE NULL END,
-       p.last_seen_at,p.created_at,p.updated_at
-FROM ai_phone_tenant_backfill m
-JOIN ai_phones p ON p.ai_phone_id=m.legacy_phone_id
-LEFT JOIN team_tasks t ON t.task_id=m.legacy_current_task_id
-WHERE m.tenant_ordinal>1;
-
-UPDATE phone_messages m SET ai_phone_id=b.target_phone_id
-FROM ai_phone_tenant_backfill b
-WHERE b.legacy_phone_id=m.ai_phone_id AND b.tenant_id=m.tenant_id;
+WHERE p.ai_phone_id=m.legacy_phone_id;
 
 ALTER TABLE phone_endpoints ADD COLUMN tenant_id UUID;
 ALTER TABLE phone_endpoints ADD COLUMN ai_id UUID;
@@ -80,27 +89,13 @@ FROM ai_phone_tenant_backfill b
 WHERE b.legacy_phone_id=e.ai_phone_id AND b.tenant_ordinal=1;
 
 ALTER TABLE phone_attachments DROP CONSTRAINT phone_attachments_ai_phone_id_endpoint_id_fkey;
-UPDATE phone_endpoints e SET ai_phone_id=b.target_phone_id
-FROM ai_phone_tenant_backfill b
-WHERE b.legacy_phone_id=e.ai_phone_id AND b.tenant_id=e.tenant_id;
-UPDATE phone_attachments a SET ai_phone_id=b.target_phone_id
-FROM ai_phone_tenant_backfill b
-WHERE b.legacy_phone_id=a.ai_phone_id AND b.tenant_id=a.tenant_id;
-
 ALTER TABLE phone_mission_links ADD COLUMN tenant_id UUID;
 ALTER TABLE phone_mission_links ADD COLUMN room_id UUID;
 UPDATE phone_mission_links l SET tenant_id=t.tenant_id,room_id=t.room_id
 FROM team_tasks t WHERE t.task_id=l.task_id;
-UPDATE phone_mission_links l SET ai_phone_id=b.target_phone_id
-FROM ai_phone_tenant_backfill b
-WHERE b.legacy_phone_id=l.ai_phone_id AND b.tenant_id=l.tenant_id;
 UPDATE ai_phones p SET current_task_id=l.task_id,current_mission_id=t.mission_id
 FROM phone_mission_links l JOIN team_tasks t ON t.task_id=l.task_id AND t.tenant_id=l.tenant_id
 WHERE p.ai_phone_id=l.ai_phone_id AND p.tenant_id=l.tenant_id;
-
-UPDATE ai_phones p SET current_task_id=NULL,current_mission_id=NULL
-WHERE p.current_task_id IS NOT NULL
-AND NOT EXISTS (SELECT 1 FROM team_tasks t WHERE t.task_id=p.current_task_id AND t.tenant_id=p.tenant_id);
 
 ALTER TABLE ai_phones ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE phone_endpoints ALTER COLUMN tenant_id SET NOT NULL;
