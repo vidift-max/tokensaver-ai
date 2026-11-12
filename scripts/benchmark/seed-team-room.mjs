@@ -34,6 +34,16 @@ const executions = ids(participantCount);
 const workloads = ids(participantCount);
 const tokens = Array.from({ length: participantCount }, () => randomBytes(32).toString("base64url"));
 const tokenHashes = tokens.map(token => createHash("sha256").update(token).digest("hex"));
+const otherRoomCount = Math.min(4, tenantCount - 1);
+const otherPrincipals = ids(otherRoomCount);
+const otherParticipants = ids(otherRoomCount);
+const otherSessions = ids(otherRoomCount);
+const otherExecutions = ids(otherRoomCount);
+const otherWorkloads = ids(otherRoomCount);
+const otherTokens = Array.from({ length: otherRoomCount }, () => randomBytes(32).toString("base64url"));
+const otherTokenHashes = otherTokens.map(token => createHash("sha256").update(token).digest("hex"));
+const otherSubjects = otherPrincipals.map(id => "benchmark-noise-" + id);
+const otherChannelIds = ids(otherRoomCount);
 const subjects = principals.map(id => `benchmark-${id}`);
 const issuer = "https://benchmark.invalid";
 const channelId = randomUUID();
@@ -57,6 +67,23 @@ const sql = [
     executions.map((id,i) => "(" + [quote(id),quote(tenants[0]),quote(rooms[0]),quote(participants[i]),quote(principals[i]),quote(sessions[i]),quote(issuer+"|"+subjects[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'"].join(",") + ")").join(",") + ";",
   "INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES " +
     values(participants.map((id,i) => [randomUUID(),tenants[0],rooms[0],id,principals[i],sessions[i],"ACTIVE"])) + ";",
+  "INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES " +
+    values(otherPrincipals.map((id,i) => [id,tenants[i+1],"AI",issuer,otherSubjects[i]])) + ";",
+  "INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES " +
+    values(otherParticipants.map((id,i) => [id,tenants[i+1],otherPrincipals[i],"Noise Agent "+(i+1)])) + ";",
+  "INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES " +
+    values(otherWorkloads.map((id,i) => [id,tenants[i+1],otherPrincipals[i],issuer,otherSubjects[i],"ACTIVE"])) + ";",
+  "INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES " +
+    otherSessions.map((id,i) => "(" + [quote(id),quote(tenants[i+1]),quote(rooms[i+1]),quote(otherPrincipals[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'","decode("+quote(otherTokenHashes[i])+",'hex')"].join(",") + ")").join(",") + ";",
+  "INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES " +
+    otherExecutions.map((id,i) => "(" + [quote(id),quote(tenants[i+1]),quote(rooms[i+1]),quote(otherParticipants[i]),quote(otherPrincipals[i]),quote(otherSessions[i]),quote(issuer+"|"+otherSubjects[i]),"NOW()","NOW()+INTERVAL '2 hours'","'ACTIVE'"].join(",") + ")").join(",") + ";",
+  "INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES " +
+    values(otherParticipants.map((id,i) => [randomUUID(),tenants[i+1],rooms[i+1],id,otherPrincipals[i],otherSessions[i],"ACTIVE"])) + ";",
+  "INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES " +
+    values(otherPrincipals.flatMap((id,i) => ["room.read","room.write","task.read","attachment.read","attachment.upload","decision.propose","presence.update"].map(permission => [randomUUID(),tenants[i+1],id,rooms[i+1],permission]))) + ";",
+  "INSERT INTO team_room_channels(channel_id,tenant_id,room_id,channel_type,created_by_principal_id) VALUES " +
+    values(otherChannelIds.map((id,i) => [id,tenants[i+1],rooms[i+1],"GENERAL",otherPrincipals[i]])) + ";",
+
   "INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) SELECT gen_random_uuid()," +
     quote(tenants[0]) + "::uuid,actor.principal_id," + quote(rooms[0]) + "::uuid,perms.permission FROM unnest(" + uuidArray(principals) + ") AS actor(principal_id) CROSS JOIN unnest(ARRAY['room.read','room.write','task.read','attachment.read','attachment.upload','decision.propose','presence.update']::text[]) AS perms(permission);",
   "INSERT INTO team_room_channels(channel_id,tenant_id,room_id,channel_type,created_by_principal_id) VALUES (" +
