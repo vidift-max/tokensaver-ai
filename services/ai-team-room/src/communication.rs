@@ -649,6 +649,44 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
             "room member must reject payload channel ID that differs from authoritative aggregate channel");
 
+        // Concurrent outbox notifications are independently delivered to B;
+        // the idempotent HTTP retry above already proves duplicate requests
+        // create exactly one durable event.
+        let post_one=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"concurrent B event one","parent_message_id":null})).send();
+        let post_two=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"concurrent B event two","parent_message_id":null})).send();
+        let (response_one,response_two)=tokio::join!(post_one,post_two);
+        assert_eq!(response_one.unwrap().status(),reqwest::StatusCode::CREATED);
+        assert_eq!(response_two.unwrap().status(),reqwest::StatusCode::CREATED);
+        for _ in 0..2 {
+            let frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_b.next()).await.unwrap().unwrap().unwrap();
+            let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(event["type"],"MESSAGE_CREATED");
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "simultaneous tenant B notifications must not reach tenant A");
+
+        // Reconnect with a fresh one-use ticket, then revoke the session and
+        // verify the live socket closes on server-side periodic revalidation.
+        ws_b.close(None).await.unwrap();
+        let reconnect_ticket=request(app.clone(),"POST",format!("/team-room/{room_b}/ws-ticket"),&actor_b.token,Some(json!({}))).await;
+        assert_eq!(reconnect_ticket.status(),StatusCode::OK);
+        let reconnect_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(reconnect_ticket.into_body(),4096).await.unwrap()).unwrap();
+        let reconnect_url=format!("ws://{address}/team-room/{room_b}/ws?ticket={}",reconnect_json["ticket"].as_str().unwrap());
+        let mut reconnect_request=reconnect_url.into_client_request().unwrap();
+        reconnect_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut ws_reconnected,_)=tokio_tungstenite::connect_async(reconnect_request).await.expect("websocket reconnect with fresh ticket");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let reconnect_message=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"after reconnect","parent_message_id":null})).send().await.unwrap();
+        assert_eq!(reconnect_message.status(),reqwest::StatusCode::CREATED);
+        let reconnect_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(reconnect_frame.into_text().unwrap().as_str()).unwrap()["type"],"MESSAGE_CREATED");
+        sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(actor_b.session).execute(&pool).await.unwrap();
+        let revoked_frame=tokio::time::timeout(std::time::Duration::from_secs(17),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(revoked_frame,axum::extract::ws::Message::Close(_)),"revoked session must close its active websocket");
+
         // Composite-FK regression checks: deliberately mismatched tenant/room
         // references must be rejected by PostgreSQL, not merely by handlers.
         let channel_b:Uuid=sqlx::query_scalar("SELECT channel_id FROM team_room_channels WHERE tenant_id=$1 AND room_id=$2 AND channel_type='GENERAL'")
