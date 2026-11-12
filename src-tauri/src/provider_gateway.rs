@@ -236,7 +236,9 @@ fn response_text(provider: Provider, body: &Value) -> Option<String> {
 }
 
 fn retryable_status(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+    // Only expose 429 as retryable metadata. A POST may have been accepted and billed
+    // before a 5xx/transport failure is observed, so replay is not safe by default.
+    status == StatusCode::TOO_MANY_REQUESTS
 }
 
 pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
@@ -381,6 +383,7 @@ mod tests {
         assert!(!retryable_status(StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(StatusCode::BAD_REQUEST));
     }
+    #[test]
     fn concurrency_permit_is_released_and_limit_is_explicit() {
         let permit = acquire_request_permit("test").expect("permit under limit");
         assert!(ACTIVE_REQUESTS.load(Ordering::Acquire) > 0);
