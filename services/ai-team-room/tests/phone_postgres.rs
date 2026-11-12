@@ -5,6 +5,27 @@ use ai_team_room_service::{
 };
 use sqlx::PgPool;
 use uuid::Uuid;
+use serde_json::Value;
+use sha2::{Digest,Sha256};
+use tower::ServiceExt;
+use axum::{body::Body,http::Request,response::Response,Router};
+
+
+async fn bearer_for(pool:&PgPool,session:Uuid)->String {
+    let token=format!("ai-phone-http-test-{session}");
+    let digest=Sha256::digest(token.as_bytes()).to_vec();
+    sqlx::query("UPDATE sessions SET token_hash=$1 WHERE session_id=$2")
+        .bind(digest).bind(session).execute(pool).await.unwrap();
+    token
+}
+
+async fn http_call(app:&Router,method:&str,uri:&str,token:Option<&str>,body:Option<Value>)->Response {
+    let mut builder=Request::builder().method(method).uri(uri);
+    if let Some(token)=token { builder=builder.header("authorization",format!("Bearer {token}")); }
+    if body.is_some() { builder=builder.header("content-type","application/json"); }
+    app.clone().oneshot(builder.body(Body::from(body.map(|v|v.to_string()).unwrap_or_default())).unwrap())
+        .await.unwrap()
+}
 
 async fn grant(pool: &PgPool, tenant: Uuid, room: Uuid, principal: Uuid, permission: &str) {
     sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)")
@@ -52,7 +73,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(principal).execute(&pool).await.unwrap();
 
-    for permission in ["phone.read","phone.attach","phone.detach","phone.transfer","phone.heartbeat"] {
+    for permission in ["phone.read","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack"] {
         grant(&pool,tenant,room,principal,permission).await;
     }
 
@@ -65,6 +86,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         session_id: session_a, execution_id: execution_a, room_id: room,
         issuer: "test-only".into(), subject: "test-only".into(),
     };
+    let token_a=bearer_for(&pool,session_a).await;
+    let app=ai_team_room_service::phone::router(pool.clone());
 
     let first = get_my_phone(&pool,&identity_a).await.expect("create permanent phone");
     let endpoint_a = Uuid::new_v4();
@@ -72,6 +95,33 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("attach endpoint A");
     assert_eq!(attached_a.endpoint_fence,1);
+
+    // Real Axum HTTP router E2E: authenticate with the persisted bearer hash and exercise
+    // the public phone routes rather than calling only the internal service functions.
+    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/endpoints",first.phone.ai_phone_id),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_a),Some(serde_json::json!({"endpoint_fence":attached_a.endpoint_fence}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+        Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED);
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
+    let inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
+    let http_message=inbox.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
+    assert_eq!(http_message["message_state"],"DELIVERED");
+    let message_id=http_message["message_id"].as_str().unwrap();
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"duplicate ACK is idempotent");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/endpoints",Uuid::new_v4()),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"unknown or unauthorized phone must not leak endpoint data");
+    let response=http_call(&app,"GET","/ai-phone/me",Some("invalid-session-token"),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED);
     let retry_a = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("idempotent attach retry");
@@ -99,12 +149,19 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         session_id: session_b, execution_id: execution_b, room_id: room,
         issuer: "test-only".into(), subject: "test-only".into(),
     };
+    let token_b=bearer_for(&pool,session_b).await;
     let endpoint_b = Uuid::new_v4();
     let attached_b = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_b, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-B"}),
     },false).await.expect("reconnect after session expiry");
     assert_eq!(attached_b.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(attached_b.endpoint_fence,2);
+    let response=http_call(&app,"POST","/ai-phone/reconnect",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"same AI phone reconnects through the HTTP route");
+    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"expired session A cannot operate after B reconnects");
     assert_ne!(attached_b.endpoint_id,attached_a.endpoint_id);
 
     // The expired old session cannot detach or mutate the newly fenced phone attachment.
