@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 import { TeamRoomClient } from "../scripts/team-room-client.mjs";
 import { normalizeTeamRoomBaseUrl, resolveTeamRoomRequestUrl } from "../scripts/team-room-security.mjs";
 
-const validEnv = (url = "https://team-room.example.test", allowHttpLoopback = false) => ({
+const validEnv = (url = "https://team-room.example.test", allowHttpLoopback = false, environment = "test") => ({
   TEAM_ROOM_API_URL: url,
   TEAM_ROOM_ALLOW_HTTP_LOOPBACK: allowHttpLoopback ? "true" : "false",
+  TEAM_ROOM_ENV: environment,
   TEAM_ROOM_SESSION_TOKEN: "synthetic-session-token",
   TEAM_ROOM_ROOM_ID: "10000000-0000-4000-8000-000000000001"
 });
@@ -19,9 +20,10 @@ test("accepts HTTPS origins and explicit loopback-only HTTP development", () => 
   assert.throws(() => normalizeTeamRoomBaseUrl("http://127.0.0.1:8081"));
   assert.throws(() => normalizeTeamRoomBaseUrl("http://localhost:8081"));
   assert.throws(() => normalizeTeamRoomBaseUrl("http://[::1]:8081"));
-  assert.equal(normalizeTeamRoomBaseUrl("http://127.0.0.1:8081", { allowHttpLoopback: true }), "http://127.0.0.1:8081");
-  assert.equal(normalizeTeamRoomBaseUrl("http://localhost:8081", { allowHttpLoopback: true }), "http://localhost:8081");
-  assert.equal(normalizeTeamRoomBaseUrl("http://[::1]:8081", { allowHttpLoopback: true }), "http://[::1]:8081");
+  assert.throws(() => normalizeTeamRoomBaseUrl("http://127.0.0.1:8081", { allowHttpLoopback: true }));
+  assert.equal(normalizeTeamRoomBaseUrl("http://127.0.0.1:8081", { allowHttpLoopback: true, environment: "test" }), "http://127.0.0.1:8081");
+  assert.equal(normalizeTeamRoomBaseUrl("http://localhost:8081", { allowHttpLoopback: true, environment: "test" }), "http://localhost:8081");
+  assert.equal(normalizeTeamRoomBaseUrl("http://[::1]:8081", { allowHttpLoopback: true, environment: "test" }), "http://[::1]:8081");
 });
 
 test("rejects insecure or ambiguous Team Room origins", () => {
@@ -58,7 +60,8 @@ test("Team Room client rejects unsafe URL configuration before making requests",
 
 test("loopback HTTP requires an explicit development opt-in in Runner clients", () => {
   assert.throws(() => new TeamRoomClient(validEnv("http://127.0.0.1:8081")), error => error.code === "CONFIG_INVALID");
-  assert.doesNotThrow(() => new TeamRoomClient(validEnv("http://127.0.0.1:8081", true)));
+  assert.doesNotThrow(() => new TeamRoomClient(validEnv("http://127.0.0.1:8081", true, "test")));
+  assert.throws(() => new TeamRoomClient(validEnv("http://127.0.0.1:8081", true, "production")), error => error.code === "CONFIG_INVALID");
 });
 
 test("Team Room requests reject redirects and keep the bearer on the configured origin", async () => {

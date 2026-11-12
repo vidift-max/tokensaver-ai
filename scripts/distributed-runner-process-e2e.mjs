@@ -82,7 +82,7 @@ function seed(){
   }
 }
 function runnerEnv(identity,stateDir){
-  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId,TEAM_ROOM_LEASE_SECONDS:"15"};
+  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId,TEAM_ROOM_LEASE_SECONDS:"15"};
 }
 function runSync(identity,stateDir,...args){
   const result=spawnSync(process.execPath,[runnerScript,...args],{encoding:"utf8",env:runnerEnv(identity,stateDir),timeout:20000,maxBuffer:1024*1024});
@@ -107,7 +107,7 @@ function stateForMission(stateDir,id){
 function runRecoveryAsync(identity,...args){
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[recoveryScript,...args],{
-      env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token},
+      env:{...process.env,TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token},
       stdio:["ignore","pipe","pipe"]
     });
     let stdout="",stderr="";

@@ -14,6 +14,7 @@ const maxWaitMs=Number(process.env.TEAM_ROOM_RECOVERY_MAX_WAIT_MS||"300000");
 const configuredBaseUrl=process.env.TEAM_ROOM_API_URL||"";
 const token=process.env.TEAM_ROOM_SESSION_TOKEN||"";
 const allowHttpLoopback=process.env.TEAM_ROOM_ALLOW_HTTP_LOOPBACK==="true";
+const environment=process.env.TEAM_ROOM_ENV||"production";
 if(!configuredBaseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
    !Number.isSafeInteger(pollMs)||pollMs<250||pollMs>60000||
    !Number.isSafeInteger(maxWaitMs)||maxWaitMs<1000||maxWaitMs>900000){
@@ -21,11 +22,11 @@ if(!configuredBaseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
   process.exit(2);
 }
 let baseUrl;
-try { baseUrl=normalizeTeamRoomBaseUrl(configuredBaseUrl,{allowHttpLoopback}); }
+try { baseUrl=normalizeTeamRoomBaseUrl(configuredBaseUrl,{allowHttpLoopback,environment}); }
 catch { console.error("TEAM_ROOM_API_URL is invalid or insecure"); process.exit(2); }
 async function request(method,route,body){
   let requestUrl;
-  try { requestUrl=resolveTeamRoomRequestUrl(baseUrl,route,{allowHttpLoopback}); }
+  try { requestUrl=resolveTeamRoomRequestUrl(baseUrl,route,{allowHttpLoopback,environment}); }
   catch { throw new Error("invalid Team Room API route"); }
   let response;
   try {

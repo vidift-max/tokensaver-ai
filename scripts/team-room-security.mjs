@@ -1,8 +1,15 @@
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
-export function normalizeTeamRoomBaseUrl(value, { allowHttpLoopback = false } = {}) {
+export function normalizeTeamRoomBaseUrl(value, { allowHttpLoopback = false, environment = "production" } = {}) {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     throw new TypeError("Team Room API URL is required");
+  }
+
+  if (!["development", "test", "staging", "production"].includes(environment)) {
+    throw new TypeError("TEAM_ROOM_ENV must be development, test, staging or production");
+  }
+  if (allowHttpLoopback && environment !== "development" && environment !== "test") {
+    throw new TypeError("Loopback HTTP is forbidden outside development and test environments");
   }
 
   let parsed;

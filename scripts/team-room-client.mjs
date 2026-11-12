@@ -29,6 +29,7 @@ export class TeamRoomClient {
     this.baseUrl = (env.TEAM_ROOM_API_URL || "").replace(/\/+$/, "");
     this.token = env.TEAM_ROOM_SESSION_TOKEN || "";
     this.allowHttpLoopback = env.TEAM_ROOM_ALLOW_HTTP_LOOPBACK === "true";
+    this.environment = env.TEAM_ROOM_ENV || "production";
     this.roomId = env.TEAM_ROOM_ROOM_ID || "";
     const configuredLeaseSeconds = env.TEAM_ROOM_LEASE_SECONDS ? Number(env.TEAM_ROOM_LEASE_SECONDS) : 60;
     if (!Number.isInteger(configuredLeaseSeconds) || configuredLeaseSeconds < 15 || configuredLeaseSeconds > 300) {
@@ -39,7 +40,7 @@ export class TeamRoomClient {
       throw new TeamRoomError("TEAM_ROOM_API_URL, TEAM_ROOM_SESSION_TOKEN and TEAM_ROOM_ROOM_ID are required; remote authority is unavailable", 0, "CONFIG_REQUIRED");
     }
     try {
-      this.baseUrl = normalizeTeamRoomBaseUrl(env.TEAM_ROOM_API_URL || "", { allowHttpLoopback: this.allowHttpLoopback });
+      this.baseUrl = normalizeTeamRoomBaseUrl(env.TEAM_ROOM_API_URL || "", { allowHttpLoopback: this.allowHttpLoopback, environment: this.environment });
     } catch {
       throw new TeamRoomError("TEAM_ROOM_API_URL is invalid or insecure; use an origin-only HTTPS URL (loopback HTTP is development-only)", 0, "CONFIG_INVALID");
     }
