@@ -62,6 +62,7 @@ Database constraints protect the same boundary:
 - Attachment-to-phone and attachment-to-endpoint composite keys.
 - Message-to-phone composite keys.
 - Mission link to phone and Team Room task composite keys.
+- The phone's `current_task_id/current_mission_id` pair references the same tenant-owned Team Room task and mission; the pair must be null or complete.
 
 Handlers also scope reads and mutations by the authenticated tenant. Foreign phone IDs are concealed as not found where appropriate. ACK and stale-session failures are rejected.
 
