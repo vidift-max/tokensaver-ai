@@ -248,6 +248,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-B-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B attaches to its own phone");
+    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_a),Some(serde_json::json!({
+        "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-A-cannot-claim-B-endpoint"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"tenant A cannot claim tenant B endpoint UUID");
     let revoked_endpoint=Uuid::new_v4();
     let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
         "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
