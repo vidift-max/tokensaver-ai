@@ -33,7 +33,8 @@ CREATE TABLE ai_phones (
     current_task_id UUID REFERENCES team_tasks(task_id) ON DELETE SET NULL,
     last_seen_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (ai_phone_id, ai_id)
 );
 
 CREATE TABLE phone_endpoints (
@@ -45,14 +46,16 @@ CREATE TABLE phone_endpoints (
     metadata JSONB NOT NULL DEFAULT '{}'::JSONB CHECK (jsonb_typeof(metadata) = 'object'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at TIMESTAMPTZ,
-    detached_at TIMESTAMPTZ
+    detached_at TIMESTAMPTZ,
+    UNIQUE (ai_phone_id, endpoint_id)
 );
 CREATE INDEX phone_endpoints_phone_idx ON phone_endpoints(ai_phone_id, created_at DESC);
 
 CREATE TABLE phone_attachments (
     attachment_id UUID PRIMARY KEY,
-    ai_phone_id UUID NOT NULL REFERENCES ai_phones(ai_phone_id) ON DELETE RESTRICT,
-    endpoint_id UUID NOT NULL REFERENCES phone_endpoints(endpoint_id) ON DELETE RESTRICT,
+    ai_phone_id UUID NOT NULL,
+    ai_id UUID NOT NULL,
+    endpoint_id UUID NOT NULL,
     tenant_id UUID NOT NULL,
     room_id UUID NOT NULL,
     principal_id UUID NOT NULL,
@@ -63,6 +66,12 @@ CREATE TABLE phone_attachments (
     attachment_status TEXT NOT NULL CHECK (attachment_status IN ('ACTIVE','DETACHED','FENCED')),
     attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     detached_at TIMESTAMPTZ,
+    FOREIGN KEY (ai_phone_id, ai_id)
+        REFERENCES ai_phones(ai_phone_id, ai_id) ON DELETE RESTRICT,
+    FOREIGN KEY (ai_phone_id, endpoint_id)
+        REFERENCES phone_endpoints(ai_phone_id, endpoint_id) ON DELETE RESTRICT,
+    FOREIGN KEY (ai_id, tenant_id, principal_id)
+        REFERENCES ai_identity_principals(ai_id, tenant_id, principal_id) ON DELETE RESTRICT,
     FOREIGN KEY (tenant_id, principal_id)
         REFERENCES principals(tenant_id, principal_id) ON DELETE RESTRICT,
     FOREIGN KEY (tenant_id, participant_id, principal_id)
@@ -95,6 +104,8 @@ CREATE TABLE phone_messages (
     delivered_at TIMESTAMPTZ,
     acknowledged_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (ai_phone_id, recipient_ai_id)
+        REFERENCES ai_phones(ai_phone_id, ai_id) ON DELETE RESTRICT,
     FOREIGN KEY (tenant_id, sender_principal_id)
         REFERENCES principals(tenant_id, principal_id) ON DELETE RESTRICT,
     UNIQUE (ai_phone_id, sender_principal_id, idempotency_key),
