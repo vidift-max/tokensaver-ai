@@ -1,12 +1,12 @@
 # MISSION 8 — AI PROVIDER GATEWAY MULTIMODEL REPORT
 
 **Date:** 2026-11-12  
-**Repository:** \`vidift-max/tokensaver-ai\`  
-**Target branch:** \`v2-saas-alpha\`  
-**Implementation branch:** \`mission-8/ai-provider-gateway\`  
+**Repository:** `vidift-max/tokensaver-ai`  
+**Target branch:** `v2-saas-alpha`  
+**Implementation branch:** `mission-8/ai-provider-gateway`  
 **Pull request:** https://github.com/vidift-max/tokensaver-ai/pull/3  
-**Initial target SHA:** \`e18557c65753714bf926845639526b22c0309826\`  
-**Implementation SHA before this report:** \`70034c29b85c386589b00f449d32dbd8591ec126\`
+**Initial target SHA:** `e18557c65753714bf926845639526b22c0309826`  
+**Implementation SHA before this report:** `4d1c1dffc7d9196fea20e8a1a64f6d3cd5231c69`
 
 > This report evaluates only the AI Provider Gateway. It does not certify the TokenSaver product for production or launch.
 
@@ -20,22 +20,22 @@ No provider API call was executed. No provider credential was available to this 
 
 ## 2. Initial SHA
 
-Target branch \`v2-saas-alpha\` was inspected at \`e18557c65753714bf926845639526b22c0309826\`. Repository metadata confirmed the branch and its current head. The branch head was not overwritten; Mission 8 work was isolated in a feature branch and PR #3.
+Target branch `v2-saas-alpha` was inspected at `e18557c65753714bf926845639526b22c0309826`. Repository metadata confirmed the branch and its current head. The branch head was not overwritten; Mission 8 work was isolated in a feature branch and PR #3.
 
 ## 3. Final SHA
 
-Implementation branch SHA before report creation: \`70034c29b85c386589b00f449d32dbd8591ec126\`.
+Implementation branch SHA before report creation: `70034c29b85c386589b00f449d32dbd8591ec126`.
 
 The report commit is a separate documentation-only commit and therefore has its own SHA. The code SHA above identifies the implementation state evaluated here.
 
 ## 4. Architecture created
 
-- Rust module: \`src-tauri/src/provider_gateway.rs\`.
-- Tauri commands: \`provider_registry\` and asynchronous \`provider_chat\`.
-- Frontend typed IPC wrapper: \`src/providerGateway.ts\`.
-- Request schema: \`contracts/schemas/provider-chat-request.json\`.
-- Architecture and runtime documentation: \`docs/AI_PROVIDER_GATEWAY.md\`.
-- HTTP transport: \`reqwest\` with rustls, bounded timeout, redirects disabled and bounded response chunk reads.
+- Rust module: `src-tauri/src/provider_gateway.rs`.
+- Tauri commands: `provider_registry` and asynchronous `provider_chat`.
+- Frontend typed IPC wrapper: `src/providerGateway.ts`.
+- Request schema: `contracts/schemas/provider-chat-request.json`.
+- Architecture and runtime documentation: `docs/AI_PROVIDER_GATEWAY.md`.
+- HTTP transport: `reqwest` with rustls, bounded timeout, redirects disabled and bounded response chunk reads.
 
 The desktop backend owns HTTP requests. Provider credentials are not passed to React. The gateway is not wired into Team Room, Runner or Recovery Worker in this mission.
 
@@ -55,7 +55,7 @@ Implemented text chat is declared. Streaming, tools, structured output, vision, 
 
 ## 7. OpenAI
 
-Adapter implemented for \`https://api.openai.com/v1/chat/completions\`, Bearer authentication, system/user/assistant mapping, response text extraction, usage normalization and request ID extraction.
+Adapter implemented for `https://api.openai.com/v1/chat/completions`, Bearer authentication, system/user/assistant mapping, response text extraction, usage normalization and request ID extraction.
 
 Structural tests cover the normalized request/response path. No OpenAI request was executed.
 
@@ -63,7 +63,7 @@ Structural tests cover the normalized request/response path. No OpenAI request w
 
 ## 8. Anthropic / Claude
 
-Adapter implemented for \`https://api.anthropic.com/v1/messages\`, \`x-api-key\`, Anthropic version header, separate system instruction, user/assistant messages, text block aggregation and input/output usage normalization.
+Adapter implemented for `https://api.anthropic.com/v1/messages`, `x-api-key`, Anthropic version header, separate system instruction, user/assistant messages, text block aggregation and input/output usage normalization.
 
 The existing Claude configuration remains separate; it does not store or supply a provider API key to the gateway. No Anthropic request was executed.
 
@@ -71,7 +71,7 @@ The existing Claude configuration remains separate; it does not store or supply 
 
 ## 9. Gemini
 
-Adapter implemented for Gemini \`generateContent\`, \`x-goog-api-key\`, contents/parts mapping, systemInstruction, generation configuration, response text extraction and usageMetadata normalization.
+Adapter implemented for Gemini `generateContent`, `x-goog-api-key`, contents/parts mapping, systemInstruction, generation configuration, response text extraction and usageMetadata normalization.
 
 No Gemini request was executed.
 
@@ -79,7 +79,7 @@ No Gemini request was executed.
 
 ## 10. Kimi / Moonshot
 
-Kimi has a distinct registry identity, credential variable and endpoint at \`https://api.moonshot.ai/v1/chat/completions\`. Its current chat request/response mapping uses the OpenAI-compatible message shape; this does not assert identical models, pricing, feature support or service behavior.
+Kimi has a distinct registry identity, credential variable and endpoint at `https://api.moonshot.ai/v1/chat/completions`. Its current chat request/response mapping uses the OpenAI-compatible message shape; this does not assert identical models, pricing, feature support or service behavior.
 
 No Moonshot request was executed.
 
@@ -110,15 +110,15 @@ No secrets were intentionally added to repository files, tests or reports. The c
 
 ## 12. Usage
 
-Provider-reported input, output and total token counts are normalized when present in the provider response. The response marks the source as \`provider_reported\`. Missing usage remains unknown; it is not fabricated.
+Provider-reported input, output and total token counts are normalized when present in the provider response. The response marks the source as `provider_reported`. Missing usage remains unknown; it is not fabricated.
 
 ## 13. Costs
 
-No provider prices are hardcoded. \`estimated_cost\` remains null. The existing Cost Simulator is not connected to this gateway and no billing or financial charge path was added.
+No provider prices are hardcoded. `estimated_cost` remains null. The existing Cost Simulator is not connected to this gateway and no billing or financial charge path was added.
 
 ## 14. Streaming
 
-Not implemented. Registry capability is false and requests with \`stream=true\` return \`UNSUPPORTED_CAPABILITY\`. No streaming integration is claimed.
+Not implemented. Registry capability is false and requests with `stream=true` return `UNSUPPORTED_CAPABILITY`. No streaming integration is claimed.
 
 ## 15. Retry
 
@@ -152,24 +152,24 @@ None. No provider request was sent to OpenAI, Anthropic, Gemini or Moonshot. No 
 ## 19. Credentials required
 
 Provision credentials outside source control and provide them to the desktop process using the documented environment variable names:
-- \`TOKENSAVER_OPENAI_API_KEY\` + \`TOKENSAVER_OPENAI_MODEL\`
-- \`TOKENSAVER_ANTHROPIC_API_KEY\` + \`TOKENSAVER_ANTHROPIC_MODEL\`
-- \`TOKENSAVER_GEMINI_API_KEY\` + \`TOKENSAVER_GEMINI_MODEL\`
-- \`TOKENSAVER_KIMI_API_KEY\` + \`TOKENSAVER_KIMI_MODEL\`
+- `TOKENSAVER_OPENAI_API_KEY` + `TOKENSAVER_OPENAI_MODEL`
+- `TOKENSAVER_ANTHROPIC_API_KEY` + `TOKENSAVER_ANTHROPIC_MODEL`
+- `TOKENSAVER_GEMINI_API_KEY` + `TOKENSAVER_GEMINI_MODEL`
+- `TOKENSAVER_KIMI_API_KEY` + `TOKENSAVER_KIMI_MODEL`
 
-Optional timeout: \`TOKENSAVER_PROVIDER_TIMEOUT_SECS\`.
+Optional timeout: `TOKENSAVER_PROVIDER_TIMEOUT_SECS`.
 
 Environment variables are a temporary bootstrap mechanism, not approved production-grade desktop secret storage. OS credential vault integration is a release blocker for production use.
 
 ## 20. Files modified
 
-- \`src-tauri/src/provider_gateway.rs\` — provider contracts, registry, HTTP adapters, normalization and unit tests.
-- \`src-tauri/Cargo.toml\` — reqwest/rustls dependency and stream feature for bounded response reads.
-- \`src-tauri/src/lib.rs\` — module and Tauri command registration.
-- \`src/providerGateway.ts\` — typed frontend IPC client.
-- \`contracts/schemas/provider-chat-request.json\` — formal request schema.
-- \`docs/AI_PROVIDER_GATEWAY.md\` — setup, endpoints, security boundary and limitations.
-- \`reports/AI_PROVIDER_GATEWAY_REPORT.md\` — this report.
+- `src-tauri/src/provider_gateway.rs` — provider contracts, registry, HTTP adapters, normalization and unit tests.
+- `src-tauri/Cargo.toml` — reqwest/rustls dependency and stream feature for bounded response reads.
+- `src-tauri/src/lib.rs` — module and Tauri command registration.
+- `src/providerGateway.ts` — typed frontend IPC client.
+- `contracts/schemas/provider-chat-request.json` — formal request schema.
+- `docs/AI_PROVIDER_GATEWAY.md` — setup, endpoints, security boundary and limitations.
+- `reports/AI_PROVIDER_GATEWAY_REPORT.md` — this report.
 
 No Team Room, Runner, Recovery Worker or PostgreSQL implementation file was changed.
 
@@ -197,9 +197,9 @@ The PR contains the following commits (chronological):
 
 ## 22. CI
 
-PR #3 targets \`v2-saas-alpha\`. The repository CI workflow includes Linux foundation checks (cargo check/test, npm install, mission tests, frontend build, source artifact), Windows foundation checks, Team Room PostgreSQL tests and Keycloak OIDC smoke. A separate distributed Runner PostgreSQL workflow also runs for the PR.
+PR #3 targets `v2-saas-alpha`. The repository CI workflow includes Linux foundation checks (cargo check/test, npm install, mission tests, frontend build, source artifact), Windows foundation checks, Team Room PostgreSQL tests and Keycloak OIDC smoke. A separate distributed Runner PostgreSQL workflow also runs for the PR.
 
-Workflow runs created for superseded intermediate commits were cancelled by branch synchronization/concurrency and are not counted as PASS. The final implementation SHA is \`70034c29b85c386589b00f449d32dbd8591ec126\`; final run conclusions must be read from the linked PR Checks before merge. No CI artifact is claimed unless the workflow completed successfully and uploaded it.
+Workflow runs created for superseded intermediate commits were cancelled by branch synchronization/concurrency and are not counted as PASS. The final implementation SHA before report-only commits is `4d1c1dffc7d9196fea20e8a1a64f6d3cd5231c69`. CI runs for this SHA were in progress when this report was revised; only completed job conclusions on the PR Checks may be counted as PASS. No CI artifact is claimed unless the workflow completed successfully and uploaded it.
 
 ## 23. Risks
 
