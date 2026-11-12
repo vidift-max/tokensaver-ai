@@ -277,6 +277,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id,checkpoint,checkpoint_version) VALUES($1,$2,$3,$4,'Foreign tenant task',$5,'{}'::jsonb,1)")
         .bind(foreign_task).bind(foreign_tenant).bind(foreign_room).bind(Uuid::new_v4()).bind(foreign_principal)
         .execute(&pool).await.unwrap();
+    let invalid_current_task=sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=(SELECT mission_id FROM team_tasks WHERE task_id=$1) WHERE ai_phone_id=$2 AND tenant_id=$3")
+        .bind(foreign_task).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await;
+    assert!(invalid_current_task.is_err(),"composite task/mission FK rejects a foreign tenant task pointer");
     let tenant_phone_count:i64=sqlx::query_scalar("SELECT COUNT(DISTINCT ai_phone_id) FROM ai_phones WHERE ai_id=$1 AND tenant_id IN ($2,$3)")
         .bind(ai_id).bind(tenant).bind(foreign_tenant).fetch_one(&pool).await.unwrap();
     assert_eq!(tenant_phone_count,2,"same AI_ID must have independent phone IDs in two tenants");
