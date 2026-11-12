@@ -14,6 +14,8 @@ mod filesystem;
 mod path_guard;
 mod project_storage;
 mod advanced;
+mod provider_gateway;
+mod usage_ledger;
 mod team_room_identity;
 
 use error::{AppError, AppResult};
@@ -165,5 +167,28 @@ fn add_import_root(app:tauri::AppHandle,path:String)->AppResult<Vec<path_guard::
 fn remove_import_root(app:tauri::AppHandle,path:String)->AppResult<Vec<path_guard::ImportRoot>>{path_guard::remove_root(&app,path)}
 #[tauri::command]
 fn list_import_roots(app:tauri::AppHandle)->AppResult<Vec<path_guard::ImportRoot>>{path_guard::list_roots(&app)}
+#[tauri::command]
+fn provider_registry()->provider_gateway::ProviderRegistry{provider_gateway::registry()}
+#[tauri::command]
+async fn provider_chat(app:tauri::AppHandle,request:provider_gateway::ChatRequest)->Result<provider_gateway::ChatResponse,provider_gateway::GatewayError>{
+    let request_id=Uuid::new_v4().to_string();
+    let started=std::time::Instant::now();
+    let path=app.path().app_data_dir().map_err(|_|provider_gateway::GatewayError{
+        code:"USAGE_LEDGER_UNAVAILABLE".into(),message:"Local usage ledger is unavailable; provider request was not sent.".into(),retryable:false,request_id:request_id.clone(),provider_status:None
+    })?.join("provider-usage.sqlite");
+    usage_ledger::start(&path,&request_id,&request).map_err(|_|provider_gateway::GatewayError{
+        code:"USAGE_LEDGER_UNAVAILABLE".into(),message:"Local usage ledger could not start; provider request was not sent.".into(),retryable:false,request_id:request_id.clone(),provider_status:None
+    })?;
+    match provider_gateway::complete_with_request_id(request,request_id.clone()).await {
+        Ok(mut response)=>{
+            if let Ok(cost)=usage_ledger::finish_success(&path,&response){response.estimated_cost=cost;}
+            Ok(response)
+        },
+        Err(error)=>{
+            let _=usage_ledger::finish_failure(&path,&request_id,&error.code,started.elapsed().as_millis());
+            Err(error)
+        }
+    }
+}
 #[cfg(test)] mod tests;
-#[cfg_attr(mobile,tauri::mobile_entry_point)] pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![health,sha256_text,estimate_tokens,initialize_project,import_text_file,file_center::list_project_files,file_center::read_file_version,integrity::verify_project,backup::create_project_backup,backup::restore_project_backup,smart_context::smart_context, safe_optimizer::optimize_text,project_memory::list_project_memory,project_memory::set_project_memory,history::list_operations,advanced::simulate_cost,advanced::list_templates,advanced::save_template,advanced::delete_template,advanced::editorial_validate,advanced::list_articles,advanced::find_internal_links,advanced::build_page,advanced::get_claude_config,advanced::save_claude_config,advanced::oneshot_capture,add_import_root,remove_import_root,list_import_roots]).setup(|app|{let _=app.path();Ok(())}).run(tauri::generate_context!()).expect("error while running TokenSaver AI");}
+#[cfg_attr(mobile,tauri::mobile_entry_point)] pub fn run(){tauri::Builder::default().invoke_handler(tauri::generate_handler![health,sha256_text,estimate_tokens,initialize_project,import_text_file,file_center::list_project_files,file_center::read_file_version,integrity::verify_project,backup::create_project_backup,backup::restore_project_backup,smart_context::smart_context, safe_optimizer::optimize_text,project_memory::list_project_memory,project_memory::set_project_memory,history::list_operations,advanced::simulate_cost,advanced::list_templates,advanced::save_template,advanced::delete_template,advanced::editorial_validate,advanced::list_articles,advanced::find_internal_links,advanced::build_page,advanced::get_claude_config,advanced::save_claude_config,advanced::oneshot_capture,provider_registry,provider_chat,add_import_root,remove_import_root,list_import_roots]).setup(|app|{let _=app.path();Ok(())}).run(tauri::generate_context!()).expect("error while running TokenSaver AI");}
