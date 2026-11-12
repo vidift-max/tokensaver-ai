@@ -128,6 +128,27 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(race_count,1,"concurrent identical retries create exactly one durable row");
     eprintln!("PASS: concurrent same-key/same-payload requests return 201+200, same message_id, and one row");
 
+    let triple_body=serde_json::json!({"idempotency_key":"three-way-same-key","content":{"text":"one row under three simultaneous retries"}});
+    let (triple_a,triple_b,triple_c)=tokio::join!(
+        http_call(&app,"POST",&race_path,Some(&token_a),Some(triple_body.clone())),
+        http_call(&app,"POST",&race_path,Some(&token_a),Some(triple_body.clone())),
+        http_call(&app,"POST",&race_path,Some(&token_a),Some(triple_body.clone()))
+    );
+    let triple_responses=[triple_a,triple_b,triple_c];
+    let mut triple_ids=Vec::new();
+    for response in triple_responses {
+        assert!(response.status()==axum::http::StatusCode::CREATED || response.status()==axum::http::StatusCode::OK,
+            "all three same-key/same-payload concurrent retries must succeed idempotently");
+        let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+        let json:Value=serde_json::from_slice(&bytes).unwrap();
+        triple_ids.push(json["message_id"].as_str().unwrap().to_string());
+    }
+    assert!(triple_ids.iter().all(|id|id==&triple_ids[0]),"three concurrent retries must converge on one message ID");
+    let triple_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='three-way-same-key'")
+        .bind(first.phone.ai_phone_id).bind(tenant).bind(principal).fetch_one(&pool).await.unwrap();
+    assert_eq!(triple_count,1,"three concurrent requests must persist exactly one row");
+    eprintln!("PASS: three concurrent identical idempotency retries converge on one durable row");
+
     // Reusing the same key with a different payload is a conflict, not a second
     // message and not an internal server error.
     let conflicting=http_call(&app,"POST",&race_path,Some(&token_a),
