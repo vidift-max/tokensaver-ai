@@ -637,8 +637,8 @@ mod tests {
             .bind(session).bind(old.tenant_id).bind(old.room_id).bind(old.principal_id).bind(digest).execute(pool).await.unwrap();
         sqlx::query("INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,heartbeat_at,expires_at,status) VALUES($1,$2,$3,$4,$5,$6,'phone-test-b',NOW(),NOW()+INTERVAL '10 minutes','ACTIVE')")
             .bind(execution).bind(old.tenant_id).bind(old.room_id).bind(old.participant_id).bind(old.principal_id).bind(session).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
-            .bind(Uuid::new_v4()).bind(old.tenant_id).bind(old.room_id).bind(old.participant_id).bind(old.principal_id).bind(session).execute(pool).await.unwrap();
+        sqlx::query("UPDATE room_memberships SET session_id=$1,status='ACTIVE',joined_at=NOW(),last_seen_at=NOW(),left_at=NULL WHERE room_id=$2 AND principal_id=$3")
+            .bind(session).bind(old.room_id).bind(old.principal_id).execute(pool).await.unwrap();
         AuthenticatedIdentity{session_id:session,execution_id:execution,..old.clone()}
     }
 
@@ -665,15 +665,16 @@ mod tests {
         let endpoint_a=register_endpoint(&pool,&identity,Uuid::new_v4(),"WORKER").await.unwrap();
 
         // 4. Attach Session A -> Phone X.
-        let attach_a=attach(&pool,&identity,AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:Uuid::new_v4(),lease_seconds:Some(60)}).await.unwrap();
+        let attach_a_key=Uuid::new_v4();
+        let attach_a=attach(&pool,&identity,AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:attach_a_key,lease_seconds:Some(60)}).await.unwrap();
         assert_eq!(attach_a.ai_phone_id,phone.ai_phone_id);
 
         // 5. Same idempotency key returns the same attachment/generation.
-        let idem_key=Uuid::new_v4();
         let endpoint_idempotent=register_endpoint(&pool,&identity,endpoint_a.endpoint_key,"WORKER").await.unwrap();
         assert_eq!(endpoint_idempotent.endpoint_id,endpoint_a.endpoint_id);
-        let idem=attach(&pool,&identity,AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:attach_a_idempotency_placeholder(),lease_seconds:Some(60)}).await;
-        let _=idem; // The first attachment's idempotency key is deliberately checked below via a duplicate request in a separate test.
+        let idem=attach(&pool,&identity,AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:attach_a_key,lease_seconds:Some(60)}).await.unwrap();
+        assert_eq!(idem.attachment_id,attach_a.attachment_id);
+        assert_eq!(idem.fencing_generation,attach_a.fencing_generation);
 
         // 6. Live competing endpoint cannot take over silently.
         let endpoint_b=register_endpoint(&pool,&identity,Uuid::new_v4(),"MOBILE").await.unwrap();
@@ -710,8 +711,10 @@ mod tests {
         let stale_detach=detach(&pool,&session_b,DetachRequest{attachment_id:reconnect.attachment_id,fencing_generation:reconnect.fencing_generation}).await;
         assert!(matches!(stale_detach,Err(PhoneError::Fenced)));
 
+        sqlx::query("DELETE FROM ai_phones WHERE ai_id IN (SELECT ai_id FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2)").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identities WHERE ai_id NOT IN (SELECT ai_id FROM ai_principal_bindings)").execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
 
-    fn attach_a_idempotency_placeholder() -> Uuid { Uuid::new_v4() }
 }
