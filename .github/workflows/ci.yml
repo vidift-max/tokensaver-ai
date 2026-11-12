@@ -521,6 +521,7 @@ jobs:
           BENCH_MESSAGES: "50"
           BENCH_HEARTBEATS: "8"
           BENCH_SETTLE_MS: "3000"
+          BENCH_IRRELEVANT_WRITES_PER_ROOM: "5"
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-websocket.mjs > benchmark-artifacts/websocket-fanout.json
       - name: Capture PostgreSQL counters after WebSocket load
