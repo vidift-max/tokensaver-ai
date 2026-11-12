@@ -49,7 +49,15 @@ expect_denied PRIVATE_PHONE_CONTENT "SELECT content FROM lab.phone_messages"
 expect_denied PRIVATE_TEAM_BODY "SELECT private_body FROM lab.team_tasks"
 expect_denied PRIVATE_OUTBOX_PAYLOAD "SELECT payload FROM lab.outbox_events"
 expect_denied PRIVATE_METADATA "SELECT private_metadata FROM lab.audit_events"
-test "$denials" -eq 11
+expect_denied PRIVATE_TEAM_ROOM_BODY "SELECT body FROM lab.team_room_messages"
+expect_denied PRIVATE_CHECKPOINT "SELECT private_checkpoint FROM lab.checkpoints"
+expect_denied PRIVATE_ENDPOINT_METADATA "SELECT private_metadata FROM lab.endpoints"
+expect_denied TOKEN "SELECT token_value FROM lab.private_materials"
+expect_denied PASSWORD "SELECT password_value FROM lab.private_materials"
+expect_denied CONNECTION_STRING "SELECT connection_string FROM lab.private_materials"
+expect_denied HEADERS "SELECT headers_value FROM lab.private_materials"
+expect_denied SECRET "SELECT secret_value FROM lab.private_materials"
+test "$denials" -eq 19
 
 # row_security=off must fail rather than return a silently filtered partial inventory.
 if reader_psql -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL row_security=off; SELECT * FROM lab.rls_probe; COMMIT" > "$ARTIFACTS/rls-probe.log" 2>&1; then
@@ -58,7 +66,7 @@ fi
 grep -qi 'row-level security' "$ARTIFACTS/rls-probe.log"
 
 # Explicit negative fixtures for unsafe ownership and BYPASSRLS are rejected by the same guard predicates.
-admin_psql <<'SQL' > "$ARTIFACTS/role-negative-fixtures.txt"
+admin_psql -At <<'SQL' > "$ARTIFACTS/role-negative-fixtures.txt"
 CREATE ROLE inventory_bypass_probe LOGIN BYPASSRLS;
 CREATE ROLE inventory_owner_probe NOLOGIN;
 CREATE TABLE lab.owner_probe(id integer);
@@ -74,7 +82,7 @@ test "$BASELINE" = "$AFTER"
 echo "PASS: synthetic data unchanged" >> "$ARTIFACTS/write-denials.txt"
 
 # Private canaries are present in the fixture but must never appear in the inventory report.
-if grep -E 'PRIVATE_(PHONE_CONTENT|TEAM_MESSAGE_BODY|OUTBOX_PAYLOAD|AUDIT_METADATA|ENDPOINT_META|CHECKPOINT)_CANARY|lab-only-password|postgres-lab-password|postgres://|Bearer ' "$ARTIFACTS/inventory-report.txt"; then
+if grep -E 'PRIVATE_(PHONE_CONTENT|TEAM_MESSAGE_BODY|TEAM_ROOM_BODY|OUTBOX_PAYLOAD|AUDIT_METADATA|ENDPOINT_META|CHECKPOINT)_CANARY|SYNTHETIC_(TOKEN|PASSWORD|CONNECTION_STRING|HEADERS|SECRET)_CANARY|lab-only-password|postgres-lab-password|postgres://|Bearer ' "$ARTIFACTS/inventory-report.txt"; then
   echo "FAIL: private synthetic canary leaked into report" >&2; exit 1
 fi
 
@@ -91,7 +99,7 @@ cat > "$ARTIFACTS/manifest.json" <<EOF
   "utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "read_only": true,
   "allowlisted_queries": "PASS",
-  "write_denials": "PASS ($denials/11)",
+  "write_denials": "PASS ($denials/19)",
   "data_unchanged": true,
   "rls_fail_closed": true,
   "negative_role_fixtures": "PASS (BYPASSRLS and ownership)",
