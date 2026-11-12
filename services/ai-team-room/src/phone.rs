@@ -429,8 +429,8 @@ async fn presence_handler(
                   AND (s.status<>'ACTIVE' OR s.revoked_at IS NOT NULL OR s.expires_at<=NOW())) THEN 'OFFLINE'
           WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.endpoint_status='DETACHED') THEN 'DISCONNECTED'
           ELSE 'OFFLINE'
-        END FROM ai_phones p WHERE p.ai_phone_id=$1
-    "#).bind(phone_id).fetch_optional(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
+        END FROM ai_phones p WHERE p.ai_phone_id=$1 AND p.tenant_id=$2
+    "#).bind(phone_id).bind(identity.tenant_id).fetch_optional(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(PhonePresence{ai_phone_id:phone_id,presence_state:state}))
 }
 
@@ -455,8 +455,8 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !owns { return Err(StatusCode::NOT_FOUND); }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.session_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
-        .bind(phone_id).bind(identity.tenant_id).bind((SELECT_PLACEHOLDER)).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND ip.principal_id=$3 AND a.session_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
     let delivered_count = sqlx::query("UPDATE phone_messages m SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() FROM ai_phones p WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id AND m.message_state IN ('PENDING','DELIVERED')")
         .bind(phone_id).bind(identity.tenant_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
