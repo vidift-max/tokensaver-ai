@@ -280,10 +280,19 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(pending,(2,"PENDING".to_string()));
-    sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=NOW(),attempt_count=attempt_count+1 WHERE message_id=$1")
-        .bind(message_id).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE phone_messages SET message_state='ACK',acknowledged_at=NOW() WHERE message_id=$1")
-        .bind(message_id).execute(&pool).await.unwrap();
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
+    let inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
+    let offline=inbox.iter().find(|m|m["idempotency_key"]=="offline-msg-1").unwrap();
+    assert_eq!(offline["message_state"],"DELIVERED","offline PENDING message is delivered after endpoint B reconnects");
+    assert_eq!(offline["attempt_count"],1);
+    let sequences:Vec<i64>=inbox.iter().map(|m|m["sequence_no"].as_i64().unwrap()).collect();
+    assert_eq!(sequences,vec![1,2],"inbox is returned in per-phone sequence order");
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_b),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"offline message ACK is idempotent");
     let acked: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(acked,"ACK");
