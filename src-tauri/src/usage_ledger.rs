@@ -102,9 +102,9 @@ pub fn finish_success(path: &Path, response: &ChatResponse) -> Result<Option<f64
             response.request_id,
             response.model,
             response.provider_request_id,
-            response.usage.as_ref().and_then(|u| u.input_tokens),
-            response.usage.as_ref().and_then(|u| u.output_tokens),
-            response.usage.as_ref().and_then(|u| u.total_tokens),
+            response.usage.as_ref().and_then(|u| u.input_tokens).and_then(|v| i64::try_from(v).ok()),
+            response.usage.as_ref().and_then(|u| u.output_tokens).and_then(|v| i64::try_from(v).ok()),
+            response.usage.as_ref().and_then(|u| u.total_tokens).and_then(|v| i64::try_from(v).ok()),
             i64::try_from(response.latency_ms).unwrap_or(i64::MAX),
             cost,
             if cost.is_some() { effective_from } else { None }
