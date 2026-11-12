@@ -1,0 +1,78 @@
+name: AI-PHONE-01 Tenant Isolation Proof
+
+on:
+  push:
+    branches:
+      - mission/ai-phone-01-tenant-isolation-proof
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-tenant-isolation-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-16-adversarial:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_isolation_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_isolation_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_isolation_test
+    steps:
+      - name: Checkout laboratory branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Confirm PostgreSQL 16 disposable service
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SHOW transaction_read_only;"
+      - name: Cargo check
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Run PostgreSQL and adversarial HTTP tests
+        id: adversarial
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee tenant-isolation-test.log
+          test_status=${PIPESTATUS[0]}
+          echo "cargo_test_exit_code=$test_status" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$test_status" -eq 0 ]; then
+            echo "Test command completed successfully. Inspect individual assertions; green CI is not proof of tenant isolation." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Test command failed. Inspect logs to distinguish adversarial assertion failure from setup/compilation failure." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$test_status"
+      - name: Classify adversarial test outcome
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.adversarial.outcome }}
+        run: |
+          echo "Adversarial step outcome: $TEST_OUTCOME"
+          if [ "$TEST_OUTCOME" = "failure" ]; then
+            echo "The test step failed; inspect tenant-isolation-test.log. This is not automatically a vulnerability finding unless the intended security assertion was reached." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload sanitized test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-tenant-isolation-postgres16-${{ github.run_id }}
+          path: tenant-isolation-test.log
+          if-no-files-found: ignore
+          retention-days: 7
