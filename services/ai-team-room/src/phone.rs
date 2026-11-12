@@ -174,6 +174,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     let current = sqlx::query_as::<_, (Uuid, Uuid, i64)>(
         "SELECT attachment_id,session_id,endpoint_fence FROM phone_attachments WHERE ai_phone_id=$1 AND attachment_status='ACTIVE' FOR UPDATE"
     ).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await?;
+    let had_current = current.is_some();
     if let Some((current_attachment, current_session, _)) = current {
         if current_session == identity.session_id {
             let existing = sqlx::query_as::<_, AttachmentRecord>(
@@ -193,7 +194,6 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
                 "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id=$1 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW())"
             ).bind(current_session).fetch_one(&mut *tx).await?;
             if old_session_live && !allow_transfer { return Err(PhoneError::Conflict); }
-            if old_session_live { return Err(PhoneError::Conflict); }
         }
         sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1")
             .bind(current_attachment).execute(&mut *tx).await?;
@@ -215,7 +215,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     }
     let next_fence = phone.endpoint_fence + 1;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=$1,phone_status=$2,version=version+1,last_seen_at=NOW(),updated_at=NOW() WHERE ai_phone_id=$3")
-        .bind(next_fence).bind(if current.is_some() { "ATTACHED_NEW_ENDPOINT" } else { "ATTACHED" }).bind(phone.ai_phone_id)
+        .bind(next_fence).bind(if had_current { "ATTACHED_NEW_ENDPOINT" } else { "ATTACHED" }).bind(phone.ai_phone_id)
         .execute(&mut *tx).await?;
     let attachment_id = Uuid::new_v4();
     sqlx::query(
@@ -367,11 +367,34 @@ async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Js
     Ok(StatusCode::NO_CONTENT)
 }
 
+
+async fn reconnect_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>)
+    -> Result<(StatusCode, Json<AttachmentRecord>), StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    attach(&pool, &identity, request, false).await.map(|v| (StatusCode::OK, Json(v)))
+        .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
+            PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Invalid => StatusCode::BAD_REQUEST,
+            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
+}
+
+async fn transfer_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>)
+    -> Result<(StatusCode, Json<AttachmentRecord>), StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    attach(&pool, &identity, request, true).await.map(|v| (StatusCode::OK, Json(v)))
+        .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
+            PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Invalid => StatusCode::BAD_REQUEST,
+            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
+}
+
 pub fn router(pool: PgPool) -> Router {
     Router::new()
         .route("/ai-phone/me", get(get_phone_handler))
         .route("/ai-phone/attach", post(attach_handler))
         .route("/ai-phone/detach", post(detach_handler))
+        .route("/ai-phone/reconnect", post(reconnect_handler))
+        .route("/ai-phone/transfer", post(transfer_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
         .route("/ai-phone/{phone_id}/messages/{message_id}/ack", post(ack_handler))
         .route("/ai-phone/mission", post(mission_link_handler))
