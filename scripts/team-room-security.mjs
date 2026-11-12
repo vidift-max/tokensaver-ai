@@ -1,6 +1,6 @@
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
-export function normalizeTeamRoomBaseUrl(value) {
+export function normalizeTeamRoomBaseUrl(value, { allowHttpLoopback = false } = {}) {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
     throw new TypeError("Team Room API URL is required");
   }
@@ -14,7 +14,7 @@ export function normalizeTeamRoomBaseUrl(value) {
 
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const loopback = LOOPBACK_HOSTS.has(hostname);
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback && allowHttpLoopback)) {
     throw new TypeError("Team Room API must use HTTPS except explicit loopback development");
   }
   if (parsed.username || parsed.password || parsed.href !== `${parsed.origin}/`) {
@@ -24,7 +24,7 @@ export function normalizeTeamRoomBaseUrl(value) {
   return parsed.origin;
 }
 
-export function resolveTeamRoomRequestUrl(baseUrl, route) {
+export function resolveTeamRoomRequestUrl(baseUrl, route, options = {}) {
   if (typeof route !== "string" || !route.startsWith("/") || route.startsWith("//") ||
       route.includes("\\") || route.includes("?") || route.includes("#") ||
       /[\u0000-\u001f\u007f]/.test(route)) {
@@ -41,7 +41,7 @@ export function resolveTeamRoomRequestUrl(baseUrl, route) {
     throw new TypeError("Team Room API route cannot traverse paths");
   }
 
-  const base = new URL(normalizeTeamRoomBaseUrl(baseUrl));
+  const base = new URL(normalizeTeamRoomBaseUrl(baseUrl, options));
   const target = new URL(route, base);
   if (target.origin !== base.origin || target.username || target.password || target.search || target.hash) {
     throw new TypeError("Team Room API route escaped the configured origin");

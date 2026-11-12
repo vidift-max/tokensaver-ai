@@ -23,7 +23,7 @@ Staging/production require valid `OIDC_ISSUER` and `OIDC_AUDIENCE`; `OIDC_JWKS_U
 
 The desktop Team Room connection is disabled in this build. The former UI accepted an arbitrary API URL and a manually pasted bearer token; the desktop does not yet have OIDC Authorization Code + PKCE, secure OS credential storage, token refresh, or a trusted endpoint allowlist.
 
-The remote Runner client remains separate. It accepts only an HTTPS origin, except explicit loopback HTTP for local development; rejects URL userinfo, path, query and fragment; constrains request paths to the configured origin; rejects redirects; times out requests; and clears its in-memory token on HTTP 401.
+The remote Runner client remains separate. It accepts only an HTTPS origin; loopback HTTP is rejected unless `TEAM_ROOM_ALLOW_HTTP_LOOPBACK=true` is explicitly set for local development; rejects URL userinfo, path, query and fragment; constrains request paths to the configured origin; rejects redirects; times out requests; and clears its in-memory token on HTTP 401.
 
 Do not re-enable desktop Team Room networking until all of the following are implemented and tested:
 1. native OIDC Authorization Code + PKCE with state and nonce validation;
