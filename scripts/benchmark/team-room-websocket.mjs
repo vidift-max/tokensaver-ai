@@ -9,16 +9,21 @@ import { performance } from "node:perf_hooks";
 
 const base = (process.env.TEAM_ROOM_API_URL || "").replace(/\/$/, "");
 const roomId = process.env.TEAM_ROOM_ROOM_ID || "";
-const token = process.env.TEAM_ROOM_SESSION_TOKEN || "";
+const tokenList = process.env.TEAM_ROOM_SESSION_TOKENS_JSON
+  ? JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON)
+  : [process.env.TEAM_ROOM_SESSION_TOKEN || ""];
+const tokens = Array.isArray(tokenList) ? tokenList.filter(value => typeof value === "string" && value.length > 0) : [];
+const participantCount = Number(process.env.BENCH_PARTICIPANTS || tokens.length);
+const requireDistinct = process.env.BENCH_REQUIRE_DISTINCT_PARTICIPANTS === "true";
 const clients = Number(process.env.BENCH_CLIENTS || 8);
 const messages = Number(process.env.BENCH_MESSAGES || 25);
 const settleMs = Number(process.env.BENCH_SETTLE_MS || 1500);
 const heartbeats = Number(process.env.BENCH_HEARTBEATS || 0);
-if (!base || !roomId || !token) {
+if (!base || !roomId || tokens.length === 0) {
   console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
-if (![clients, messages, settleMs, heartbeats].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0) {
+if (![clients, messages, settleMs, heartbeats, participantCount].every(Number.isSafeInteger) || clients < 1 || messages < 1 || settleMs < 0 || heartbeats < 0 || participantCount < 1 || (requireDistinct && new Set(tokens).size < clients)) {
   console.error("Invalid BENCH_CLIENTS / BENCH_MESSAGES / BENCH_SETTLE_MS");
   process.exit(2);
 }
@@ -33,7 +38,7 @@ const failures = [];
 let receivedFrames = 0;
 let presenceChangedFrames = 0;
 
-async function ticket() {
+async function ticket(token) {
   const response = await fetch(`${base}/team-room/${room}/ws-ticket`, { method: "POST", headers, body: "{}" });
   if (!response.ok) throw new Error(`ticket_http_${response.status}`);
   const value = await response.json();
@@ -48,7 +53,7 @@ function waitOpen(socket) {
   });
 }
 for (let i = 0; i < clients; i++) {
-  const oneUseTicket = await ticket();
+  const oneUseTicket = await ticket(tokens[i % tokens.length]);
   const wsUrl = base.replace(/^http/, "ws") + `/team-room/${room}/ws?ticket=${encodeURIComponent(oneUseTicket)}`;
   const socket = new WebSocket(wsUrl, ["team-room.v1"]);
   sockets.push(socket);
@@ -83,7 +88,7 @@ try {
     const clientMessageId = randomUUID();
     const started = performance.now();
     const response = await fetch(`${base}/team-room/${room}/messages`, {
-      method: "POST", headers,
+      method: "POST", headers: { ...headers, authorization: `Bearer ${tokens[i % tokens.length]}` },
       body: JSON.stringify({ client_message_id: clientMessageId, body: `fanout benchmark ${i} ${clientMessageId}`, parent_message_id: null }),
       signal: AbortSignal.timeout(10000),
     });
@@ -117,7 +122,7 @@ try {
   console.log(JSON.stringify({
     benchmark: "team-room-websocket-fanout",
     generated_at: new Date().toISOString(),
-    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
+    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
     summary: {
       websocket_connections_opened: sockets.length,
       message_writes_accepted: sendStarts.size,
