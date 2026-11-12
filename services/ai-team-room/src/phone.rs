@@ -388,6 +388,11 @@ async fn register_endpoint_handler(
     let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
     let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE")
         .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if existing.is_none() {
+        let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
+            .bind(request.endpoint_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if claimed { return Err(StatusCode::CONFLICT); }
+    }
     if let Some(endpoint)=existing {
         if endpoint.endpoint_status=="REVOKED" || endpoint.endpoint_status=="ATTACHED" {
             return Err(StatusCode::CONFLICT);
