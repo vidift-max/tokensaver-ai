@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ProviderId = "openai" | "anthropic" | "gemini" | "kimi";
 export type ProviderCapabilities = {
-  streaming: boolean; tools: boolean; structured_output: boolean;
+  chat: boolean; limits_known: boolean; streaming: boolean; tools: boolean; structured_output: boolean;
   vision: boolean; embeddings: boolean; model_discovery: boolean;
 };
 export type ProviderStatus = {
