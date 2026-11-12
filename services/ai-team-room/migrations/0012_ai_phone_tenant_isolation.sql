@@ -36,6 +36,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: a legacy attachment tenant does not match the phone AI identity binding';
     END IF;
+    IF EXISTS (SELECT 1 FROM ai_phones WHERE (current_task_id IS NULL) <> (current_mission_id IS NULL)) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: current task and mission pointers are inconsistent';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM ai_phones p JOIN team_tasks t ON t.task_id=p.current_task_id
+        WHERE p.current_mission_id <> t.mission_id
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: current mission does not match the canonical Team Room task';
+    END IF;
     IF EXISTS (
         SELECT 1 FROM ai_phones p JOIN team_tasks t ON t.task_id=p.current_task_id
         WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id AND ip.tenant_id=t.tenant_id)
@@ -129,6 +138,7 @@ CREATE INDEX phone_messages_tenant_inbox_idx ON phone_messages(tenant_id,ai_phon
 CREATE INDEX phone_messages_sender_history_idx ON phone_messages(tenant_id,sender_principal_id,created_at DESC);
 
 CREATE UNIQUE INDEX team_tasks_task_tenant_room_unique ON team_tasks(task_id,tenant_id,room_id);
+CREATE UNIQUE INDEX team_tasks_task_tenant_mission_unique ON team_tasks(task_id,tenant_id,mission_id);
 ALTER TABLE phone_mission_links
     ADD CONSTRAINT phone_mission_links_phone_tenant_fk FOREIGN KEY (ai_phone_id,tenant_id)
         REFERENCES ai_phones(ai_phone_id,tenant_id) ON DELETE RESTRICT,
@@ -137,10 +147,10 @@ ALTER TABLE phone_mission_links
 CREATE INDEX phone_mission_links_tenant_task_idx ON phone_mission_links(tenant_id,room_id,task_id);
 
 ALTER TABLE ai_phones DROP CONSTRAINT ai_phones_current_task_id_fkey;
-ALTER TABLE team_tasks ADD CONSTRAINT team_tasks_task_tenant_unique UNIQUE (task_id,tenant_id);
 ALTER TABLE ai_phones
-    ADD CONSTRAINT ai_phones_current_task_tenant_fk FOREIGN KEY (current_task_id,tenant_id)
-        REFERENCES team_tasks(task_id,tenant_id) ON DELETE SET NULL (current_task_id);
+    ADD CONSTRAINT ai_phones_current_task_mission_tenant_fk FOREIGN KEY (current_task_id,tenant_id,current_mission_id)
+        REFERENCES team_tasks(task_id,tenant_id,mission_id) ON DELETE SET NULL (current_task_id,current_mission_id),
+    ADD CONSTRAINT ai_phones_current_task_mission_pair_check CHECK ((current_task_id IS NULL) = (current_mission_id IS NULL));
 
 INSERT INTO permission_catalog(permission,description,privileged) VALUES
  ('phone.provision','Provision a permanent AI phone for an enabled AI principal in the authenticated tenant',TRUE)
