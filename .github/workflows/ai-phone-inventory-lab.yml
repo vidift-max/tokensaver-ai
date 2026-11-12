@@ -47,6 +47,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ai-phone-inventory-lab-evidence
-          path: artifacts/ai-phone-inventory-lab/
+          path: |
+            artifacts/ai-phone-inventory-lab/
+            tools/ai-phone-inventory-lab/
           if-no-files-found: warn
           retention-days: 3
