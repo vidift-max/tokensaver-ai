@@ -218,7 +218,7 @@ async fn audit(
     Ok(())
 }
 
-pub async fn register(
+async fn register(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     display_key: &str,
@@ -281,7 +281,7 @@ pub async fn register(
     Ok(result)
 }
 
-pub async fn register_endpoint(
+async fn register_endpoint(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     endpoint_key: Uuid,
@@ -373,7 +373,7 @@ async fn current_attachment_is_live(
     ).bind(attachment_id).fetch_one(&mut **tx).await?)
 }
 
-pub async fn attach(
+async fn attach(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     request: AttachRequest,
@@ -420,7 +420,7 @@ pub async fn attach(
     Ok(attachment)
 }
 
-pub async fn detach(
+async fn detach(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     request: DetachRequest,
@@ -452,7 +452,7 @@ pub async fn detach(
         lease_expires_at:row.8,attached_at:row.9,last_seen_at:row.10 })
 }
 
-pub async fn transfer(
+async fn transfer(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     request: TransferRequest,
@@ -492,7 +492,7 @@ pub async fn transfer(
     Ok(attachment)
 }
 
-pub async fn heartbeat(
+async fn heartbeat(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
     request: HeartbeatRequest,
