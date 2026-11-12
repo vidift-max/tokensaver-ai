@@ -455,6 +455,8 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !owns { return Err(StatusCode::NOT_FOUND); }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let owned = owned_phone(&mut tx, &identity).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    if owned.ai_phone_id != phone_id { return Err(StatusCode::NOT_FOUND); }
     validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND ip.principal_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(identity.session_id).bind(identity.execution_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
