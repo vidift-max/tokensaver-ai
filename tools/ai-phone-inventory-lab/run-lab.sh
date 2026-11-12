@@ -19,7 +19,9 @@ BASELINE="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SE
   echo "schema=lab"
   echo "role=$(reader_psql -Atc 'SELECT current_user')"
   echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "transaction_settings=$(reader_psql -Atc "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='2s'; SET LOCAL idle_in_transaction_session_timeout='10s'; SET LOCAL row_security=off; SELECT current_setting('transaction_isolation')||'|'||current_setting('transaction_read_only')||'|'||current_setting('statement_timeout')||'|'||current_setting('lock_timeout')||'|'||current_setting('idle_in_transaction_session_timeout')||'|'||current_setting('row_security'); COMMIT" | tail -n 1)"
+  SETTINGS="$(reader_psql -Atq -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL statement_timeout='5s'; SET LOCAL lock_timeout='2s'; SET LOCAL idle_in_transaction_session_timeout='10s'; SET LOCAL row_security=off; SELECT current_setting('transaction_isolation')||'|'||current_setting('transaction_read_only')||'|'||current_setting('statement_timeout')||'|'||current_setting('lock_timeout')||'|'||current_setting('idle_in_transaction_session_timeout')||'|'||current_setting('row_security'); COMMIT")"
+  test "$SETTINGS" = "repeatable read|on|5s|2s|10s|off"
+  echo "transaction_settings=$SETTINGS"
   echo "inventory_results:"
   reader_psql -f "$ROOT/inventory.sql"
 } > "$ARTIFACTS/inventory-report.txt"
@@ -27,6 +29,8 @@ BASELINE="$(admin_psql -Atc "SELECT (SELECT count(*) FROM lab.tenants)||':'||(SE
 # Effective privilege checks: column-level SELECT on safe views only; no base-table content.
 reader_psql -Atc "SELECT has_table_privilege('lab.phone_messages','SELECT'),has_column_privilege('lab.phone_messages','content','SELECT'),has_table_privilege('lab.inventory_messages','SELECT'),has_schema_privilege('lab','CREATE')" > "$ARTIFACTS/effective-privileges.txt"
 grep -qx 'f|f|t|f' "$ARTIFACTS/effective-privileges.txt"
+OWNER_COUNT="$(reader_psql -Atc "SELECT count(*) FROM pg_class WHERE relnamespace='lab'::regnamespace AND relkind IN ('r','v') AND relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)")"
+test "$OWNER_COUNT" -eq 0
 
 # Expected denials must actually return non-zero.
 denials=0
