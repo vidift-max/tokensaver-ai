@@ -199,3 +199,63 @@ The backend cannot yet be said to execute every tenant-scoped operation in a tru
 `POP_NOT_IMPLEMENTED`
 
 Production remains blocked by the RLS infrastructure gate and by PoP before external endpoints. Do not proceed to RLS policy activation until the blockers in sections 4–7 are implemented and tested under actual PostgreSQL roles.
+
+
+---
+
+## AI-PHONE-08B continuation — execution checkpoint (2026-11-12)
+
+### Continuation baseline revalidation
+
+- Work branch: `mission/ai-phone-08-tenant-context-roles`
+- Verified branch HEAD before this checkpoint: `2f9ea8ce4213f5afcad520f0367196de42769fab`
+- Required AI-PHONE-07 baseline: `9da1830ae4a6f097c91fbf264c7325e15114d496`
+- Compare result: `ahead`, 1 commit, 0 behind; merge base equals the required baseline.
+- The one commit is the report-only AI-PHONE-08 commit; no implementation changes were present.
+- PRs #7, #8, #9 and #10 were rechecked: all OPEN, DRAFT, and unmerged. No PR was modified, created or merged.
+
+### Additional implementation/CI inspection
+
+The continuation inspected the existing service sources, migration set 0001–0013, Cargo manifest and CI workflow.
+
+| Area | Current access/authority classification | Evidence-based gap |
+|---|---|---|
+| Pool/bootstrap | One SQLx `PgPool`, max 20 | No distinct migration, application and worker pools/URLs |
+| Migration | `migrate(&pool)` during service startup | Runs through the same pool used by runtime |
+| Authentication | OIDC verification, replay state, token-hash session lookup | Bootstrap is not a DB-verified tenant capability; session lookup uses ordinary pool access |
+| AI-PHONE | `phone.rs` and handlers in `main.rs` | Tenant-owned phone, endpoint, attachment, inbox/message, mission-link and fencing paths use mixed direct pool and transaction access; no central authenticated tenant transaction |
+| Team Room / tasks | `main.rs`, `tasks.rs` | Presence, task lease, checkpoint and task reads/writes use mixed pool and transaction access |
+| Handoffs | `handoffs.rs` | Tenant-scoped preflight reads and mutations are not uniformly bound to one trusted context |
+| Communication | `communication.rs` | Private channel ACL, message/history, attachment and WebSocket ticket paths are not uniformly context-bound |
+| Recovery | Recovery API accepts `pool` and `room_id` | Room UUID is a selector, not worker authority; no explicit worker identity/capability |
+| WebSocket | Global `PgListener` notification ingress, followed by DB reads | No separate worker role or DB-authenticated per-event tenant capability |
+| Global/control plane | `ai_identities`, `auth_token_replays`, `permission_catalog`, tenant registry | Must remain intentionally global; must not receive fabricated tenant context |
+| Migration/admin | SQLx migration runner and test fixture DML | Must be separated from request/worker credentials |
+
+The table is a module/path classification, not a completed query-by-query AST audit. Dynamic query construction, every SQL call-site, all transaction boundaries and every protected route were not exhaustively classified. Therefore Round 1 remains incomplete under the mission's own stop condition.
+
+### CI findings
+
+- Existing `.github/workflows/ci.yml` runs on pushes to `v2-saas-alpha` and pull requests targeting `v2-saas-alpha`; it does not provide a branch-local workflow-dispatch path for this work branch.
+- The AI Team Room PostgreSQL service initializes a single `POSTGRES_USER=team_room` and supplies one `DATABASE_URL` to both migration and runtime tests.
+- The workflow does not create/assert separate `migration_owner`, `application_role` and `worker_role`.
+- The PostgreSQL service bootstrap user is not evidence of a restricted runtime role.
+- No role attributes, object ownership, grants or runtime-role execution are currently asserted by this workflow.
+
+### Execution boundary and stop decision
+
+The available GitHub integration in this execution can inspect and commit repository files, but does not expose a shell, a disposable PostgreSQL connection, or a command runner for `psql`, `cargo check`, `cargo test` or arbitrary CI commands. The existing CI workflow also does not target this branch and has no workflow-dispatch trigger.
+
+No code, SQL migration, role, grant, function, policy or workflow was changed in this continuation. No PostgreSQL fixture was started. No cargo command, database query, adversarial test or CI run was executed. No test pass is claimed.
+
+Per the explicit instruction “do not alter code if the map is incomplete”, implementation was stopped before Round 2. Introducing unverified SECURITY DEFINER/bootstrap logic, signing material, pool privilege changes or tenant transaction wrappers through unexecuted edits would create an unacceptable security risk.
+
+### AI-PHONE-08B checkpoint verdict
+
+`TENANT_CONTEXT_ROLES_BLOCKED`
+
+- `RLS_NOT_YET_ENABLED`
+- `POP_NOT_IMPLEMENTED`
+- Production readiness is NOT claimed.
+- The existing branch remains unchanged except for this report addendum.
+- Next valid execution prerequisite: provide/enable a reproducible disposable PostgreSQL + shell/CI execution path that can run against this branch, then finish the query-by-query access inventory before role/bootstrap implementation.
