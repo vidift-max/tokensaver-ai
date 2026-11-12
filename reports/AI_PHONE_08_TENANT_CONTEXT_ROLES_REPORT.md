@@ -259,3 +259,125 @@ Per the explicit instruction “do not alter code if the map is incomplete”, i
 - Production readiness is NOT claimed.
 - The existing branch remains unchanged except for this report addendum.
 - Next valid execution prerequisite: provide/enable a reproducible disposable PostgreSQL + shell/CI execution path that can run against this branch, then finish the query-by-query access inventory before role/bootstrap implementation.
+
+
+---
+
+## AI-PHONE-08B — handoff package for the next executable environment
+
+**Purpose:** this section is a navigation and execution handoff only. It is not an exhaustive SQL inventory, an implementation, a test result, or a substitute for running PostgreSQL 16, Rust and CI. The next executor must start from the exact requested code baseline `2f9ea8ce4213f5afcad520f0367196de42769fab` and independently revalidate branch ancestry and working tree before doing anything.
+
+### A. Repository files to receive and inspect
+
+| Priority | File/path | Required next-executor action |
+|---|---|---|
+| P0 | `services/ai-team-room/src/lib.rs` | Trace pool construction, max connections, migration entry point, readiness, admission/bootstrap SQL and every direct pool/transaction call |
+| P0 | `services/ai-team-room/src/main.rs` | Enumerate every HTTP route and handler; identify authentication, permission checks, direct queries, transaction boundaries, body/path tenant or room selectors, recovery and WebSocket startup |
+| P0 | `services/ai-team-room/src/auth.rs` | Trace OIDC exchange, replay protection, session token hashing/lookup, expiry/revocation/rotation, identity construction, permission lookup/audit and session close |
+| P0 | `services/ai-team-room/src/phone.rs` | Enumerate all AI-PHONE SQL and routes: identity binding/provisioning, /ai-phone/me, endpoints, attach/reconnect/transfer/detach, heartbeat, inbox/send/history/ACK, mission links, fencing and revocation |
+| P0 | `services/ai-team-room/src/communication.rs` | Trace private-channel ACL, messages/history, attachments, WebSocket ticket admission, listener lifecycle, outbox lookup and delivery authorization |
+| P0 | `services/ai-team-room/src/tasks.rs` | Trace task ownership, lease acquisition/renewal/release, fencing tokens, checkpoints, completion, candidates, room/task scope and recovery |
+| P0 | `services/ai-team-room/src/handoffs.rs` | Trace handoff creation/acceptance/rejection, task/room scope, authorization preflights, transactions and recovery interactions |
+| P1 | `services/ai-team-room/tests/admission_postgres.rs` | Rework fixtures so schema migration and test data setup use owner/admin credentials while request paths run as restricted application role |
+| P1 | `services/ai-team-room/tests/auth_postgres.rs` | Add live DB bootstrap, role-bound session, forged tenant, expired/revoked session and permission-boundary tests |
+| P1 | `services/ai-team-room/tests/phone_postgres.rs` | Preserve and extend HTTP-level AI-PHONE isolation, idempotency, rollback, concurrency, fencing, ACK and revocation tests under application_role |
+| P1 | `services/ai-team-room/Cargo.toml` | Confirm SQLx features, migration embedding, test targets and dependencies before introducing any pool/transaction abstraction |
+| P1 | `services/ai-team-room/migrations/0001_team_room_foundation.sql` through `0013_team_room_tenant_scope_constraints.sql` | Inventory every table, sequence, function, trigger, index, FK and global/control-plane object; classify ownership and grants; do not rewrite historical migrations without a forward-only plan |
+| P1 | `.github/workflows/ci.yml` | Replace single-user DB test setup with explicit owner/application/worker role provisioning and assertions; ensure the branch can actually trigger this validation |
+| P1 | `.github/workflows/ai-phone-tenant-isolation-fix.yml` | Inspect its PostgreSQL fixture, branch filters, migration scripts and service tests; adapt only if it is the chosen executable workflow |
+| P2 | `.github/workflows/distributed-runner-lab.yml` | Inspect only where worker identity/credentials or shared DB behavior overlap; do not broaden scope unnecessarily |
+
+### B. Query inventory that must be produced by execution-capable inspection
+
+The following are **query families and call-site search targets**, not a claim that every query has already been enumerated. The next executor must produce a line-addressable inventory of every SQL statement and dynamic query, including SQL embedded in strings/macros and queries reached through helper functions.
+
+| Query family | Source files to enumerate | Required classification and proof |
+|---|---|---|
+| Tenant registry / global control plane | `lib.rs`, `auth.rs`, `main.rs`, migrations | Global vs tenant-owned; prove why global access is required; do not invent tenant context for global namespaces |
+| OIDC issuer, subject, workload identity and replay | `auth.rs`, migrations 0002–0004 | Authentication bootstrap; trusted credential validation; replay atomicity; no client-selected tenant |
+| Session/token lookup, rotation, expiry, revocation, close | `auth.rs`, `main.rs`, `communication.rs` | Bootstrap vs tenant-scoped request; tenant/principal/room/execution binding; reject missing, expired and revoked sessions |
+| Permission catalog and principal grants | `auth.rs`, `main.rs`, `phone.rs`, `communication.rs` | Global catalog vs tenant-scoped grant; permission must be checked inside the same trusted authority boundary as protected operation |
+| Room membership, participant presence and heartbeat | `lib.rs`, `main.rs`, `communication.rs` | Tenant-scoped request; ensure room UUID cannot establish tenant authority |
+| AI identity and tenant binding | `phone.rs`, migrations 0011–0012 | Global AI identity vs tenant binding; provisioning authority; enforce authenticated tenant independently of body principal/AI IDs |
+| Phone, endpoint and attachment state | `phone.rs`, migrations 0011–0012 | Tenant-scoped request; binding generation, endpoint fence, stale endpoint rejection, transfer/revocation invariants |
+| Phone inbox, message send, history and ACK | `phone.rs`, migrations 0011–0012 | Tenant-scoped request; idempotency, ordering, sender/recipient authority, ACK only by current authorized endpoint |
+| Phone mission/task links | `phone.rs`, `tasks.rs`, migrations 0012–0013 | Tenant/room/task composite scope; caller IDs are selectors only, not authority |
+| Tasks, leases, fencing and checkpoints | `tasks.rs`, `main.rs`, migrations 0005–0008 and 0013 | Tenant-scoped request or worker; task owner, room, mission, lease and fencing must be revalidated transactionally |
+| Handoffs and recovery | `handoffs.rs`, `tasks.rs`, `main.rs`, migrations 0010 and 0013 | Request vs worker authority; never derive tenant authority from `room_id`, `task_id` or handoff ID |
+| Channels, ACL, messages and attachments | `communication.rs`, migrations 0009 and 0013 | Tenant-scoped request; parent-derived scope; private-channel authorization and attachment reference integrity |
+| Outbox, listener and socket delivery | `communication.rs`, `phone.rs`, migrations | Global event ingress vs worker-scoped row resolution vs tenant-scoped delivery; NOTIFY payload is not authority |
+| Audit and outbox writes | `lib.rs`, `auth.rs`, `phone.rs`, `tasks.rs`, `handoffs.rs`, `communication.rs` | Must commit/rollback atomically with protected mutation; ensure actor and tenant are derived from trusted context |
+| Migration metadata and DDL | `lib.rs`, migrations 0001–0013 | migration/admin only; application_role and worker_role must not own objects or execute DDL |
+
+### C. Exact runtime and execution entry points
+
+The next executor must trace and test these boundaries, not only the lower-level SQL functions:
+
+1. Service startup: environment/config loading, pool creation, migration call, HTTP router construction and shutdown.
+2. Authentication bootstrap: bearer token extraction → token hash → session lookup → status/expiry/revocation checks → trusted principal/tenant/room/execution resolution.
+3. Every authenticated HTTP route in `main.rs` and the AI-PHONE router in `phone.rs`; record method, path, handler, permission, path/body identifiers and all SQL calls.
+4. OIDC exchange endpoint and session rotation/close path.
+5. Task lease recovery endpoint and internal recovery function(s), including current `recover_expired(pool, room_id)` authority boundary.
+6. Background recovery/cleanup loops and any spawned Tokio tasks.
+7. WebSocket ticket creation, socket upgrade, listener subscription, NOTIFY receipt, outbox row resolution, per-event authorization, socket send and disconnect/revocation handling.
+8. AI-PHONE message outbox creation and polling/dispatch path; distinguish polling from actual WebSocket delivery.
+9. Test setup/teardown, fixture migrations and direct fixture DML; identify which test statements intentionally require owner privileges and which exercise runtime authority.
+
+For each entry point, record: caller identity, DB role, capability/scope, transaction owner, tenant source, room/task selector, permission check, commit/rollback behavior, and whether the call can reach a direct `PgPool` query outside the scoped transaction.
+
+### D. Workflows and CI handoff
+
+| Workflow | Existing observed behavior | Next executor must prove |
+|---|---|---|
+| `.github/workflows/ci.yml` | AI Team Room job starts PostgreSQL 16 with one bootstrap user `team_room` and one `DATABASE_URL`; runs `cargo check` and `cargo test` | Create disposable roles; run migrations only as `migration_owner`; run app tests as `application_role`; run worker tests as `worker_role`; assert role attributes and table ownership; ensure workflow runs on the target branch |
+| `.github/workflows/ai-phone-tenant-isolation-fix.yml` | Uses PostgreSQL 16 with `POSTGRES_USER=ai_phone_ci`, one URL, legacy upgrade scripts and service cargo tests; branch filters include older AI-PHONE branches | Re-evaluate whether it is still needed; remove superuser/bootstrap credentials from runtime test paths; run restricted-role assertions and adversarial suite if retained |
+| `.github/workflows/distributed-runner-lab.yml` | Separate distributed-runner workflow | Inspect only worker credential and DB integration overlap; no assumption that it validates Team Room worker authority |
+
+The exact workflow trigger, branch filter, service health check, secrets/env propagation, job dependencies, test command and uploaded artifacts must be verified in the checked-out commit. Do not infer a successful run from workflow YAML.
+
+### E. Required live PostgreSQL 16 evidence package
+
+The execution-capable environment must attach raw output (or CI artifacts) for:
+
+- `SELECT version()` proving PostgreSQL 16.
+- `pg_roles` / `pg_authid`-appropriate privilege inspection proving `application_role` and `worker_role` are neither superuser nor `BYPASSRLS`, and cannot inherit unintended elevated roles.
+- `pg_class` / `pg_tables` ownership inspection proving runtime roles do not own protected tables.
+- Explicit role membership and schema/table/sequence/function grants.
+- Successful migration run under `migration_owner`.
+- Successful application test path under `application_role`.
+- Successful worker test path under `worker_role`.
+- Negative privilege tests proving runtime roles cannot DDL, change ownership, grant privileges, or create arbitrary tenant context.
+- Positive/negative bootstrap tests proving only a valid credential/session can establish tenant authority and the caller cannot choose another tenant.
+- Connection reuse, rollback, concurrent tenant transactions and worker cross-tenant rejection tests.
+- Exact GitHub Actions run URL, run ID, conclusion and tested commit SHA.
+
+### F. Required adversarial test mapping
+
+| Attack | Suggested test layer | Required assertion |
+|---|---|---|
+| A — Tenant A supplies Tenant B in request | HTTP integration + DB | `REJECT`; tenant is resolved from valid credential, not request body |
+| B — Missing context | SQL/runtime integration | `REJECT` for protected operation |
+| C — Application role sets arbitrary tenant context | Direct SQL as application_role | `REJECT`; no writable unsigned context variable can authorize protected rows |
+| D — Reused pool connection after Tenant A | PostgreSQL integration with pool max 1 | Tenant B sees no Tenant A context or data (`NO LEAK`) |
+| E — Rollback after context establishment | PostgreSQL transaction integration | Next transaction has no inherited context |
+| F — Concurrent tenant transactions | Two independent connections/tasks | No cross-tenant reads/writes or context collision |
+| G — Tenant A worker targets Tenant B | Worker-role integration | `REJECT`; worker capability cannot be widened by event/room/task selector |
+| H — Body tenant overrides authenticated tenant | HTTP integration | `REJECT`; conflicting tenant selector cannot replace authenticated scope |
+
+These are required tests, not executed results. Preserve and rerun existing AI-PHONE-06 tests for session revocation, per-event WebSocket authorization, history, mailbox concurrency, rollback, idempotency, ordering, ACK and endpoint fencing.
+
+### G. Explicit execution prerequisites and non-goals
+
+- Required environment: disposable PostgreSQL 16, shell, Rust stable toolchain, ability to run `psql`, `cargo check`, `cargo test`, and GitHub Actions against the exact branch/commit.
+- The next executor must start from code SHA `2f9ea8ce4213f5afcad520f0367196de42769fab`; later report-only commits may be consulted as documentation but are not a substitute for this requested code baseline.
+- First deliverable is a complete query-by-query and route-by-route access map. Do not change code until that map is complete and reviewed.
+- Only after the map: design and prove role separation, trusted bootstrap, centralized transaction helper, request/worker authority, then refactor protected paths.
+- RLS must remain disabled throughout this continuation; explicitly assert it remains disabled in the disposable fixture.
+- PoP is out of scope and remains unimplemented.
+- No production database, production credentials, PR #7–#10, merge, or new PR is authorized by this handoff.
+
+### H. Evidence status
+
+This handoff was assembled by GitHub repository inspection only. It identifies files, query families, workflows and runtime entry points for the next executor. It does **not** claim an exhaustive SQL statement inventory, successful compilation, live PostgreSQL role behavior, passing adversarial tests, CI success, RLS readiness or production readiness.
+
+`TENANT_CONTEXT_ROLES_BLOCKED`
