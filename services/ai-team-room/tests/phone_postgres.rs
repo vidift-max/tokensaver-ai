@@ -633,6 +633,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let heartbeat_d=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
         Some(serde_json::json!({"endpoint_fence":phone_after_transfer.attachment.as_ref().unwrap().endpoint_fence}))).await;
     assert_eq!(heartbeat_d.status(),axum::http::StatusCode::OK,"new valid endpoint remains operational after endpoint C revocation");
+    let status_c_after_transfer:String=sqlx::query_scalar("SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1").bind(endpoint_c).fetch_one(&pool).await.unwrap();
+    assert_eq!(status_c_after_transfer,"REVOKED","transferring to endpoint D must not reactivate endpoint C");
+    detach(&pool,&identity_b,phone_after_transfer.attachment.as_ref().unwrap().endpoint_fence).await.expect("detach recovered endpoint D before the independent attach race");
 
 
     // Two concurrent endpoints race for a disconnected phone: the row lock + partial
