@@ -23,6 +23,7 @@ use uuid::Uuid;
 struct AppState {
     pool: PgPool,
     oidc: Option<OidcConfig>,
+    require_oidc: bool,
 }
 
 #[derive(Serialize)]
@@ -63,8 +64,20 @@ async fn live() -> (StatusCode, Json<HealthResponse>) {
     (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "live" }))
 }
 
+fn environment_requires_oidc(environment: &str) -> Result<bool, &'static str> {
+    match environment {
+        "development" | "test" => Ok(false),
+        "staging" | "production" => Ok(true),
+        _ => Err("TEAM_ROOM_ENV must be development, test, staging or production"),
+    }
+}
+
+fn oidc_configuration_ready(required: bool, configured: bool) -> bool {
+    !required || configured
+}
+
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    if readiness(&state.pool).await {
+    if oidc_configuration_ready(state.require_oidc, state.oidc.is_some()) && readiness(&state.pool).await {
         (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "ready" }))
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(HealthResponse { service: "ai-team-room", status: "not_ready" }))
@@ -454,14 +467,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
     let bind: SocketAddr = env::var("TEAM_ROOM_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8081".to_string()).parse()?;
+    let environment = env::var("TEAM_ROOM_ENV").unwrap_or_else(|_| "development".to_string());
+    let require_oidc = environment_requires_oidc(environment.as_str())?;
 
     let pool = connect_pool(&database_url).await?;
     migrate(&pool).await?;
     let oidc = match OidcConfig::from_env() {
-        Ok(config) => { tracing::info!("OIDC workload trust configuration loaded"); Some(config) }
-        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled until trust configuration is provided"); None }
+        Ok(config) => { tracing::info!(%environment, "OIDC workload trust configuration loaded"); Some(config) }
+        Err(reason) if require_oidc => {
+            return Err(format!("OIDC configuration is mandatory in {environment}: {reason}").into());
+        }
+        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled in non-production environment"); None }
     };
-    let state = AppState { pool, oidc };
+    let state = AppState { pool, oidc, require_oidc };
 
     let app = build_router(state);
 
@@ -483,7 +501,19 @@ mod http_security_tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://test:test@127.0.0.1/test")
             .expect("lazy pool configuration");
-        build_router(AppState { pool, oidc: None })
+        build_router(AppState { pool, oidc: None, require_oidc: false })
+    }
+
+    #[test]
+    fn production_and_staging_require_oidc_configuration() {
+        assert_eq!(environment_requires_oidc("development"), Ok(false));
+        assert_eq!(environment_requires_oidc("test"), Ok(false));
+        assert_eq!(environment_requires_oidc("staging"), Ok(true));
+        assert_eq!(environment_requires_oidc("production"), Ok(true));
+        assert!(environment_requires_oidc("prod").is_err());
+        assert!(!oidc_configuration_ready(true, false));
+        assert!(oidc_configuration_ready(true, true));
+        assert!(oidc_configuration_ready(false, false));
     }
 
     #[tokio::test]
