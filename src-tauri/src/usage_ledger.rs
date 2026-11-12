@@ -192,6 +192,55 @@ mod tests {
     }
 
     #[test]
+    fn success_finalizes_real_usage_without_inventing_cost() {
+        let path = temp_db();
+        let request = ChatRequest {
+            provider: Provider::Anthropic, model: Some("claude-test".into()), system: None,
+            messages: vec![], temperature: None, max_output_tokens: None, stream: false
+        };
+        start(&path, "request-success", &request).expect("start");
+        let response = ChatResponse {
+            provider: Provider::Anthropic, model: "claude-test".into(), text: "not persisted".into(),
+            usage: Some(Usage { input_tokens: Some(12), output_tokens: Some(5), total_tokens: Some(17), source: "provider_reported".into() }),
+            latency_ms: 321, request_id: "request-success".into(), provider_request_id: Some("external-123".into()), estimated_cost: None
+        };
+        assert_eq!(finish_success(&path, &response).expect("finish"), None);
+        let conn = open(&path).expect("ledger");
+        let (status, input, output, total, external_id, latency, cost): (String, i64, i64, i64, String, i64, Option<f64>) = conn.query_row(
+            "SELECT status,input_tokens,output_tokens,total_tokens,external_request_id,latency_ms,estimated_cost_usd FROM provider_usage WHERE request_id='request-success'",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))
+        ).expect("finalized row");
+        assert_eq!(status, "succeeded");
+        assert_eq!((input, output, total), (12, 5, 17));
+        assert_eq!(external_id, "external-123");
+        assert_eq!(latency, 321);
+        assert_eq!(cost, None);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn failure_finalizes_status_and_normalized_error_only() {
+        let path = temp_db();
+        let request = ChatRequest {
+            provider: Provider::Gemini, model: Some("gemini-test".into()), system: None,
+            messages: vec![], temperature: None, max_output_tokens: None, stream: false
+        };
+        start(&path, "request-failed", &request).expect("start");
+        finish_failure(&path, "request-failed", "TIMEOUT", 999).expect("failure update");
+        let conn = open(&path).expect("ledger");
+        let (status, code, latency): (String, String, i64) = conn.query_row(
+            "SELECT status,error_code,latency_ms FROM provider_usage WHERE request_id='request-failed'",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+        ).expect("failed row");
+        assert_eq!(status, "failed");
+        assert_eq!(code, "TIMEOUT");
+        assert_eq!(latency, 999);
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cost_is_unknown_without_a_sourced_effective_price() {
         let path = temp_db();
         let conn = open(&path).expect("ledger");
