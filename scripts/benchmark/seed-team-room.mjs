@@ -63,7 +63,7 @@ const sql = [
     [quote(channelId),quote(tenants[0]),quote(rooms[0]),"'GENERAL'",quote(principals[0])].join(",") + ");",
   "INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body,created_at) " +
     "SELECT md5('bench-message-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid," + quote(channelId) + "::uuid," +
-    " (" + uuidArray(principals) + ")[((g-1)% + participantCount + ")+1],md5('bench-client-'||g)::uuid,'seeded benchmark message '||g,NOW()-(g||' seconds')::interval FROM generate_series(1," + messageCount + ") g;",
+    " (" + uuidArray(principals) + ")[((g-1)%" + participantCount + ")+1],md5('bench-client-'||g)::uuid,'seeded benchmark message '||g,NOW()-(g||' seconds')::interval FROM generate_series(1," + messageCount + ") g;",
   "INSERT INTO team_room_message_reads(channel_id,principal_id,last_read_at) SELECT " + quote(channelId) + "::uuid,actor.principal_id,NOW()-INTERVAL '1 day' FROM unnest(" + uuidArray(principals) + ") AS actor(principal_id);",
   "INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id,created_at,updated_at) " +
     "SELECT md5('bench-task-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid,md5('bench-mission-'||g)::uuid,'Benchmark task '||g," + quote(principals[0]) + "::uuid,NOW()-(g||' seconds')::interval,NOW()-(g||' seconds')::interval FROM generate_series(1," + taskCount + ") g;",
