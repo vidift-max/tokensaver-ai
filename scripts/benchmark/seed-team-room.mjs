@@ -117,7 +117,7 @@ if (result.status !== 0) {
 
 const envFile = process.env.GITHUB_ENV;
 if (!envFile) throw new Error("GITHUB_ENV is required; refusing to print raw session tokens");
-for (const token of tokens) process.stdout.write("::add-mask::" + token + "\n");
+for (const token of [...tokens, ...otherTokens]) process.stdout.write("::add-mask::" + token + "\n");
 appendFileSync(envFile, [
   `TEAM_ROOM_API_URL=http://127.0.0.1:8081`,
   `TEAM_ROOM_ROOM_ID=${rooms[0]}`,
@@ -125,6 +125,9 @@ appendFileSync(envFile, [
   `TEAM_ROOM_CHANNEL_ID=${channelId}`,
   `TEAM_ROOM_PRINCIPAL_ID=${principals[0]}`,
   `TEAM_ROOM_SESSION_TOKENS_JSON=${JSON.stringify(tokens)}`,
+  `TEAM_ROOM_OTHER_ROOM_IDS_JSON=${JSON.stringify(rooms.slice(1, otherRoomCount + 1))}`,
+  `TEAM_ROOM_OTHER_ROOM_SESSION_TOKENS_JSON=${JSON.stringify(otherTokens)}`,
+  `BENCH_OTHER_ROOMS=${otherRoomCount}`,
   `BENCH_PARTICIPANTS=${participantCount}`,
   `BENCH_TENANTS=${tenantCount}`,
   `BENCH_ROOMS=${tenantCount}`,
@@ -143,6 +146,7 @@ const metadata = {
     tenants: tenantCount,
     rooms: tenantCount,
     participants_in_target_room: participantCount,
+    other_room_participants: otherRoomCount,
     messages: messageCount,
     tasks: taskCount,
     active_presence_memberships: participantCount,
@@ -150,7 +154,7 @@ const metadata = {
     attachment_references: attachmentCount,
   },
   target: { tenant_id: tenants[0], room_id: rooms[0], channel_id: channelId },
-  credentials: { raw_tokens_written_to_artifact: false, tokens: tokens.length, expires_in: "2 hours" },
+  credentials: { raw_tokens_written_to_artifact: false, target_room_tokens: tokens.length, other_room_tokens: otherTokens.length, expires_in: "2 hours" },
 };
 writeFileSync(resolve(artifactDir, "seed-metadata.json"), JSON.stringify(metadata, null, 2));
 process.stdout.write(JSON.stringify(metadata, null, 2) + "\n");
