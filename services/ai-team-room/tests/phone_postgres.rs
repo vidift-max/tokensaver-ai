@@ -627,12 +627,14 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "SELECT EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id WHERE p.ai_phone_id=$1 GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1)"
     ).bind(guard_phone_id).fetch_one(&pool).await.unwrap();
     assert!(guard,"a legacy global phone shared by two tenant bindings must be detected");
-    let guard_sql=format!("DO $ BEGIN IF EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id WHERE p.ai_phone_id='{}' GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1) THEN RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants'; END IF; END $;",guard_phone_id);
+    let guard_sql=format!("DO $ai_phone_guard$ BEGIN IF EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id WHERE p.ai_phone_id='{}' GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1) THEN RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants'; END IF; END $ai_phone_guard$;",guard_phone_id);
     let blocked=sqlx::query(&guard_sql).execute(&pool).await;
-    let guard_error=blocked.expect_err("the real PostgreSQL DO block must reject the shared legacy phone");
-    assert!(
-        guard_error.to_string().contains("AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants"),
-        "expected the explicit AI-PHONE migration guard; got a different database error: {guard_error}"
+    let guard_error=blocked.expect_err("the PostgreSQL guard must reject the deliberately shared legacy phone");
+    let guard_message=guard_error.as_database_error().map(|error|error.message()).unwrap_or("");
+    assert_eq!(
+        guard_message,
+        "AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants",
+        "a SQL syntax error or unrelated database failure must never count as a passing guard test"
     );
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(guard_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1").bind(guard_ai_id).execute(&pool).await.unwrap();
