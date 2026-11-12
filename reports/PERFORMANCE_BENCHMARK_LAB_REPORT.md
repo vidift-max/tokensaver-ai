@@ -578,3 +578,41 @@ No optimization is implemented in this update. Evidence-backed candidates for a 
 Reason: the existing artifact provides real HTTP, WebSocket, limited cross-room isolation, heartbeat-event and PostgreSQL measurements with verified provenance. However, the benchmark is a short isolated CI run; heartbeat was not tested in isolation; multi-room subscribers/scaling were not tested; resource sampling is coarse; no comparable baseline exists; external report ACK/retry/recovery and effective communication between independently running external AIs are not proven. Therefore the evidence is insufficient for `PERFORMANCE_VALIDATED`.
 
 **No benchmark was repeated. No production code, migration, schema, index, or workflow was changed. PR #6 was not merged or closed.**
+
+
+---
+
+# WORKFLOW CLOSURE — 2026-11-12
+
+Both requested workflows have now completed. No benchmark was rerun as part of this closure, and no production code, migrations, schema, indexes, or workflows were modified.
+
+## CI #748 — run `43330035775`
+
+**Final status: SUCCESS.** All four jobs passed; no failed jobs or failed steps were reported.
+
+| Job | Result | Relevant completed checks |
+|---|---|---|
+| `ai-team-room-service` | PASS | Independent service check; service unit and PostgreSQL integration tests |
+| `keycloak-oidc-smoke` | PASS | Keycloak readiness; realm/client creation; OIDC discovery, client-credentials token and JWKS signature; Team Room service build; real Keycloak token exchange, session, authorization and PostgreSQL admission |
+| `foundation-windows` | PASS | Windows BAT smoke test; Rust cargo check/test; npm install; mission tests; benchmark-probe syntax; build |
+| `foundation` | PASS | Linux dependencies; Rust cargo check/test; npm install; mission tests; benchmark-probe syntax; build; source ZIP package/upload |
+
+## Runner PostgreSQL #271 — run `43330034918`
+
+**Final status: SUCCESS.** The single job passed; no failed steps were reported.
+
+Job: `PostgreSQL 16 + Team Room + independent Runner processes`.
+
+Completed checks included PostgreSQL 16 readiness, Rust PostgreSQL lease/fencing integration, authenticated PostgreSQL handoff state/authorization/recovery integration, Team Room service build, two independent Mission Runner processes against shared PostgreSQL, proof-gate consolidation, evidence upload, and enforcement of all integration proof gates.
+
+## Failure record
+
+No job failures were reported in either workflow. This is a statement about these two workflow runs only; it does not erase previously recorded failures from earlier attempts.
+
+## Final mission verdict
+
+`PERFORMANCE_PARTIAL`
+
+The successful CI and Runner workflows add confidence in build, platform, OIDC, PostgreSQL lease/fencing, handoff/recovery and independent Runner integration. They do not close the benchmark evidence gaps already documented: no comparable performance baseline; no isolated heartbeat-only load; no multi-room positive subscriber/scaling test; coarse resource sampling; no end-to-end external report delivery with recipient ACK/retry/recovery; and no demonstrated exchange between independently running external model agents. The original benchmark artifact remains the only performance workload evidence in this report. Therefore `PERFORMANCE_VALIDATED` is not justified.
+
+PR #6 remains unmerged and open. No benchmark was repeated and no production code or database structure was changed.
