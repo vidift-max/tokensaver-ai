@@ -23,7 +23,8 @@ export TEAM_ROOM_API_URL='https://team-room-benchmark.example'
 export TEAM_ROOM_ROOM_ID='<room-uuid>'
 export TEAM_ROOM_SESSION_TOKENS_JSON='["<participant-1-token>","<participant-2-token>"]'
 export BENCH_PARTICIPANTS=2
-export BENCH_CLIENTS=8
+export BENCH_CLIENTS=2
+export BENCH_REQUIRE_DISTINCT_PARTICIPANTS=true
 export BENCH_EVENTS=100
 export BENCH_MESSAGES=100
 node scripts/benchmark/team-room-http.mjs > http-results.json
@@ -34,14 +35,16 @@ The script concurrently exercises message history/unread, presence, heartbeat, p
 ## WebSocket fanout
 
 ```bash
-export BENCH_CLIENTS=8
+export BENCH_CLIENTS=2
+export BENCH_PARTICIPANTS=2
+export BENCH_REQUIRE_DISTINCT_PARTICIPANTS=true
 export BENCH_MESSAGES=25
 export BENCH_HEARTBEATS=10
 export BENCH_SETTLE_MS=1500
 node scripts/benchmark/team-room-websocket.mjs > websocket-results.json
 ```
 
-The script obtains a distinct single-use ticket for each connection, opens N authenticated sockets to the same room, posts unique general-room messages, and counts expected/observed same-room deliveries, missing deliveries, duplicates, delivery latency and throughput. It can also post heartbeats and count `PRESENCE_CHANGED` frames. All sockets use the same session/principal, so this is a connection/fanout test, **not** a distinct-participant simulation. Multi-room isolation requires separate room-bound identities and is not covered by this one-room probe.
+The script obtains a distinct single-use ticket for each connection, opens N authenticated sockets to the same room, and posts unique general-room messages using the matching participant session. With `TEAM_ROOM_SESSION_TOKENS_JSON` and `BENCH_REQUIRE_DISTINCT_PARTICIPANTS=true`, each socket must have a unique token/session. It counts expected/observed same-room deliveries, missing deliveries, duplicates, delivery latency and throughput. It can also post heartbeats and count `PRESENCE_CHANGED` frames. If only one token is supplied, connections share one principal and the result must not be described as a distinct-participant test. Multi-room isolation requires separate room-bound identities and is not covered by this one-room probe.
 
 ## PostgreSQL
 
