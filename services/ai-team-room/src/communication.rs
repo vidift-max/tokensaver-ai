@@ -322,12 +322,12 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedI
                             .bind(aggregate_id).bind(tenant).bind(room_id).fetch_optional(&pool).await.unwrap_or(None);
                         let expected_channel=aggregate_id.to_string();
                         let payload_channels=[
-                            payload.get("channel_id").and_then(|v|v.as_str()),
-                            payload.get("message").and_then(|v|v.get("channel_id")).and_then(|v|v.as_str()),
-                            payload.get("attachment").and_then(|v|v.get("channel_id")).and_then(|v|v.as_str()),
+                            payload.get("channel_id"),
+                            payload.get("message").and_then(|v|v.get("channel_id")),
+                            payload.get("attachment").and_then(|v|v.get("channel_id")),
                         ];
                         let has_payload_channel=payload_channels.iter().any(|value|value.is_some());
-                        let payload_channels_match=payload_channels.iter().flatten().all(|value|*value==expected_channel.as_str());
+                        let payload_channels_match=payload_channels.iter().flatten().all(|value|value.as_str()==Some(expected_channel.as_str()));
                         channel_type.is_some() && has_payload_channel && payload_channels_match
                     },
                     "team_task"=>{
