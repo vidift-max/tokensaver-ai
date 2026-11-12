@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createCoalescedRefreshScheduler } from "./teamRoomRefreshScheduler.mjs";
 
 type Message = { message_id:string; sender_principal_id:string; sender_display_name:string; parent_message_id:string|null; body:string; created_at:string };
 type Presence = { participant_id:string; principal_id:string; display_name:string; provider:string; last_activity_at:string; current_task_id:string|null; connected:boolean; state:string };
@@ -68,20 +69,21 @@ export default function TeamRoom() {
   useEffect(()=>{
     if(!connected||!roomId||!token)return;
     let stopped=false;let retry=0;let timer:number|undefined;
+    const refreshScheduler=createCoalescedRefreshScheduler(()=>refresh().catch(()=>{}),75);
     const open=async()=>{
       try{
         const issued=await request("/team-room/"+roomId+"/ws-ticket",{method:"POST",body:"{}"});
         if(stopped)return;
         const wsUrl=apiUrl.replace(/^http/,"ws").replace(/\/$/,"")+"/team-room/"+roomId+"/ws?ticket="+encodeURIComponent(issued.ticket);
         const socket=new WebSocket(wsUrl,["team-room.v1"]);socketRef.current=socket;
-        socket.onopen=()=>{retry=0;setConnection("CONNECTED");void refresh().catch(()=>{});};
-        socket.onmessage=event=>{try{const data=JSON.parse(event.data);if(["MESSAGE_CREATED","TASK_CREATED","TASK_UPDATED","PRESENCE_CHANGED","DECISION_CREATED","ATTACHMENT_CREATED","PARTICIPANT_JOINED","PARTICIPANT_LEFT"].includes(data.type))void refresh().catch(()=>{});}catch{/* Ignore malformed event frames. */}};
+        socket.onopen=()=>{retry=0;setConnection("CONNECTED");refreshScheduler.schedule();};
+        socket.onmessage=event=>{try{const data=JSON.parse(event.data);if(["MESSAGE_CREATED","TASK_CREATED","TASK_UPDATED","PRESENCE_CHANGED","DECISION_CREATED","ATTACHMENT_CREATED","PARTICIPANT_JOINED","PARTICIPANT_LEFT"].includes(data.type))refreshScheduler.schedule();}catch{/* Ignore malformed event frames. */}};
         socket.onerror=()=>setConnection("RECONNECTING");
         socket.onclose=()=>{socketRef.current=null;if(!stopped){setConnection("RECONNECTING");const delay=Math.min(30000,500*Math.pow(2,retry++));timer=window.setTimeout(()=>void open(),delay);}};
       }catch{if(!stopped){setConnection("RECONNECTING");timer=window.setTimeout(()=>void open(),Math.min(30000,1000*Math.pow(2,retry++)));}}
     };
     void open();
-    return()=>{stopped=true;if(timer)window.clearTimeout(timer);socketRef.current?.close();socketRef.current=null;};
+    return()=>{stopped=true;refreshScheduler.cancel();if(timer)window.clearTimeout(timer);socketRef.current?.close();socketRef.current=null;};
   },[connected,apiUrl,roomId,token,request,refresh]);
 
   async function sendMessage(){

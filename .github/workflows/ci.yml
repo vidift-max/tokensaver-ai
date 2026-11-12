@@ -17,9 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
       - name: Install Tauri Linux dependencies
         timeout-minutes: 8
         run: |
@@ -35,7 +42,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: npm install
+      - run: npm install --prefer-offline --no-audit --no-fund
       - run: npm run test:missions
       - run: npm run build
       - name: Package source ZIP
@@ -53,9 +60,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
       - name: Smoke-test CONTINUE_MISSION.bat on Windows
         shell: cmd
         run: |
@@ -76,7 +90,7 @@ jobs:
           if errorlevel 1 exit /b 1
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - run: npm install
+      - run: npm install --prefer-offline --no-audit --no-fund
       - run: npm run test:missions
       - run: npm run build
 
@@ -102,6 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Check independent service
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Run service unit and PostgreSQL integration tests
@@ -128,6 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Start ephemeral Keycloak container
         run: |
           docker run --detach --name keycloak-ci -p 8080:8080 -p 9000:9000 \
