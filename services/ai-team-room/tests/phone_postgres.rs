@@ -379,7 +379,7 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
         pool: &PgPool,
         ai_id: Uuid,
         label: &str,
-    ) -> (Uuid, String) {
+    ) -> (Uuid, String, Uuid, Uuid) {
         let tenant = Uuid::new_v4();
         let room = Uuid::new_v4();
         let principal = Uuid::new_v4();
@@ -406,7 +406,7 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
             .bind(ai_id).bind(tenant).bind(principal)
             .execute(pool).await.unwrap();
 
-        for permission in ["phone.read","phone.attach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack"] {
+        for permission in ["phone.read","phone.attach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
             grant(pool, tenant, room, principal, permission).await;
         }
         let (session, _execution) = add_session(pool, tenant, room, principal, participant).await;
@@ -414,11 +414,11 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
             .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(participant).bind(principal).bind(session)
             .execute(pool).await.unwrap();
         let token = bearer_for(pool, session).await;
-        (tenant, token)
+        (tenant, token, room, principal)
     }
 
-    let (tenant_a, token_a) = provision_tenant(&pool, ai_id, "A").await;
-    let (tenant_b, token_b) = provision_tenant(&pool, ai_id, "B").await;
+    let (tenant_a, token_a, room_a, principal_a) = provision_tenant(&pool, ai_id, "A").await;
+    let (tenant_b, token_b, room_b, principal_b) = provision_tenant(&pool, ai_id, "B").await;
     let mapping_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ai_identity_principals WHERE ai_id=$1 AND tenant_id IN ($2,$3)"
     )
@@ -553,6 +553,56 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
     assert_eq!(response.status(), axum::http::StatusCode::PRECONDITION_FAILED);
     let response = http_call(&app, "POST", "/ai-phone/heartbeat", Some(&token_a), Some(serde_json::json!({"endpoint_fence": fence_a2}))).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let response = http_call(&app, "POST", "/ai-phone/detach", Some(&token_b), Some(serde_json::json!({"endpoint_fence": fence_b}))).await;
+    eprintln!("ADVERSARIAL tenant=B detach_A_current_attachment status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::PRECONDITION_FAILED);
+    let response = http_call(&app, "POST", "/ai-phone/detach", Some(&token_a), Some(serde_json::json!({"endpoint_fence": fence_a2}))).await;
+    eprintln!("ADVERSARIAL tenant=A detach_current_attachment status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+
+    // Create two canonical Team Room tasks, one in each tenant/room. Mission linking
+    // must remain a pointer only; it must not become a second task authority.
+    let task_a = Uuid::new_v4();
+    let mission_a = Uuid::new_v4();
+    let task_b = Uuid::new_v4();
+    let mission_b = Uuid::new_v4();
+    sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,status,owner_principal_id,created_by_principal_id) VALUES($1,$2,$3,$4,'synthetic tenant A task','RECOVERY_REQUIRED',$5,$5)")
+        .bind(task_a).bind(tenant_a).bind(room_a).bind(mission_a).bind(principal_a)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,status,owner_principal_id,created_by_principal_id) VALUES($1,$2,$3,$4,'synthetic tenant B task','RECOVERY_REQUIRED',$5,$5)")
+        .bind(task_b).bind(tenant_b).bind(room_b).bind(mission_b).bind(principal_b)
+        .execute(&pool).await.unwrap();
+
+    let response = http_call(&app, "POST", "/ai-phone/mission", Some(&token_a), Some(serde_json::json!({"task_id":task_a}))).await;
+    eprintln!("ADVERSARIAL tenant=A link_own_task status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    let response = http_call(&app, "POST", "/ai-phone/mission", Some(&token_b), Some(serde_json::json!({"task_id":task_a}))).await;
+    eprintln!("ADVERSARIAL tenant=B link_task_A status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN,
+        "Team Room tenant/room/owner validation must reject a task from another tenant");
+
+    let response = http_call(&app, "POST", "/ai-phone/mission", Some(&token_b), Some(serde_json::json!({"task_id":task_b}))).await;
+    eprintln!("ADVERSARIAL tenant=B link_own_task status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    let linked_task: Uuid = sqlx::query_scalar("SELECT task_id FROM phone_mission_links WHERE ai_phone_id=$1")
+        .bind(Uuid::parse_str(&phone_a).unwrap()).fetch_one(&pool).await.unwrap();
+    assert_eq!(linked_task, task_b,
+        "Tenant B overwrote the single global mission link previously written by Tenant A");
+
+    let task_a_state: (String, i64) = sqlx::query_as("SELECT status,fencing_token FROM team_tasks WHERE task_id=$1")
+        .bind(task_a).fetch_one(&pool).await.unwrap();
+    let task_b_state: (String, i64) = sqlx::query_as("SELECT status,fencing_token FROM team_tasks WHERE task_id=$1")
+        .bind(task_b).fetch_one(&pool).await.unwrap();
+    assert_eq!(task_a_state, ("RECOVERY_REQUIRED".to_string(), 0));
+    assert_eq!(task_b_state, ("RECOVERY_REQUIRED".to_string(), 0),
+        "AI Phone mission linking must not alter Team Room task owner/lease/fencing/checkpoint authority");
+
+    // The shared phone now points at Tenant B's task. Tenant A's own room-scoped
+    // snapshot cannot resolve that task, although its phone lookup succeeded before.
+    let response = http_call(&app, "GET", "/ai-phone/me", Some(&token_a), None).await;
+    eprintln!("ADVERSARIAL tenant=A get_me_after_B_mission_link status={}", response.status());
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND,
+        "Tenant B's mission pointer must not break Tenant A's phone snapshot");
 
     // Final expected Architecture B assertion. Reached only after mailbox and endpoint
     // adversarial operations have generated their independent evidence.
