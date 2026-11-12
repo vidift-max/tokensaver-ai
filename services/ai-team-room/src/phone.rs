@@ -458,7 +458,7 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND ip.principal_id=$3 AND a.session_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
-    let delivered_count = sqlx::query("UPDATE phone_messages m SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() FROM ai_phones p WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id AND m.message_state IN ('PENDING','DELIVERED')")
+    let delivered_count = sqlx::query("UPDATE phone_messages m SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() FROM ai_phones p WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id AND m.message_state='PENDING'")
         .bind(phone_id).bind(identity.tenant_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
     if delivered_count > 0 {
         record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_DELIVERED",
@@ -526,6 +526,17 @@ async fn ack_handler(State(pool): State<PgPool>, Path((phone_id,message_id)): Pa
     ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn sent_message_list_handler(State(pool): State<PgPool>, headers: HeaderMap)
+    -> Result<Json<Vec<PhoneMessage>>, StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    require_permission(&pool, &identity, "phone.message.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
+    let rows = sqlx::query_as::<_, PhoneMessage>(
+        "SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE tenant_id=$1 AND sender_principal_id=$2 ORDER BY created_at DESC LIMIT 200"
+    ).bind(identity.tenant_id).bind(identity.principal_id).fetch_all(&pool).await
+      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(rows))
 }
 
 async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<MissionLinkRequest>)
@@ -699,6 +710,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/ai-phone/{phone_id}/presence", get(presence_handler))
         .route("/ai-phone/{phone_id}/endpoints", get(endpoint_list_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
+        .route("/ai-phone/sent", get(sent_message_list_handler))
         .route("/ai-phone/{phone_id}/messages/{message_id}/ack", post(ack_handler))
         .route("/ai-phone/mission", post(mission_link_handler))
         .with_state(pool)
