@@ -38,6 +38,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Confirm disposable PostgreSQL 16
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SHOW transaction_read_only;"
+      - name: Prove legacy AI-PHONE migration fails closed without data loss
+        run: bash scripts/ai-phone-legacy-upgrade-test.sh
       - name: Cargo check
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Full PostgreSQL integration and adversarial suite
