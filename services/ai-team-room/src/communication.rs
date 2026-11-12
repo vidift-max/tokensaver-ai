@@ -640,6 +640,11 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws_b.next()).await.is_err(),
             "tenant B socket must reject an event whose payload room_id contradicts its DB aggregate");
 
+        // Resolve tenant B's channel before constructing the inconsistent
+        // same-tenant channel envelope below and the later FK fixtures.
+        let channel_b:Uuid=sqlx::query_scalar("SELECT channel_id FROM team_room_channels WHERE tenant_id=$1 AND room_id=$2 AND channel_type='GENERAL'")
+            .bind(tenant_b).bind(room_b).fetch_one(&pool).await.unwrap();
+
         // Even within the same tenant, the payload cannot substitute a
         // different channel ID for the channel used as the DB aggregate.
         let channel_a=Uuid::parse_str(first["channel_id"].as_str().unwrap()).unwrap();
@@ -689,8 +694,6 @@ mod postgres_tests {
 
         // Composite-FK regression checks: deliberately mismatched tenant/room
         // references must be rejected by PostgreSQL, not merely by handlers.
-        let channel_b:Uuid=sqlx::query_scalar("SELECT channel_id FROM team_room_channels WHERE tenant_id=$1 AND room_id=$2 AND channel_type='GENERAL'")
-            .bind(tenant_b).bind(room_b).fetch_one(&pool).await.unwrap();
         let bad_message=sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body) VALUES($1,$2,$3,$4,$5,$6,'invalid cross-tenant message')")
             .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(channel_b).bind(a.principal).bind(Uuid::new_v4()).execute(&pool).await;
         assert!(bad_message.is_err(),"message channel FK must bind tenant + room + channel");
