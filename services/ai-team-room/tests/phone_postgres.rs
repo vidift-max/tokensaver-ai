@@ -518,6 +518,69 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert!(matches!(stale_endpoint,Err(PhoneError::Fenced)));
     detach(&pool,&identity_b,transferred.endpoint_fence).await.expect("detach transferred endpoint");
 
+    // Endpoint revocation is enforced against the persisted endpoint row for every
+    // operation that requires an attached endpoint. Durable send remains offline-safe.
+    let revoked_attachment=attach(&pool,&identity_b,AttachRequest {
+        endpoint_id:endpoint_c,endpoint_type:"TEST".into(),metadata:serde_json::json!({"label":"endpoint-C-revocation-probe"})
+    },false).await.expect("reattach endpoint C before revocation");
+    let queued=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),
+        Some(serde_json::json!({"idempotency_key":"revocation-history-probe","content":{"text":"persisted before revocation"}}))).await;
+    assert_eq!(queued.status(),axum::http::StatusCode::CREATED);
+    let queued_bytes=axum::body::to_bytes(queued.into_body(),100_000).await.unwrap();
+    let queued_message:Value=serde_json::from_slice(&queued_bytes).unwrap();
+    let queued_id=queued_message["message_id"].as_str().unwrap().to_string();
+    let inbox=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(inbox.status(),axum::http::StatusCode::OK);
+    sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=NOW() WHERE message_id=$1 AND tenant_id=$2")
+        .bind(Uuid::parse_str(&queued_id).unwrap()).bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3")
+        .bind(endpoint_c).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await.unwrap();
+    let heartbeat_after_revoke=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
+        Some(serde_json::json!({"endpoint_fence":revoked_attachment.endpoint_fence}))).await;
+    assert_eq!(heartbeat_after_revoke.status(),axum::http::StatusCode::PRECONDITION_FAILED,"revoked endpoint cannot heartbeat");
+    let inbox_after_revoke=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(inbox_after_revoke.status(),axum::http::StatusCode::PRECONDITION_FAILED,"revoked endpoint cannot read pending inbox");
+    let ack_after_revoke=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,queued_id),Some(&token_b),None).await;
+    assert_eq!(ack_after_revoke.status(),axum::http::StatusCode::PRECONDITION_FAILED,"revoked endpoint cannot ACK");
+    let reattach_after_revoke=http_call(&app,"POST","/ai-phone/attach",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_c,"endpoint_type":"TEST","metadata":{"label":"endpoint-C-replay"}
+    }))).await;
+    assert_eq!(reattach_after_revoke.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot reattach");
+    let reconnect_after_revoke=http_call(&app,"POST","/ai-phone/reconnect",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_c,"endpoint_type":"TEST","metadata":{"label":"endpoint-C-reconnect-replay"}
+    }))).await;
+    assert_eq!(reconnect_after_revoke.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot reconnect");
+    let status_after_revoke:String=sqlx::query_scalar("SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1")
+        .bind(endpoint_c).fetch_one(&pool).await.unwrap();
+    assert_eq!(status_after_revoke,"REVOKED","detach/reconnect paths must not downgrade a revoked endpoint");
+    let sent_while_offline=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),
+        Some(serde_json::json!({"idempotency_key":"offline-send-after-revoke","content":{"text":"durable send is identity-scoped, not endpoint-scoped"}}))).await;
+    assert_eq!(sent_while_offline.status(),axum::http::StatusCode::CREATED,"offline durable send remains available to the authenticated AI identity");
+
+    let received_history=http_call(&app,"GET","/ai-phone/received",Some(&token_b),None).await;
+    assert_eq!(received_history.status(),axum::http::StatusCode::OK,"received history is independent of the pending inbox endpoint state");
+    let history_bytes=axum::body::to_bytes(received_history.into_body(),100_000).await.unwrap();
+    let history:Vec<Value>=serde_json::from_slice(&history_bytes).unwrap();
+    assert!(history.iter().any(|m|m["message_id"]==queued_id),"received history retains messages after ACK state transitions");
+
+    let endpoint_d=Uuid::new_v4();
+    let register_d=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_d,"endpoint_type":"TEST","metadata":{"label":"endpoint-D"}
+    }))).await;
+    assert_eq!(register_d.status(),axum::http::StatusCode::CREATED,"a different endpoint of the same AI can register");
+    let attach_d=http_call(&app,"POST","/ai-phone/transfer",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_d,"endpoint_type":"TEST","metadata":{"label":"endpoint-D"}
+    }))).await;
+    assert_eq!(attach_d.status(),axum::http::StatusCode::OK,"valid endpoint D can take over the same AI phone");
+    let phone_identity_after_revoke:Uuid=sqlx::query_scalar("SELECT ai_phone_id FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2")
+        .bind(tenant).bind(ai_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(phone_identity_after_revoke,first.phone.ai_phone_id,"endpoint revocation must not change AI_PHONE_ID");
+    let phone_after_transfer=get_my_phone(&pool,&identity_b).await.unwrap();
+    let heartbeat_d=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
+        Some(serde_json::json!({"endpoint_fence":phone_after_transfer.attachment.as_ref().unwrap().endpoint_fence}))).await;
+    assert_eq!(heartbeat_d.status(),axum::http::StatusCode::OK,"new valid endpoint remains operational after endpoint C revocation");
+
+
     // Two concurrent endpoints race for a disconnected phone: the row lock + partial
     // unique index must produce exactly one winner and one conflict.
     let endpoint_d = Uuid::new_v4();
