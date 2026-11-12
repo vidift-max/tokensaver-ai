@@ -215,8 +215,18 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "tenant_id":foreign_tenant,"principal_id":foreign_principal
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B binds the same stable global AI identity");
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B explicitly provisions its own phone");
+    let (provision_a,provision_b)=tokio::join!(
+        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal}))),
+        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal})))
+    );
+    let statuses=[provision_a.status(),provision_b.status()];
+    assert!(statuses.contains(&axum::http::StatusCode::CREATED) && statuses.contains(&axum::http::StatusCode::OK),
+        "concurrent idempotent provisioning has exactly one creator and one existing-phone response");
+    let body_a=axum::body::to_bytes(provision_a.into_body(),100_000).await.unwrap();
+    let body_b=axum::body::to_bytes(provision_b.into_body(),100_000).await.unwrap();
+    let result_a:Value=serde_json::from_slice(&body_a).unwrap();
+    let result_b:Value=serde_json::from_slice(&body_b).unwrap();
+    assert_eq!(result_a["ai_phone_id"],result_b["ai_phone_id"],"concurrent provision requests converge on one tenant phone");
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_c),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B reads its own phone");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
