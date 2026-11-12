@@ -730,7 +730,7 @@ mod tests {
             attach(&pool,&identity,request_a),
             attach(&pool,&identity,request_b)
         );
-        assert_eq!(usize::from(result_a.is_ok())+usize::from(result_b.is_ok()),1);
+        assert_eq!((result_a.is_ok() as usize)+(result_b.is_ok() as usize),1);
         let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM ai_phone_attachments WHERE ai_phone_id=$1 AND status='ACTIVE' AND lease_expires_at>NOW()")
             .bind(phone.ai_phone_id).fetch_one(&pool).await.unwrap();
         assert_eq!(active,1);
