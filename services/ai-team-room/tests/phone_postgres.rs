@@ -3,7 +3,6 @@ use ai_team_room_service::{
     connect_pool, migrate,
     phone::{attach, detach, get_my_phone, AttachRequest, PhoneError},
 };
-use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -104,7 +103,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // The old endpoint/session cannot detach or mutate the newly fenced phone attachment.
     let stale = detach(&pool,&identity_a,attached_a.endpoint_fence).await;
-    assert!(matches!(stale,Err(PhoneError::Fenced)));
+    assert!(matches!(stale,Err(PhoneError::InvalidSession)));
     detach(&pool,&identity_b,attached_b.endpoint_fence).await.expect("detach current endpoint");
 
     // Persistent offline inbox: no active attachment is required to enqueue a message.
@@ -127,9 +126,35 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(first.phone.ai_phone_id).bind(sender).fetch_one(&pool).await.unwrap();
     assert_eq!(count,1);
 
-    let current = get_my_phone(&pool,&identity_b).await.expect("same phone after reconnect");
+    // Reconnect a fresh endpoint and verify the offline message remains in sequence.
+    let endpoint_c = Uuid::new_v4();
+    let attached_c = attach(&pool,&identity_b,AttachRequest {
+        endpoint_id: endpoint_c, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-C"}),
+    },false).await.expect("reconnect to retrieve offline inbox");
+    assert_eq!(attached_c.ai_phone_id,first.phone.ai_phone_id);
+    let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
+        .bind(message_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(pending,(1,"PENDING".to_string()));
+    sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=NOW(),attempt_count=attempt_count+1 WHERE message_id=$1")
+        .bind(message_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE phone_messages SET message_state='ACK',acknowledged_at=NOW() WHERE message_id=$1")
+        .bind(message_id).execute(&pool).await.unwrap();
+    let acked: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
+        .bind(message_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(acked,"ACK");
+
+    // The phone points to the existing canonical task/checkpoint record; it does not copy it.
+    let task_id = Uuid::new_v4();
+    let mission_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id,checkpoint,checkpoint_version) VALUES($1,$2,$3,$4,'AI-Phone continuity test',$5,$6,1)")
+        .bind(task_id).bind(tenant).bind(room).bind(mission_id).bind(principal)
+        .bind(serde_json::json!({"step":"persisted","progress":40})).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3")
+        .bind(task_id).bind(mission_id).bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
+    let current = get_my_phone(&pool,&identity_b).await.expect("same phone and mission after reconnect");
     assert_eq!(current.phone.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(current.phone.ai_id,ai_id);
-    let _ = Duration::seconds(1); // keep chrono imported for explicit timestamp fixture type parity
-    let _ = Utc::now();
+    assert_eq!(current.phone.current_task_id,Some(task_id));
+    assert_eq!(current.mission.as_ref().unwrap()["checkpoint"]["progress"],40);
+
 }
