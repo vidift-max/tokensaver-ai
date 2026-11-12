@@ -19,7 +19,7 @@ const taskCount = Number(process.env.BENCH_SEED_TASKS || 250);
 const decisionCount = Number(process.env.BENCH_SEED_DECISIONS || 250);
 const attachmentCount = Number(process.env.BENCH_SEED_ATTACHMENTS || 250);
 if (![participantCount, tenantCount, messageCount, taskCount, decisionCount, attachmentCount].every(Number.isSafeInteger) ||
-    participantCount < 2 || participantCount > 15 || tenantCount < 1 || messageCount < 1 ||
+    participantCount < 2 || participantCount > 15 || tenantCount < 2 || messageCount < 1 ||
     taskCount < 1 || decisionCount < 1 || attachmentCount < 1) {
   throw new Error("Invalid benchmark fixture cardinality");
 }
@@ -98,7 +98,23 @@ const sql = [
     "SELECT md5('bench-decision-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid," + quote(principals[0]) + "::uuid,'Benchmark decision '||g,'Seeded decision record for query profiling',NOW()-(g||' seconds')::interval FROM generate_series(1," + decisionCount + ") g;",
   "INSERT INTO team_room_attachment_refs(attachment_id,tenant_id,room_id,channel_id,uploaded_by_principal_id,file_name,storage_ref,content_type,byte_len,created_at) " +
     "SELECT md5('bench-attachment-'||g)::uuid," + quote(tenants[0]) + "::uuid," + quote(rooms[0]) + "::uuid," + quote(channelId) + "::uuid," + quote(principals[0]) + "::uuid,'benchmark-'||g||'.bin','benchmark://fixture/'||g,'application/octet-stream',1024,NOW()-(g||' seconds')::interval FROM generate_series(1," + attachmentCount + ") g;",
-  "COMMIT;"
+  "COMMIT;",
+  "ANALYZE tenants;",
+  "ANALYZE rooms;",
+  "ANALYZE principals;",
+  "ANALYZE participants;",
+  "ANALYZE workload_identities;",
+  "ANALYZE sessions;",
+  "ANALYZE workload_executions;",
+  "ANALYZE room_memberships;",
+  "ANALYZE principal_permissions;",
+  "ANALYZE team_room_channels;",
+  "ANALYZE team_room_messages;",
+  "ANALYZE team_room_message_reads;",
+  "ANALYZE team_tasks;",
+  "ANALYZE team_room_decisions;",
+  "ANALYZE team_room_attachment_refs;",
+  "ANALYZE outbox_events;"
 ].join("\n");
 
 const env = {
