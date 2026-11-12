@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { TeamRoomClient } from "../scripts/team-room-client.mjs";
 import { normalizeTeamRoomBaseUrl, resolveTeamRoomRequestUrl } from "../scripts/team-room-security.mjs";
 
@@ -83,8 +84,8 @@ test("401 revokes the in-memory client token and requires fresh authentication",
 });
 
 test("Recovery Worker rejects remote HTTP configuration without printing the session token", () => {
-  const worker = new URL("../scripts/team-room-recovery-worker.mjs", import.meta.url);
-  const result = spawnSync(process.execPath, [worker.pathname, "room-id", "task-id", "previous-owner"], {
+  const worker = fileURLToPath(new URL("../scripts/team-room-recovery-worker.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [worker, "room-id", "task-id", "previous-owner"], {
     encoding: "utf8",
     env: {
       ...process.env,
