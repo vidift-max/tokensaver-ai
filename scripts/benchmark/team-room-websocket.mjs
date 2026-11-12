@@ -28,7 +28,7 @@ if (![clients, messages, settleMs, heartbeats, participantCount].every(Number.is
   process.exit(2);
 }
 const room = encodeURIComponent(roomId);
-const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+const headers = { "content-type": "application/json" };
 const sockets = [];
 const deliveries = new Map();
 const early = new Map();
@@ -39,7 +39,7 @@ let receivedFrames = 0;
 let presenceChangedFrames = 0;
 
 async function ticket(token) {
-  const response = await fetch(`${base}/team-room/${room}/ws-ticket`, { method: "POST", headers, body: "{}" });
+  const response = await fetch(`${base}/team-room/${room}/ws-ticket`, { method: "POST", headers: { ...headers, authorization: `Bearer ${token}` }, body: "{}" });
   if (!response.ok) throw new Error(`ticket_http_${response.status}`);
   const value = await response.json();
   if (!value.ticket) throw new Error("ticket_missing");
@@ -103,7 +103,7 @@ try {
   }
   let heartbeatWritesAccepted = 0;
   for (let i = 0; i < heartbeats; i++) {
-    const response = await fetch(`${base}/team-room/heartbeat`, { method: "POST", headers, body: "{}", signal: AbortSignal.timeout(10000) });
+    const response = await fetch(`${base}/team-room/heartbeat`, { method: "POST", headers: { ...headers, authorization: `Bearer ${tokens[i % tokens.length]}` }, body: "{}", signal: AbortSignal.timeout(10000) });
     if (response.ok) heartbeatWritesAccepted++;
     else failures.push(`heartbeat_http_${response.status}`);
   }
