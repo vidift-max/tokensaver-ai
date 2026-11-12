@@ -209,7 +209,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'foreign-test',$4,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(foreign_tenant).bind(foreign_principal).bind(format!("foreign-subject-{foreign_principal}"))
         .execute(&pool).await.unwrap();
-    let (foreign_session,_foreign_execution)=add_session(&pool,foreign_tenant,foreign_room,foreign_principal,foreign_participant).await;
+    let (foreign_session,foreign_execution)=add_session(&pool,foreign_tenant,foreign_room,foreign_principal,foreign_participant).await;
     sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(foreign_tenant).bind(foreign_room).bind(foreign_participant).bind(foreign_principal).bind(foreign_session)
         .execute(&pool).await.unwrap();
@@ -324,6 +324,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(foreign_endpoint).bind(tenant).bind(room).bind(principal).bind(participant).bind(session_a).bind(execution_a)
         .execute(&pool).await;
     assert!(invalid_attachment.is_err(),"composite FK rejects cross-tenant endpoint attachment");
+    let invalid_session_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(endpoint_a).bind(tenant)
+        .bind(foreign_room).bind(foreign_principal).bind(foreign_participant).bind(foreign_session).bind(foreign_execution)
+        .execute(&pool).await;
+    assert!(invalid_session_attachment.is_err(),"composite session/execution FK rejects a foreign tenant session");
     let invalid_message=sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,99,'cross-tenant-fk-probe',$6)")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(foreign_tenant).bind(foreign_principal).bind(ai_id).bind(serde_json::json!({"text":"must be rejected"}))
         .execute(&pool).await;
