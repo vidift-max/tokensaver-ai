@@ -185,10 +185,6 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
                 return Ok(existing);
             }
             if !allow_transfer { return Err(PhoneError::Conflict); }
-            let old_session_live: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id=$1 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW())"
-            ).bind(current_session).fetch_one(&mut *tx).await?;
-            if old_session_live { return Err(PhoneError::Conflict); }
         } else {
             let old_session_live: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id=$1 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW())"
