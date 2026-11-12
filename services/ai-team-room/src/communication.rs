@@ -340,11 +340,9 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedI
                         .bind(aggregate_id).bind(tenant).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                     if !allowed{continue;}
                 }
-                // A payload room_id is only a consistency check; it never
-                // grants access without the tenant + aggregate DB checks above.
-                if let Some(payload_room)=payload.get("room_id").and_then(|v|v.as_str()){
-                    if payload_room!=room_id.to_string(){continue;}
-                }
+                // Preserve the existing room envelope contract as a required
+                // consistency check. It never grants access without DB scope checks.
+                if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
                 let raw_type:String=event.try_get("event_type").unwrap_or_default();
                 let event_type=match raw_type.as_str(){"participant.admitted"|"participant.reconnected"=>"PARTICIPANT_JOINED","participant.left"=>"PARTICIPANT_LEFT",other=>other};
                 let data=serde_json::json!({"event_id":event_id,"type":event_type,"payload":payload});
