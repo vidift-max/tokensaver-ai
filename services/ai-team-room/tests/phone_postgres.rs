@@ -257,10 +257,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(current.mission.as_ref().unwrap()["checkpoint"]["progress"],40);
 
     let response=http_call(&app,"POST","/ai-phone/detach",Some(&token_b),
-        Some(serde_json::json!({"endpoint_fence":attached_b.endpoint_fence}))).await;
+        Some(serde_json::json!({"endpoint_fence":attached_f.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
     let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
-        Some(serde_json::json!({"endpoint_fence":attached_b.endpoint_fence}))).await;
+        Some(serde_json::json!({"endpoint_fence":attached_f.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"detached endpoint cannot heartbeat");
 
 }
