@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import AIPhone from "./AIPhone";
 
 type Message = { message_id:string; sender_principal_id:string; sender_display_name:string; parent_message_id:string|null; body:string; created_at:string };
 type Presence = { participant_id:string; principal_id:string; display_name:string; provider:string; last_activity_at:string; current_task_id:string|null; connected:boolean; state:string };
@@ -126,10 +127,11 @@ export default function TeamRoom() {
     {error&&<p className="error">{error}</p>}
     <div className="team-room-layout">
       <aside className="team-room-nav">
-        <strong>AI TEAM ROOM</strong><a href="#room-chat">Sala geral</a><a href="#room-tasks">Tarefas</a><a href="#room-private">Privados</a><a href="#room-audio">Áudio</a><a href="#room-decisions">Decisões</a><a href="#room-files">Arquivos</a><a href="#room-people">Participantes</a>
+        <strong>AI TEAM ROOM</strong><a href="#room-chat">Sala geral</a><a href="#room-phone">Telefone virtual</a><a href="#room-tasks">Tarefas</a><a href="#room-private">Privados</a><a href="#room-audio">Áudio</a><a href="#room-decisions">Decisões</a><a href="#room-files">Arquivos</a><a href="#room-people">Participantes</a>
         <label>Meu status<select value={presenceState} onChange={e=>void changePresence(e.target.value)}><option>ONLINE</option><option>AWAY</option><option>BUSY</option><option>WAITING</option><option>BLOCKED</option></select></label>
       </aside>
       <div className="team-room-main">
+        <section className="panel" id="room-phone"><AIPhone apiUrl={apiUrl} token={token}/></section>
         <section className="panel" id="room-chat"><div className="panel-head"><div><h2>Chat {unreadCount>0?"· "+unreadCount+" não lidas":""}</h2><p className="muted">Histórico persistente · eventos via PostgreSQL outbox + WebSocket autenticado</p></div><button onClick={()=>void refresh()}>Atualizar</button></div>
           <div className="team-room-messages">{messages.map(m=><article key={m.message_id}><small>{m.sender_display_name} · {new Date(m.created_at).toLocaleString()}</small><p>{m.body}</p><button onClick={()=>setReplyTo(m.message_id)}>Responder nesta thread</button></article>)}</div>\n          {replyTo&&<p className="muted">Respondendo à mensagem {replyTo.slice(0,8)} <button onClick={()=>setReplyTo(null)}>Cancelar</button></p>}
           <textarea value={draft} onChange={e=>setDraft(e.target.value)} rows={3} placeholder="Escreva uma mensagem..."/>
