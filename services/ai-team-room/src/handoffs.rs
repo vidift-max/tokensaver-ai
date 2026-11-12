@@ -728,10 +728,10 @@ mod postgres_tests {
         let lease_a=tasks::acquire_lease(&pool,&identity_a,task.task_id,60).await.unwrap();
         let checkpoint_a=tasks::write_checkpoint(&pool,&identity_a,task.task_id,lease_a.task.fencing_token,
             serde_json::json!({"step":"checkpoint-A","progress":55})).await.unwrap();
-        sqlx::query("INSERT INTO phone_mission_links(ai_phone_id,task_id) VALUES($1,$2)")
-            .bind(phone_a.phone.ai_phone_id).bind(task.task_id).execute(&pool).await.unwrap();
-        sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3")
-            .bind(task.task_id).bind(task.mission_id).bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO phone_mission_links(ai_phone_id,tenant_id,room_id,task_id) VALUES($1,$2,$3,$4)")
+            .bind(phone_a.phone.ai_phone_id).bind(tenant).bind(identity_a.room_id).bind(task.task_id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3 AND tenant_id=$4")
+            .bind(task.task_id).bind(task.mission_id).bind(phone_a.phone.ai_phone_id).bind(tenant).execute(&pool).await.unwrap();
 
         // A expires. The phone remains durable; only its session attachment becomes stale.
         sqlx::query("UPDATE sessions SET status='EXPIRED',issued_at=NOW()-INTERVAL '2 minutes',expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1")
