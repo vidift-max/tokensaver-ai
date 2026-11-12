@@ -406,7 +406,7 @@ async fn same_global_ai_identity_must_resolve_distinct_tenant_phones_over_http()
             .bind(ai_id).bind(tenant).bind(principal)
             .execute(pool).await.unwrap();
 
-        for permission in ["phone.read","phone.attach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
+        for permission in ["phone.read","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
             grant(pool, tenant, room, principal, permission).await;
         }
         let (session, _execution) = add_session(pool, tenant, room, principal, participant).await;
