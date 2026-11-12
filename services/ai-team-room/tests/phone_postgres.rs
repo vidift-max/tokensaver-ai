@@ -71,10 +71,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(format!("test-subject-{principal}"))
         .execute(&pool).await.unwrap();
+    let identity_key=format!("test:ai-phone:{ai_id}");
     sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-IDENTITY')")
-        .bind(ai_id).bind(format!("test:ai-phone:{ai_id}")).execute(&pool).await.unwrap();
+        .bind(ai_id).bind(&identity_key).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+        .bind(ai_id).bind(tenant).execute(&pool).await.unwrap();
 
     for permission in ["phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
         grant(&pool,tenant,room,principal,permission).await;
