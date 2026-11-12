@@ -14,6 +14,7 @@ const tokenList = process.env.TEAM_ROOM_SESSION_TOKENS_JSON
   : [process.env.TEAM_ROOM_SESSION_TOKEN || ""];
 const tokens = Array.isArray(tokenList) ? tokenList.filter(value => typeof value === "string" && value.length > 0) : [];
 const participantCount = Number(process.env.BENCH_PARTICIPANTS || tokens.length);
+const requireDistinct = process.env.BENCH_REQUIRE_DISTINCT_PARTICIPANTS === "true";
 const clients = Number(process.env.BENCH_CLIENTS || 8);
 const events = Number(process.env.BENCH_EVENTS || 100);
 const messages = Number(process.env.BENCH_MESSAGES || 0);
@@ -24,7 +25,7 @@ if (!apiUrl || !roomId || tokens.length === 0) {
   process.exit(2);
 }
 if (![clients, events, messages, timeoutMs].every(Number.isSafeInteger) ||
-    clients < 1 || events < 1 || messages < 0 || timeoutMs < 1) {
+    clients < 1 || events < 1 || messages < 0 || timeoutMs < 1 || participantCount < 1 || (requireDistinct && new Set(tokens).size < clients)) {
   console.error("Invalid BENCH_CLIENTS / BENCH_EVENTS / BENCH_MESSAGES / BENCH_TIMEOUT_MS");
   process.exit(2);
 }
@@ -124,6 +125,15 @@ console.log(JSON.stringify({
     clients,
     participant_count: participantCount,
     distinct_session_tokens: new Set(tokens).size,
+    distinct_participant_per_worker: new Set(tokens).size >= clients,
+    dataset: {
+      tenants: Number(process.env.BENCH_TENANTS || 0),
+      rooms: Number(process.env.BENCH_ROOMS || 0),
+      seeded_messages: Number(process.env.BENCH_SEED_MESSAGES || 0),
+      seeded_tasks: Number(process.env.BENCH_SEED_TASKS || 0),
+      seeded_decisions: Number(process.env.BENCH_SEED_DECISIONS || 0),
+      seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0),
+    },
     events_per_read_endpoint: events,
     message_writes: messages,
     timeout_ms: timeoutMs,
