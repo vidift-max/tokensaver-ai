@@ -206,7 +206,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-FOREIGN-TEST')")
         .bind(foreign_participant).bind(foreign_tenant).bind(foreign_principal).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
+    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'foreign-test',$4,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(foreign_tenant).bind(foreign_principal).bind(format!("foreign-subject-{foreign_principal}"))
         .execute(&pool).await.unwrap();
     let (foreign_session,_foreign_execution)=add_session(&pool,foreign_tenant,foreign_room,foreign_principal,foreign_participant).await;
