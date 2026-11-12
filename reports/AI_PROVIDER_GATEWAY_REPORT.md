@@ -176,18 +176,24 @@ No Team Room, Runner, Recovery Worker or PostgreSQL implementation file was chan
 ## 21. Commits
 
 The PR contains the following commits (chronological):
-- \`de9ac3a7c192be98b471288f5a73386d6d0bac4f\` — gateway core.
-- \`fed4566ec072565f2f9d4dcdc414b7341a5303ba\` — HTTP dependency.
-- \`d08082dc5ab1d9027ff5dec470a18068a4a7aff1\` — Tauri command registration.
-- \`5018ab41db130d40935e8e7622834e54327b10b5\` — registry serialization fix.
-- \`6d581da03e30b806a8c5639f6bdbdfcd24f5756a\` — request schema.
-- \`238566a8ce00380ecc6a1703ddf569be5ed97348\` — frontend IPC wrapper.
-- \`6ba4155ea6caf1ddf60936b941ca727d3905bd54\` — HTTP error classification.
-- \`1e5b856caf4203635528ceee34a975957b1ea5cf\` — bounded response reads and optional fields.
-- \`d34aafaf48b485c8fae05e17bc36ef2aff3b825e\` — reqwest stream feature.
-- \`eb4bc1f8c1ca60888f35e658e7a93f0548b0c295\` — gateway documentation.
-- \`cc14e5fae8ee96b877243a2a92d5361da5be8069\` — explicit chat/unknown limits capability fields.
-- \`70034c29b85c386589b00f449d32dbd8591ec126\` — frontend capability contract alignment.
+- `de9ac3a7c192be98b471288f5a73386d6d0bac4f` — gateway core.
+- `fed4566ec072565f2f9d4dcdc414b7341a5303ba` — HTTP dependency.
+- `d08082dc5ab1d9027ff5dec470a18068a4a7aff1` — Tauri command registration.
+- `5018ab41db130d40935e8e7622834e54327b10b5` — registry serialization fix.
+- `6d581da03e30b806a8c5639f6bdbdfcd24f5756a` — request schema.
+- `238566a8ce00380ecc6a1703ddf569be5ed97348` — frontend IPC wrapper.
+- `6ba4155ea6caf1ddf60936b941ca727d3905bd54` — HTTP error classification.
+- `1e5b856caf4203635528ceee34a975957b1ea5cf` — bounded response reads and optional fields.
+- `d34aafaf48b485c8fae05e17bc36ef2aff3b825e` — reqwest stream feature.
+- `eb4bc1f8c1ca60888f35e658e7a93f0548b0c295` — gateway documentation.
+- `cc14e5fae8ee96b877243a2a92d5361da5be8069` — explicit chat/unknown limits capability fields.
+- `70034c29b85c386589b00f449d32dbd8591ec126` — frontend capability contract alignment.
+- `4a30be92a35827767a5d60546cd8ab3299d82658` — initial Mission 8 report.
+- `6b77a170eca6e9da054282433f10ed3e1184fb84` — credential-gated live provider smoke tests.
+- `2790918bf7e09f446ecd7c50a34b85cc74aa5bc8` — Tokio test runtime.
+- `8c211425b5a712b4ae028b4567f98b85f17f4a3d` — live smoke test documentation.
+- `eabda3a341f702efe1b377737df2393cc3ee7894` — report addendum for live test entry points.
+- `4d1c1dffc7d9196fea20e8a1a64f6d3cd5231c69` — correct placement of live tests.
 
 ## 22. CI
 
