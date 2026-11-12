@@ -1,7 +1,7 @@
 use ai_team_room_service::{
     auth::AuthenticatedIdentity,
     connect_pool, migrate,
-    phone::{attach, detach, get_my_phone, AttachRequest, PhoneError},
+    phone::{attach, detach, get_my_phone, heartbeat, AttachRequest, PhoneError},
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -52,7 +52,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(principal).execute(&pool).await.unwrap();
 
-    for permission in ["phone.read","phone.attach","phone.detach","phone.transfer"] {
+    for permission in ["phone.read","phone.attach","phone.detach","phone.transfer","phone.heartbeat"] {
         grant(&pool,tenant,room,principal,permission).await;
     }
 
@@ -76,6 +76,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("idempotent attach retry");
     assert_eq!(retry_a.attachment_id,attached_a.attachment_id);
+    let last_seen = heartbeat(&pool,&identity_a,attached_a.endpoint_fence).await.expect("authenticated endpoint heartbeat");
+    assert!(last_seen <= chrono::Utc::now());
 
     // A different endpoint cannot attach while the previous authenticated session remains live.
     let blocked = attach(&pool,&identity_a,AttachRequest {
@@ -139,6 +141,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let sender = Uuid::new_v4();
     sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'HUMAN','test-owner',$3)")
         .bind(sender).bind(tenant).bind(format!("owner-{sender}")).execute(&pool).await.unwrap();
+    let human_mapping = sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(ai_id).bind(tenant).bind(sender).execute(&pool).await;
+    assert!(human_mapping.is_err(), "a HUMAN principal must never bind to a global AI identity");
     let message_id = Uuid::new_v4();
     sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,1,'offline-msg-1',$6)")
         .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id)
