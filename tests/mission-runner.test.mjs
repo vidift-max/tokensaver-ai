@@ -17,7 +17,7 @@ const {port,identity:fixtureIdentity}=await new Promise((resolve,reject)=>{
 });
 const apiUrl=`http://127.0.0.1:${port}`;
 after(()=>serverWorker.terminate());
-function env() { const dir=fs.mkdtempSync(path.join(os.tmpdir(),"mission-runner-")); return {dir,env:{...process.env,MISSION_STATE_DIR:dir,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:"test-session-token",TEAM_ROOM_ROOM_ID:roomId}}; }
+function env() { const dir=fs.mkdtempSync(path.join(os.tmpdir(),"mission-runner-")); return {dir,env:{...process.env,MISSION_STATE_DIR:dir,TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:"test-session-token",TEAM_ROOM_ROOM_ID:roomId}}; }
 function run(ctx,...args) { return spawnSync(process.execPath,[script,...args],{encoding:"utf8",env:ctx.env}); }
 
 test("persists mission, checkpoint and resume across separate processes", t => {
