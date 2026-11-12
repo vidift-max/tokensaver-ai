@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use std::{collections::{HashMap, VecDeque}, env, net::SocketAddr, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+use url::Url;
 
 #[derive(Clone)]
 struct AppState {
@@ -70,6 +71,40 @@ fn environment_requires_oidc(environment: &str) -> Result<bool, &'static str> {
         "staging" | "production" => Ok(true),
         _ => Err("TEAM_ROOM_ENV must be development, test, staging or production"),
     }
+}
+
+fn validate_database_target(
+    environment: &str,
+    database_url: &str,
+    expected_host: Option<&str>,
+    expected_database: Option<&str>,
+) -> Result<(), &'static str> {
+    if environment == "development" || environment == "test" {
+        return Ok(());
+    }
+
+    let expected_host = expected_host.filter(|value| !value.trim().is_empty())
+        .ok_or("TEAM_ROOM_EXPECTED_DB_HOST is required in staging and production")?;
+    let expected_database = expected_database.filter(|value| !value.trim().is_empty())
+        .ok_or("TEAM_ROOM_EXPECTED_DATABASE is required in staging and production")?;
+    let parsed = Url::parse(database_url).map_err(|_| "DATABASE_URL is invalid")?;
+    if parsed.scheme() != "postgres" && parsed.scheme() != "postgresql" {
+        return Err("DATABASE_URL must use the PostgreSQL scheme");
+    }
+    if !parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case(expected_host)) {
+        return Err("DATABASE_URL host does not match TEAM_ROOM_EXPECTED_DB_HOST");
+    }
+    let database_name = parsed.path().trim_start_matches('/');
+    if database_name.is_empty() || database_name.contains('/') || database_name != expected_database {
+        return Err("DATABASE_URL database does not match TEAM_ROOM_EXPECTED_DATABASE");
+    }
+    let verify_full_count = parsed.query_pairs()
+        .filter(|(key, value)| key == "sslmode" && value == "verify-full")
+        .count();
+    if verify_full_count != 1 || parsed.fragment().is_some() {
+        return Err("Staging and production DATABASE_URL must use exactly one sslmode=verify-full parameter");
+    }
+    Ok(())
 }
 
 fn oidc_configuration_ready(required: bool, configured: bool) -> bool {
@@ -482,6 +517,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
+    let expected_db_host = env::var("TEAM_ROOM_EXPECTED_DB_HOST").ok();
+    let expected_database = env::var("TEAM_ROOM_EXPECTED_DATABASE").ok();
+    validate_database_target(
+        environment.as_str(),
+        database_url.as_str(),
+        expected_db_host.as_deref(),
+        expected_database.as_deref(),
+    )?;
     let bind: SocketAddr = env::var("TEAM_ROOM_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8081".to_string()).parse()?;
     let pool = connect_pool(&database_url).await?;
@@ -509,6 +552,32 @@ mod http_security_tests {
             .connect_lazy("postgres://test:test@127.0.0.1/test")
             .expect("lazy pool configuration");
         build_router(AppState { pool, oidc: None, require_oidc: false })
+    }
+
+    #[test]
+    fn production_database_target_requires_exact_host_database_and_verified_tls() {
+        let secure = "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=verify-full";
+        assert!(validate_database_target(
+            "production", secure, Some("db.prod.example"), Some("tokensaver_prod")
+        ).is_ok());
+        assert!(validate_database_target(
+            "production", secure, None, Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "staging", secure, Some("db.prod.example"), Some("tokensaver_stage")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=require",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "development", "postgres://localhost/test", None, None
+        ).is_ok());
+        assert!(validate_database_target(
+            "test", "postgres://localhost/test", None, None
+        ).is_ok());
     }
 
     #[test]
