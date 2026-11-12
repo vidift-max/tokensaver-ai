@@ -519,3 +519,46 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
 
 }
+
+
+#[tokio::test]
+async fn legacy_shared_phone_migration_guard_fails_closed_on_postgres() {
+    let pool=test_pool().await;
+    let tenant_a=Uuid::new_v4();
+    let tenant_b=Uuid::new_v4();
+    let ai_id=Uuid::new_v4();
+    let phone_id=Uuid::new_v4();
+    let principal_a=Uuid::new_v4();
+    let principal_b=Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'migration-guard-a'),($2,'migration-guard-b')")
+        .bind(tenant_a).bind(tenant_b).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','migration guard fixture')")
+        .bind(ai_id).bind(format!("migration-guard:{ai_id}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','migration-guard',$3),($4,$5,'AI','migration-guard',$6)")
+        .bind(principal_a).bind(tenant_a).bind(format!("guard-a-{principal_a}"))
+        .bind(principal_b).bind(tenant_b).bind(format!("guard-b-{principal_b}"))
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3),($1,$4,$5)")
+        .bind(ai_id).bind(tenant_a).bind(principal_a).bind(tenant_b).bind(principal_b)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2),($1,$3)")
+        .bind(ai_id).bind(tenant_a).bind(tenant_b).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3)")
+        .bind(phone_id).bind(ai_id).bind(tenant_a).execute(&pool).await.unwrap();
+
+    let guard:bool=sqlx::query_scalar(
+        "SELECT EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1)"
+    ).fetch_one(&pool).await.unwrap();
+    assert!(guard,"a legacy global phone shared by two tenant bindings must be detected");
+
+    let blocked=sqlx::query(
+        "DO $$ BEGIN IF EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1) THEN RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants'; END IF; END $$;"
+    ).execute(&pool).await;
+    assert!(blocked.is_err(),"migration guard must abort before any shared phone identity is rekeyed");
+
+    sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(phone_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id IN ($1,$2)").bind(tenant_a).bind(tenant_b).execute(&pool).await.unwrap();
+}
