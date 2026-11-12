@@ -68,6 +68,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-TEST-IDENTITY')")
         .bind(participant).bind(tenant).bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(format!("test-subject-{principal}"))
+        .execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-IDENTITY')")
         .bind(ai_id).bind(format!("test:ai-phone:{ai_id}")).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
@@ -98,6 +101,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Real Axum HTTP router E2E: authenticate with the persisted bearer hash and exercise
     // the public phone routes rather than calling only the internal service functions.
+    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_a),Some(serde_json::json!({
+        "endpoint_id":endpoint_a,"endpoint_type":"TEST","metadata":{"label":"endpoint-A"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"attach route is reachable and authenticated");
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/endpoints",first.phone.ai_phone_id),Some(&token_a),None).await;
@@ -248,5 +255,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(current.phone.ai_id,ai_id);
     assert_eq!(current.phone.current_task_id,Some(task_id));
     assert_eq!(current.mission.as_ref().unwrap()["checkpoint"]["progress"],40);
+
+    let response=http_call(&app,"POST","/ai-phone/detach",Some(&token_b),
+        Some(serde_json::json!({"endpoint_fence":attached_b.endpoint_fence}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
+    let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
+        Some(serde_json::json!({"endpoint_fence":attached_b.endpoint_fence}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"detached endpoint cannot heartbeat");
 
 }
