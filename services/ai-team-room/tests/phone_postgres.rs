@@ -642,6 +642,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     // unique index must produce exactly one winner and one conflict.
     let endpoint_d = Uuid::new_v4();
     let endpoint_e = Uuid::new_v4();
+    let fence_before_race:i64=sqlx::query_scalar("SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2")
+        .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
     let (race_left,race_right) = tokio::join!(
         attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_d, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false),
         attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_e, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false)
@@ -650,7 +652,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         (Ok(winner),Err(PhoneError::Conflict)) | (Err(PhoneError::Conflict),Ok(winner)) => winner,
         other => panic!("expected one concurrent attach winner and one conflict, got {other:?}"),
     };
-    assert_eq!(race_winner.endpoint_fence,5);
+    assert_eq!(race_winner.endpoint_fence,fence_before_race+1,"concurrent attach increments the current fence exactly once");
     detach(&pool,&identity_b,race_winner.endpoint_fence).await.expect("release concurrent winner");
 
     // Persistent offline inbox: no active attachment is required to enqueue a message.
