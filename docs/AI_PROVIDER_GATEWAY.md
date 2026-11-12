@@ -1,54 +1,69 @@
-# AI Provider Gateway
+# AI Provider Gateway — Runtime and Hardening Notes
 
 ## Scope and trust boundary
 
-The desktop Rust/Tauri backend owns provider HTTP requests. React receives typed IPC contracts only; it never receives provider credentials. The AI Team Room and distributed Runner are not wired to this gateway in this mission.
+The desktop Rust/Tauri backend owns outbound provider HTTP requests. React receives typed IPC contracts only and does not receive provider credentials. The gateway is not wired into AI Team Room, distributed Runner, or Recovery Worker.
 
-## Providers and endpoints
+## Providers
 
-| Provider | Endpoint family | Authentication | Request mapping |
+| Provider | Endpoint | Authentication | Request protocol |
 |---|---|---|---|
-| OpenAI | \`api.openai.com/v1/chat/completions\` | Bearer token | OpenAI chat messages |
-| Anthropic | \`api.anthropic.com/v1/messages\` | \`x-api-key\` plus version header | System instruction separated from user/assistant messages |
-| Gemini | \`generativelanguage.googleapis.com/v1beta/models/{model}:generateContent\` | \`x-goog-api-key\` | contents/parts and systemInstruction |
-| Kimi | \`api.moonshot.ai/v1/chat/completions\` | Bearer token | Moonshot OpenAI-compatible chat format |
+| OpenAI | `https://api.openai.com/v1/chat/completions` | Bearer | OpenAI chat completions |
+| Anthropic | `https://api.anthropic.com/v1/messages` | `x-api-key` + version header | Anthropic Messages |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` | `x-goog-api-key` | Gemini generateContent |
+| Kimi | `https://api.moonshot.ai/v1/chat/completions` | Bearer | Moonshot OpenAI-compatible chat |
 
-A protocol similarity does not imply feature or model equivalence. Kimi remains a distinct provider entry.
+Kimi is a distinct provider identity. Protocol similarity does not imply identical models, capabilities, limits, pricing, or service behavior.
 
-## Runtime configuration
+## Credentials — current limitation
 
-The gateway reads credentials and model identifiers from the desktop process environment:
+The current adapter reads provider keys from process environment variables:
+- `TOKENSAVER_OPENAI_API_KEY`
+- `TOKENSAVER_ANTHROPIC_API_KEY`
+- `TOKENSAVER_GEMINI_API_KEY`
+- `TOKENSAVER_KIMI_API_KEY`
 
-- \`TOKENSAVER_OPENAI_API_KEY\` and \`TOKENSAVER_OPENAI_MODEL\`
-- \`TOKENSAVER_ANTHROPIC_API_KEY\` and \`TOKENSAVER_ANTHROPIC_MODEL\`
-- \`TOKENSAVER_GEMINI_API_KEY\` and \`TOKENSAVER_GEMINI_MODEL\`
-- \`TOKENSAVER_KIMI_API_KEY\` and \`TOKENSAVER_KIMI_MODEL\`
-- Optional \`TOKENSAVER_PROVIDER_TIMEOUT_SECS\` (clamped to 1–120 seconds; default 45)
+Model IDs are operator-configured using the corresponding `TOKENSAVER_*_MODEL` variables. The registry reports only whether a non-empty credential and valid model setting are present; it does not validate the credential.
 
-No credential is written to SQLite, frontend state, repository files, or gateway logs. The registry reports whether a non-empty credential and valid configured model are present; it does not validate the key with the provider and does not discover provider models.
+**OS credential vault is PENDING.** No keychain/Windows Credential Manager integration or credential-management UI is present. Environment variables are not approved production-grade desktop secret storage. Do not pass keys through Team Room or Runner payloads. The gateway does not intentionally log or persist credentials, but process-environment isolation from other child processes has not been proven.
 
-**Security limitation:** process environment variables are a bootstrap mechanism, not a secure desktop credential vault. OS keychain/credential-manager integration and credential rotation UX are pending. Do not treat this mechanism as production-grade secret storage.
+## Request and response
 
-## Unified request
+The normalized contract contains provider, model, optional system instruction, ordered messages, optional temperature and output limit, stream intent, normalized text, provider-reported usage, latency, internal request ID, external request ID and optional estimated cost. Provider-specific fields are omitted or mapped according to each provider's protocol.
 
-The Tauri IPC command \`provider_chat\` accepts a provider, optional model override, optional system instruction, ordered user/assistant messages, optional temperature, optional max output tokens, and a stream flag. \`provider_registry\` returns configured status and explicit capabilities.
+Fixed HTTPS endpoints are used. User-supplied endpoint URLs are not accepted. Redirects are disabled. Model identifiers are restricted to a safe character set. Input is limited to 128 messages and 1 MB of aggregate text. Successful response bodies are read incrementally with a 4 MB cap; error response bodies are discarded. The transport timeout is bounded to 1–120 seconds (default 45).
 
-The gateway enforces at most 128 messages and 1 MB aggregate input text, validates model identifiers, uses fixed HTTPS provider hosts, disables redirects, applies a bounded timeout, rejects oversized responses while reading chunks, and returns sanitized errors without forwarding provider error bodies.
+## Streaming and cancellation
 
-## Normalized response and usage
+**Streaming is not implemented.** Requests with `stream=true` return `UNSUPPORTED_CAPABILITY`. The existing Tauri command returns a single completed response and has no request-scoped cancellation token, event channel, or downstream backpressure contract. Dropping a Rust future can cancel its in-flight request, but the current frontend IPC does not expose a verified cancellation lifecycle. Do not advertise streaming or cancellation as supported.
 
-Responses include provider, model, generated text, provider-reported usage when supplied, latency, internal request ID, provider request ID when present, and a separate estimated-cost field. Estimated cost is always null in this implementation. Usage is returned to the caller only; no durable usage ledger is implemented.
+## Resilience
 
-## Capability truth table
+A process-wide in-flight request cap of eight is enforced. Excess requests receive a bounded concurrency error. There is no automatic retry. HTTP 429 is classified as retryable metadata; HTTP 5xx is not marked retryable because a failed response can follow provider acceptance or billing of a POST. Authentication, authorization, invalid request, timeout and transport failures are not automatically replayed. Exponential backoff and circuit breaker remain pending.
 
-Currently implemented: non-streaming text chat and provider-reported token usage normalization for supported response shapes.
+## Usage ledger
 
-Currently unavailable: streaming, tools/function calling, structured output, vision, embeddings, provider model discovery, automatic retries, circuit breaker, idempotency/deduplication, durable usage ledger, pricing, and OS credential vault. The registry reports unsupported capabilities as false.
+The Tauri command creates a local SQLite usage row before sending the provider request, then finalizes it as succeeded or failed. The ledger records provider, model when known, internal request ID, external request ID when returned, provider-reported token counts when available, timestamp, latency, status, normalized error code, and origin (`tauri_ipc`). It does not store prompts, response text, or credentials.
 
-Retryability is classified for HTTP 429 and 5xx responses only. No automatic retry is performed because chat POST requests are not assumed idempotent. Timeout and transport failures are not automatically retried.
+Project and actor IDs are NULL because the current desktop command has no authenticated project/actor context. This is an explicit attribution limitation, not an implied global authorization model. A ledger row left in `started` indicates a process interruption or failed finalization and must not be counted as successful usage.
+
+## Cost engine
+
+The ledger contains a versioned, effective-dated `provider_model_prices` table with provider, exact model ID, input/output USD per million tokens, effective timestamp, source URL and recorded timestamp. No prices are seeded or invented. Cost is calculated only when complete provider-reported input/output usage and both sourced rates are available for the exact provider/model and effective date. Otherwise cost remains NULL/unknown. This is an estimate, not billing or a financial charge.
 
 ## Validation
 
-Unit tests cover request validation, provider request/response mapping, usage normalization, capability declarations, model-name validation and retry classification. They are structural tests and do not call external providers.
+Structural tests cover request/response mapping, usage normalization, limits, capability declarations, retry classification, concurrency permits, ledger persistence and versioned cost calculation. Four ignored live smoke tests make actual provider requests and require operator-supplied credentials and model IDs. They are not executed by default.
 
-Live integration requires separately provisioned provider credentials and explicit execution. No provider API call is claimed by this mission until such a call is actually performed. Four ignored live smoke tests are provided in the Rust module; run them individually with `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored <test_name>` only after configuring the matching credential and model environment variables. Each test makes a real provider request and may incur usage charges.
+No provider API call is claimed until a live request is executed and its redacted result is recorded. Current provider live status: **API REAL BLOQUEADA — CREDENCIAL AUSENTE**.
+
+## Remaining release blockers
+
+- OS keychain / Windows Credential Manager integration and rotation lifecycle.
+- Proven secret isolation from all other processes and CI artifacts.
+- Streaming event contract, cancellation token propagation and backpressure.
+- Authenticated project/actor attribution and tenant authorization.
+- Circuit breaker and bounded retry/backoff policy with provider-specific idempotency guarantees.
+- Live authenticated validation for each provider.
+- Sourced price entries for each exact model/version.
+- Full cross-platform regression and benchmark evidence.
