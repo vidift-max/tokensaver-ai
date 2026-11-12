@@ -533,7 +533,7 @@ async fn me(
         "SELECT endpoint_id,ai_phone_id,endpoint_key,endpoint_kind,status,last_seen_at,created_at,closed_at FROM ai_phone_endpoints WHERE ai_phone_id=$1 ORDER BY created_at"
     ).bind(phone.ai_phone_id).fetch_all(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let active=sqlx::query_as::<_,(Uuid,Uuid,Uuid,Uuid,i64,String,DateTime<Utc>)>(
-        "SELECT attachment_id,endpoint_id,session_id,execution_id,fencing_generation,status,lease_expires_at FROM ai_phone_attachments WHERE ai_phone_id=$1 AND status='ACTIVE' AND lease_expires_at>NOW()"
+        "SELECT a.attachment_id,a.endpoint_id,a.session_id,a.execution_id,a.fencing_generation,a.status,a.lease_expires_at FROM ai_phone_attachments a JOIN sessions s ON s.session_id=a.session_id JOIN workload_executions w ON w.execution_id=a.execution_id JOIN workload_identities wi ON wi.tenant_id=a.tenant_id AND wi.principal_id=a.principal_id WHERE a.ai_phone_id=$1 AND a.status='ACTIVE' AND a.lease_expires_at>NOW() AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND wi.status='ACTIVE' AND wi.revoked_at IS NULL"
     ).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
