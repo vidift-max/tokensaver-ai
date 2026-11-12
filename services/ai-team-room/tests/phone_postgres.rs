@@ -158,15 +158,24 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     };
     let token_b=bearer_for(&pool,session_b).await;
     let endpoint_b = Uuid::new_v4();
-    let attached_b = attach(&pool,&identity_b,AttachRequest {
-        endpoint_id: endpoint_b, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-B"}),
-    },false).await.expect("reconnect after session expiry");
-    assert_eq!(attached_b.ai_phone_id,first.phone.ai_phone_id);
-    assert_eq!(attached_b.endpoint_fence,2);
+    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_b),Some(serde_json::json!({
+        "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"endpoint registry accepts a new authenticated endpoint");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"RECONNECTING");
     let response=http_call(&app,"POST","/ai-phone/reconnect",Some(&token_b),Some(serde_json::json!({
         "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"same AI phone reconnects through the HTTP route");
+    let attached_b = attach(&pool,&identity_b,AttachRequest {
+        endpoint_id: endpoint_b, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-B"}),
+    },false).await.expect("idempotent view of HTTP reconnect");
+    assert_eq!(attached_b.ai_phone_id,first.phone.ai_phone_id);
+    assert_eq!(attached_b.endpoint_fence,2);
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"expired session A cannot operate after B reconnects");
     assert_ne!(attached_b.endpoint_id,attached_a.endpoint_id);
@@ -262,5 +271,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
         Some(serde_json::json!({"endpoint_fence":attached_f.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"detached endpoint cannot heartbeat");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"DISCONNECTED");
 
 }
