@@ -151,3 +151,23 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER phone_message_transition_guard
 BEFORE UPDATE ON phone_messages
 FOR EACH ROW EXECUTE FUNCTION enforce_phone_message_transition();
+
+-- A global AI identity may only bind to an enabled AI principal, never a human account.
+CREATE FUNCTION enforce_ai_identity_principal_kind() RETURNS TRIGGER AS $$
+DECLARE
+    kind TEXT;
+    is_enabled BOOLEAN;
+BEGIN
+    SELECT principal_kind, enabled INTO kind, is_enabled
+      FROM principals
+     WHERE tenant_id=NEW.tenant_id AND principal_id=NEW.principal_id;
+    IF kind IS DISTINCT FROM 'AI' OR is_enabled IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'AI identity mapping requires an enabled AI principal' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ai_identity_principal_kind_guard
+BEFORE INSERT OR UPDATE ON ai_identity_principals
+FOR EACH ROW EXECUTE FUNCTION enforce_ai_identity_principal_kind();
