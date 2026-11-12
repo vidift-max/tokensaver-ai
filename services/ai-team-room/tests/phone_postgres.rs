@@ -178,6 +178,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     // Same global AI_ID, but a distinct phone per tenant.
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(foreign_tenant).bind(foreign_principal).execute(&pool).await.unwrap();
+    let duplicate_principal=Uuid::new_v4();
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','duplicate-test',$3)")
+        .bind(duplicate_principal).bind(foreign_tenant).bind(format!("duplicate-subject-{duplicate_principal}"))
+        .execute(&pool).await.unwrap();
+    let duplicate_binding=sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(ai_id).bind(foreign_tenant).bind(duplicate_principal).execute(&pool).await;
+    assert!(duplicate_binding.is_err(),"one global AI identity cannot bind to two principals in one tenant");
     sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
         .bind(ai_id).bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3)")
@@ -399,6 +406,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2").bind(ai_id).bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
