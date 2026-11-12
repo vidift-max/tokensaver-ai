@@ -275,16 +275,44 @@ pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64)
     Ok(())
 }
 
-async fn map_phone_error(error: PhoneError) -> StatusCode {
-    match error {
-        PhoneError::NotFound => StatusCode::NOT_FOUND,
-        PhoneError::Forbidden => StatusCode::FORBIDDEN,
-        PhoneError::Conflict => StatusCode::CONFLICT,
-        PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
-        PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
-        PhoneError::Invalid => StatusCode::BAD_REQUEST,
-        PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+
+
+pub async fn heartbeat(
+    pool: &PgPool,
+    identity: &AuthenticatedIdentity,
+    endpoint_fence: i64,
+) -> Result<DateTime<Utc>, PhoneError> {
+    require_permission(pool, identity, "phone.heartbeat").await.map_err(|_| PhoneError::Forbidden)?;
+    let mut tx = pool.begin().await?;
+    validate_live_binding(&mut tx, identity).await?;
+    let phone = owned_phone(&mut tx, identity).await?;
+    let last_seen: DateTime<Utc> = sqlx::query_scalar(
+        "UPDATE phone_endpoints e SET last_seen_at=NOW() FROM phone_attachments a,ai_phones p WHERE a.ai_phone_id=$1 AND a.endpoint_id=e.endpoint_id AND a.ai_phone_id=p.ai_phone_id AND a.session_id=$2 AND a.execution_id=$3 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=$4 AND p.endpoint_fence=$4 RETURNING e.last_seen_at"
+    ).bind(phone.ai_phone_id).bind(identity.session_id).bind(identity.execution_id).bind(endpoint_fence)
+      .fetch_optional(&mut *tx).await?.ok_or(PhoneError::Fenced)?;
+    sqlx::query("UPDATE ai_phones SET last_seen_at=$1 WHERE ai_phone_id=$2")
+        .bind(last_seen).bind(phone.ai_phone_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(last_seen)
+}
+
+#[derive(Debug, Deserialize)]
+struct HeartbeatRequest { endpoint_fence: i64 }
+
+async fn heartbeat_handler(
+    State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<HeartbeatRequest>,
+) -> Result<Json<DateTime<Utc>>, StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    heartbeat(&pool, &identity, request.endpoint_fence).await.map(Json)
+        .map_err(|error| match error {
+            PhoneError::NotFound => StatusCode::NOT_FOUND,
+            PhoneError::Forbidden => StatusCode::FORBIDDEN,
+            PhoneError::Conflict => StatusCode::CONFLICT,
+            PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+            PhoneError::Invalid => StatusCode::BAD_REQUEST,
+            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        })
 }
 
 async fn get_phone_handler(State(pool): State<PgPool>, headers: HeaderMap)
@@ -401,6 +429,9 @@ async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Js
         .bind(phone.ai_phone_id).bind(task.1).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2,version=version+1,updated_at=NOW() WHERE ai_phone_id=$3")
         .bind(task.1).bind(task.0).bind(phone.ai_phone_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_phone_event(&mut tx, &identity, phone.ai_phone_id, "MISSION_UPDATED", "phone.mission.linked",
+        serde_json::json!({"task_id":task.1,"mission_id":task.0})
+    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -509,6 +540,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/ai-phone/me", get(get_phone_handler))
         .route("/ai-phone/attach", post(attach_handler))
         .route("/ai-phone/detach", post(detach_handler))
+        .route("/ai-phone/heartbeat", post(heartbeat_handler))
         .route("/ai-phone/reconnect", post(reconnect_handler))
         .route("/ai-phone/transfer", post(transfer_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
