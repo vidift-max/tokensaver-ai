@@ -492,8 +492,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(presence["presence_state"],"DISCONNECTED");
 
-    sqlx::query("DELETE FROM team_tasks WHERE task_id=$1").bind(foreign_task).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM team_tasks WHERE task_id=$1").bind(foreign_task).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoints WHERE endpoint_id=$1").bind(foreign_endpoint).execute(&pool).await.unwrap();
