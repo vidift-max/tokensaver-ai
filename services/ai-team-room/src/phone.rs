@@ -123,10 +123,10 @@ fn status(error: PhoneError) -> StatusCode {
 fn auth_status(error: AuthError) -> StatusCode {
     match error {
         AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
-        crate::auth::AuthError::Forbidden | crate::auth::AuthError::IdentityUnavailable => StatusCode::FORBIDDEN,
-        crate::auth::AuthError::RoomUnavailable => StatusCode::NOT_FOUND,
-        crate::auth::AuthError::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-        crate::auth::AuthError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        AuthError::Forbidden | AuthError::IdentityUnavailable => StatusCode::FORBIDDEN,
+        AuthError::RoomUnavailable => StatusCode::NOT_FOUND,
+        AuthError::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        AuthError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
