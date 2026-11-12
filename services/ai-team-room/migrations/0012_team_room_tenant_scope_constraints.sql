@@ -63,6 +63,14 @@ BEGIN
 
   IF EXISTS (
     SELECT 1 FROM team_room_attachment_refs a
+    WHERE a.task_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM team_tasks t WHERE t.task_id=a.task_id)
+  ) THEN
+    RAISE EXCEPTION 'TEAM_ROOM_0012_BLOCKED: attachment references a missing task';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM team_room_attachment_refs a
     JOIN team_tasks t ON t.task_id=a.task_id
     WHERE (a.tenant_id,a.room_id) IS DISTINCT FROM (t.tenant_id,t.room_id)
   ) THEN
