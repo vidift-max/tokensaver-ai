@@ -50,6 +50,18 @@ pub struct AttachmentRecord {
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
+pub struct PhoneEndpoint {
+    pub endpoint_id: Uuid,
+    pub ai_phone_id: Uuid,
+    pub endpoint_type: String,
+    pub endpoint_status: String,
+    pub metadata: Value,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub detached_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct PhoneMessage {
     pub message_id: Uuid,
     pub ai_phone_id: Uuid,
@@ -345,6 +357,19 @@ async fn detach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(req
             _ => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
+async fn endpoint_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap)
+    -> Result<Json<Vec<PhoneEndpoint>>, StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    require_permission(&pool, &identity, "phone.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
+    let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai_phones p JOIN ai_identity_principals m ON m.ai_id=p.ai_id WHERE p.ai_phone_id=$1 AND m.tenant_id=$2 AND m.principal_id=$3)")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
+        .fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !owns { return Err(StatusCode::NOT_FOUND); }
+    let endpoints = sqlx::query_as::<_, PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 ORDER BY created_at,endpoint_id")
+        .bind(phone_id).fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(endpoints))
+}
+
 async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap)
     -> Result<Json<Vec<PhoneMessage>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -376,8 +401,9 @@ async fn message_send_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     if request.idempotency_key.trim().is_empty() || request.idempotency_key.len()>200
         || request.content.to_string().len()>16_384 || contains_secret_key(&request.content) { return Err(StatusCode::BAD_REQUEST); }
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let phone = sqlx::query_as::<_, (Uuid, Uuid)>("SELECT ai_id,ai_phone_id FROM ai_phones WHERE ai_phone_id=$1 FOR UPDATE")
-        .bind(phone_id).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
+    let phone = sqlx::query_as::<_, (Uuid, Uuid)>("SELECT p.ai_id,p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals m ON m.ai_id=p.ai_id WHERE p.ai_phone_id=$1 AND m.tenant_id=$2 AND m.principal_id=$3 FOR UPDATE OF p")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
+        .fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::NOT_FOUND)?;
     let existing = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key=$3")
         .bind(phone_id).bind(identity.principal_id).bind(&request.idempotency_key).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(existing) = existing {
@@ -408,7 +434,16 @@ async fn ack_handler(State(pool): State<PgPool>, Path((phone_id,message_id)): Pa
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let updated = sqlx::query("UPDATE phone_messages SET message_state='ACK',acknowledged_at=NOW(),updated_at=NOW() WHERE message_id=$1 AND ai_phone_id=$2 AND message_state='DELIVERED' AND EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id WHERE a.ai_phone_id=$2 AND a.session_id=$3 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
         .bind(message_id).bind(phone_id).bind(identity.session_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if updated.rows_affected()==0 { return Err(StatusCode::PRECONDITION_FAILED); }
+    if updated.rows_affected()==0 {
+        let already_acked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id JOIN phone_attachments a ON a.ai_phone_id=p.ai_phone_id WHERE m.message_id=$1 AND m.ai_phone_id=$2 AND m.message_state='ACK' AND ip.tenant_id=$4 AND ip.principal_id=$5 AND a.session_id=$3 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+            .bind(message_id).bind(phone_id).bind(identity.session_id).bind(identity.tenant_id).bind(identity.principal_id)
+            .fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if already_acked {
+            tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
     record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_ACK", "phone.message.acknowledged",
         serde_json::json!({"message_id":message_id})
     ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -543,6 +578,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/ai-phone/heartbeat", post(heartbeat_handler))
         .route("/ai-phone/reconnect", post(reconnect_handler))
         .route("/ai-phone/transfer", post(transfer_handler))
+        .route("/ai-phone/{phone_id}/endpoints", get(endpoint_list_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
         .route("/ai-phone/{phone_id}/messages/{message_id}/ack", post(ack_handler))
         .route("/ai-phone/mission", post(mission_link_handler))
