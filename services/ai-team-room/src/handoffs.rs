@@ -729,7 +729,7 @@ mod postgres_tests {
             .bind(task.task_id).bind(task.mission_id).bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
 
         // A expires. The phone remains durable; only its session attachment becomes stale.
-        sqlx::query("UPDATE sessions SET status='EXPIRED',expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1")
+        sqlx::query("UPDATE sessions SET status='EXPIRED',issued_at=NOW()-INTERVAL '2 minutes',expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1")
             .bind(identity_a.session_id).execute(&pool).await.unwrap();
         sqlx::query("UPDATE workload_executions SET status='EXPIRED',expires_at=NOW()-INTERVAL '1 second',heartbeat_at=NOW()-INTERVAL '2 minutes' WHERE execution_id=$1")
             .bind(identity_a.execution_id).execute(&pool).await.unwrap();
