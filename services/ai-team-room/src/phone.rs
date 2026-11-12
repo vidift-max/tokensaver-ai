@@ -711,6 +711,35 @@ mod tests {
         let stale_detach=detach(&pool,&session_b,DetachRequest{attachment_id:reconnect.attachment_id,fencing_generation:reconnect.fencing_generation}).await;
         assert!(matches!(stale_detach,Err(PhoneError::Fenced)));
 
+        println!("AI_PHONE_01_EVIDENCE_JSON={}",serde_json::json!({
+            "ai_id":phone.ai_id,
+            "ai_phone_id":phone.ai_phone_id,
+            "tenant_id":identity.tenant_id,
+            "principal_id":identity.principal_id,
+            "endpoint_a_id":endpoint_a.endpoint_id,
+            "endpoint_b_id":endpoint_b.endpoint_id,
+            "session_a_id":identity.session_id,
+            "session_b_id":session_b.session_id,
+            "execution_a_id":identity.execution_id,
+            "execution_b_id":session_b.execution_id,
+            "attachment_a_id":attach_a.attachment_id,
+            "transfer_attachment_id":transfer.attachment_id,
+            "reconnect_attachment_id":reconnect.attachment_id,
+            "recovered_attachment_id":reclaimed.attachment_id,
+            "fencing_generation_attach_a":attach_a.fencing_generation,
+            "fencing_generation_transfer":transfer.fencing_generation,
+            "fencing_generation_reconnect":reconnect.fencing_generation,
+            "fencing_generation_recovered":reclaimed.fencing_generation,
+            "identity_registration_idempotent":phone.ai_id==same.ai_id,
+            "phone_id_stable_on_reconnect":reconnect.ai_phone_id==phone.ai_phone_id,
+            "live_takeover_rejected":matches!(takeover,Err(PhoneError::Conflict)),
+            "old_endpoint_fenced":matches!(stale,Err(PhoneError::Fenced)),
+            "new_endpoint_accepted":live.fencing_generation==transfer.fencing_generation,
+            "expired_lease_reclaimed":reclaimed.fencing_generation>reconnect.fencing_generation,
+            "detach_accepted":detached.status=="DETACHED",
+            "stale_detach_rejected":matches!(stale_detach,Err(PhoneError::Fenced))
+        }));
+
         sqlx::query("DELETE FROM ai_phones WHERE ai_id IN (SELECT ai_id FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2)").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM ai_principal_bindings WHERE tenant_id=$1 AND principal_id=$2").bind(tenant).bind(identity.principal_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM ai_identities WHERE ai_id NOT IN (SELECT ai_id FROM ai_principal_bindings)").execute(&pool).await.unwrap();
