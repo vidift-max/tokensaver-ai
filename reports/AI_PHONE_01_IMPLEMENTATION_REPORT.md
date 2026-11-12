@@ -335,10 +335,114 @@ The following are explicitly not complete:
 
 The report commit will be the final branch SHA; it changes documentation only. The implementation code SHA above is the exact SHA whose PostgreSQL tests and runtime UUID evidence are recorded.
 
-## 15. Final decision
+## 15. Original implementation decision (superseded by hardening audit)
 
 **GO CONDITIONED**
 
 The first functional proof is complete: one global AI identity owns one persistent AI_PHONE_ID, and that phone survives session rotation, endpoint transfer, lease expiry and reconnect with monotonically increasing phone fencing. Concurrent attach is serialized and tested against PostgreSQL 16.
 
 This is a GO for the next controlled implementation stage, not permission to expose production enrollment broadly. Owner authorization, endpoint cryptographic proof, endpoint revocation and operational lease expiry remain release gates before production use.
+
+
+## 16. AI-PHONE-01 hardening audit — 2026-11-12
+
+**Audit baseline SHA:** `3d6881c86501ee157c13d39de7abeaa3c8791719`  
+**Audit scope:** authorization, provisioning, endpoint authentication, revocation, expiry, fencing, tenant isolation and regression coverage.  
+**Hardening decision:** **NO-GO for security closure and production enrollment**.
+
+### 16.1 Final-SHA CI (the requested SHA, not the earlier code SHA)
+
+The exact audit baseline SHA completed both workflows successfully:
+
+- [TokenSaver AI CI — run 43216396792](https://github.com/vidift-max/tokensaver-ai/actions/runs/43216396792): all four jobs succeeded — `foundation`, `foundation-windows`, `ai-team-room-service`, `keycloak-oidc-smoke`.
+- [Distributed Runner PostgreSQL Lab — run 43216396890](https://github.com/vidift-max/tokensaver-ai/actions/runs/43216396890): PostgreSQL 16 + Team Room + independent Runner processes job succeeded.
+- Team Room service job ran `cargo check` and `cargo test -- --show-output` against PostgreSQL 16. Test results: 6 library/auth tests, 10 service tests, 3 admission PostgreSQL tests, 4 auth PostgreSQL tests; **23 passed, 0 failed**.
+- The same service job exercised AI-Phone lifecycle and concurrent attach, communication ACL/idempotency, task handoff authorization/fencing/race, distributed task lease takeover/expiry/old-fence rejection, admission and auth replay/revocation.
+- Keycloak job performed live ephemeral Keycloak discovery, client-credentials token issuance, JWKS/RS256 verification, token exchange, local session creation, permission denial, PostgreSQL admission and assertion replay rejection.
+- This validates the exact requested SHA for CI/regression. It does **not** establish the missing endpoint-security properties below.
+
+### 16.2 Authorization matrix — existing implementation
+
+All seven HTTP handlers call `authenticate_session`. The identity used by the phone domain is derived from the bearer session; the request does not select an arbitrary AI_ID or AI_PHONE_ID. The service resolves the phone through the active `(tenant_id, principal_id) → ai_id → ai_phone_id` binding.
+
+| Route | Existing caller/session checks | Phone/resource scope | Audit result |
+|---|---|---|---|
+| `GET /ai-phone/me` | Valid bearer session; active AI principal, session, execution, workload identity, participant and room membership | Resolves only the caller's active tenant/principal binding | No separate `room.read` or phone-specific permission check |
+| `POST /ai-phone/register` | Same live AI workload checks | Creates or returns the identity/phone derived from caller principal; unique display key; no caller-supplied phone ID | Self-provisioning is not owner-approved |
+| `POST /ai-phone/endpoints` | Same live AI workload checks | Phone resolved from caller principal; endpoint key scoped by phone | No explicit phone-management permission or endpoint proof |
+| `POST /ai-phone/attach` | Same live identity checks | Endpoint must belong to resolved phone; phone row lock; one-active-attachment index; lease and idempotency | No cryptographic proof from endpoint |
+| `POST /ai-phone/detach` | Same live identity checks | Attachment must belong to resolved phone and exact session/execution/fence | No cryptographic proof from endpoint |
+| `POST /ai-phone/transfer` | Same live identity checks | Target endpoint must belong to resolved phone; expected source generation checked; transaction locks phone | Does not prove possession of source or target endpoint credential |
+| `POST /ai-phone/heartbeat` | Same live identity checks | Attachment scoped to resolved phone, session, execution and exact fence; unexpired lease | Does not verify endpoint status/credential; bearer-session replay can renew while session remains valid |
+
+**Isolation finding:** the normal route path prevents a caller from supplying another phone ID as an authority token. Reads and writes are resolved from the authenticated tenant/principal binding. However, no adversarial PostgreSQL test currently proves AI-A/tenant-A cannot read or mutate AI-B/tenant-B resources through every endpoint, especially future messaging resources. Schema-level global AI identity and multi-tenant bindings require a separately authorized binding workflow that is not exposed here.
+
+### 16.3 Provisioning policy finding
+
+- Database constraints enforce one phone per AI identity, one active binding per tenant/principal, and unique display key.
+- Registration serializes first provisioning for the authenticated tenant/principal and conflicts on duplicate or mismatched display key.
+- The API does not accept a caller-supplied AI_ID or AI_PHONE_ID, so a caller cannot directly nominate another identity's phone.
+- **Missing:** an explicit application permission such as `ai_phone.provision`, a persistent human-owner relationship, owner consent, and an owner-controlled enrollment approval. The existing registration route remains self-provisioning by an authenticated AI workload principal.
+- There is no administrative provisioning route in this implementation. No new administrative route was added in this audit.
+- Until owner approval is implemented, production provisioning must remain disabled by deployment policy; the current endpoint must not be exposed as open enrollment.
+
+### 16.4 Endpoint authentication finding
+
+**NOT IMPLEMENTED.** Endpoint key is a client-supplied UUID and is not proof of possession. There is no endpoint-bound secret/public key, challenge-response, request signature, replay nonce, credential rotation, or endpoint credential revocation. A stolen valid AI bearer session can operate phone routes within that AI principal's binding. This is a blocking security defect for endpoint portability and takeover resistance.
+
+A plain bearer secret or a UUID header would not satisfy the requested replay protection. The required implementation must bind a cryptographic credential to the endpoint, sign method/path/body/timestamp/nonce, atomically consume each nonce in PostgreSQL, enforce a narrow timestamp window, store only a verifier/hash or public key, and revoke credentials transactionally with the endpoint. The client protocol and tests must be delivered together; no partial bearer-token substitute is claimed.
+
+### 16.5 Revocation and expiry findings
+
+- **Endpoint revoke API:** absent. Database status supports `REVOKED`, but there is no authenticated endpoint revocation handler.
+- **Heartbeat after endpoint revocation:** not proven safe. The heartbeat SQL currently scopes attachment/session/execution/fence/lease but does not join and require an `ACTIVE` endpoint.
+- **Attachment cleanup after endpoint revocation:** no API exists to perform it.
+- **Background expiry:** absent. Expired attachments are lazily marked `EXPIRED` during attach/reconnect only. There is no periodic sweeper/job.
+- **Fencing:** monotonic phone generation and stale-generation rejection are implemented. Old-fence heartbeat/detach and concurrent attach have PostgreSQL coverage. Future-generation rejection, transfer/reconnect races, and endpoint-revocation fencing are not comprehensively tested.
+
+### 16.6 Attack and isolation matrix
+
+| Required attack/test | Evidence at audit baseline |
+|---|---|
+| Old fencing generation | Covered for heartbeat and detach |
+| Future fencing generation | Not explicitly tested |
+| Attach idempotency replay | Same-key idempotency covered; adversarial replay matrix incomplete |
+| Heartbeat replay | Not prevented by endpoint proof; valid session can renew until expiry/revocation |
+| Revoked endpoint | No revoke route; not testable |
+| Expired session/execution | Existing live-identity validation and auth suite cover revoked/expired sessions generally; AI-Phone-specific matrix incomplete |
+| Expired attachment | Lease reclamation covered; background finalization absent |
+| Concurrent attach | PostgreSQL test: exactly one owner |
+| Concurrent transfer | Not tested |
+| Concurrent reconnect | Not tested |
+| Old endpoint after B takeover | Old fence heartbeat rejection covered; full route matrix not covered |
+| AI-A ↔ AI-B isolation | Binding scope exists; cross-tenant adversarial read/write matrix absent |
+| Endpoint registry isolation | Phone-scoped SQL; adversarial cross-tenant tests absent |
+| Attachments/heartbeat/transfer isolation | Phone resolution and session checks exist; adversarial cross-tenant matrix absent |
+| Future messages isolation | Messaging is not implemented; no claims possible |
+
+### 16.7 Regression decision
+
+The exact-SHA Team Room service CI passed the existing identity/auth, PostgreSQL admission, communication ACL/idempotency, handoff state/authorization/fencing/race, distributed task lease, and AI-Phone tests. Keycloak/OIDC smoke and the separate Distributed Runner PostgreSQL Lab also passed.
+
+This is useful regression evidence, but it is not evidence for unimplemented Recovery Worker behavior beyond the workflows' explicit coverage, nor for endpoint crypto, endpoint revocation, background AI-Phone expiry, or cross-tenant AI-Phone attack tests. No benchmark was run.
+
+### 16.8 Code-change decision and blockers
+
+No application-code changes were made in this hardening audit. The current endpoint protocol has no cryptographic credential contract; adding a superficial shared secret without nonce consumption, signature canonicalization, key lifecycle, and real client compatibility would create a false security claim. Likewise, owner approval cannot be inferred from an AI workload session. These controls must be designed and tested as a complete protocol rather than represented as complete by schema fields or documentation.
+
+Blocking implementation sequence:
+
+1. Add owner identity/consent and explicit privileged provisioning permission; fail closed when absent.
+2. Add endpoint public/private key enrollment and signed challenge/request protocol with one-time nonce replay prevention and key rotation. Never log or place private credentials in reports.
+3. Add endpoint revoke/close API scoped to the authenticated phone and endpoint; revoke credential and expire active attachment atomically; heartbeat/attach/transfer must reject revoked endpoints.
+4. Add a bounded periodic PostgreSQL expiry worker; transition expired or invalid-session attachments, release endpoint state, audit each transition, and preserve monotonic fencing on next acquisition.
+5. Add PostgreSQL adversarial tests for future/stale fence, replay, revoked endpoint, expired session/attachment, transfer/reconnect concurrency, old endpoint after takeover, and cross-tenant read/write isolation.
+6. Run the complete Team Room + Keycloak/OIDC + PostgreSQL + communication + task/handoff/recovery + Distributed Runner suite on the resulting source SHA.
+
+### 16.9 Final hardening decision
+
+**NO-GO**
+
+The identity/phone persistence proof and exact-SHA CI are valid. The security closure requested by AI-PHONE-01 is **not** complete: endpoint possession is not cryptographically authenticated, owner-approved provisioning is absent, endpoint revocation is absent, and lease expiry is not finalized automatically. The existing code must not be treated as safe for production endpoint portability or public enrollment.
+
+No merge, audio, WebRTC, Gateway change, benchmark change, or 15-phone expansion was performed.
