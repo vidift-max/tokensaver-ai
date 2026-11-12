@@ -1,0 +1,52 @@
+name: AI-PHONE-01 Disposable Inventory Lab
+
+on:
+  pull_request:
+    branches: [v2-saas-alpha]
+    paths:
+      - "tools/ai-phone-inventory-lab/**"
+      - ".github/workflows/ai-phone-inventory-lab.yml"
+  push:
+    branches: [mission/ai-phone-01-inventory-lab]
+
+permissions:
+  contents: read
+
+jobs:
+  postgres16-inventory-lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres-lab-password
+          POSTGRES_DB: inventory_lab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d inventory_lab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Execute isolated PostgreSQL 16 inventory proof
+        env:
+          PGPASSWORD: postgres-lab-password
+        run: |
+          chmod +x tools/ai-phone-inventory-lab/run-lab.sh
+          tools/ai-phone-inventory-lab/run-lab.sh
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-inventory-lab-evidence
+          path: artifacts/ai-phone-inventory-lab/
+          if-no-files-found: warn
+          retention-days: 3
