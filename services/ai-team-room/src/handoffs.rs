@@ -703,12 +703,17 @@ mod postgres_tests {
             .bind(ai_id).bind(format!("test:continuity:{ai_id}")).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
             .bind(ai_id).bind(tenant).bind(identity_a.principal_id).execute(&pool).await.unwrap();
-        for permission in ["phone.read","phone.attach","phone.heartbeat","phone.detach"] {
+        sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+            .bind(ai_id).bind(tenant).execute(&pool).await.unwrap();
+        for permission in ["phone.read","phone.provision","phone.attach","phone.heartbeat","phone.detach"] {
             sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)")
                 .bind(Uuid::new_v4()).bind(tenant).bind(identity_a.principal_id).bind(identity_a.room_id).bind(permission)
                 .execute(&pool).await.unwrap();
         }
+        let (provisioned_phone,created)=phone::provision_phone(&pool,&identity_a,phone::PhoneProvisionRequest { principal_id:identity_a.principal_id }).await.unwrap();
+        assert!(created,"first explicit phone provision creates one durable phone");
         let phone_a=phone::get_my_phone(&pool,&identity_a).await.unwrap();
+        assert_eq!(provisioned_phone.ai_phone_id,phone_a.phone.ai_phone_id);
         let endpoint_a=Uuid::new_v4();
         let attachment_a=phone::attach(&pool,&identity_a,AttachRequest {
             endpoint_id:endpoint_a,endpoint_type:"TEST".into(),metadata:serde_json::json!({"label":"continuity-A"})
@@ -801,6 +806,7 @@ mod postgres_tests {
         sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2").bind(ai_id).bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
