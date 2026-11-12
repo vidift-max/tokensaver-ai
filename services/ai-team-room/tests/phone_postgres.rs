@@ -502,7 +502,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own phone snapshot");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let tenant_b_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
-    assert_ne!(tenant_b_snapshot["phone"]["ai_phone_id"].as_str().unwrap(),first.phone.ai_phone_id.to_string());
+    let tenant_b_phone_id=Uuid::parse_str(tenant_b_snapshot["phone"]["ai_phone_id"].as_str().unwrap()).unwrap();
+    assert_ne!(tenant_b_phone_id,first.phone.ai_phone_id);
     assert!(tenant_b_snapshot["mission"].is_null() || tenant_b_snapshot["mission"]["task_id"]!=task_id.to_string(),
         "tenant B cannot see tenant A mission/checkpoint snapshot");
 
