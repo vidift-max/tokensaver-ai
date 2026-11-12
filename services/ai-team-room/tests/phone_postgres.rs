@@ -560,5 +560,6 @@ async fn legacy_shared_phone_migration_guard_fails_closed_on_postgres() {
     sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM principals WHERE principal_id IN ($1,$2)").bind(principal_a).bind(principal_b).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id IN ($1,$2)").bind(tenant_a).bind(tenant_b).execute(&pool).await.unwrap();
 }
