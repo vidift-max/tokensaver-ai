@@ -53,6 +53,8 @@ pub struct AttachmentRecord {
 pub struct PhoneEndpoint {
     pub endpoint_id: Uuid,
     pub ai_phone_id: Uuid,
+    pub tenant_id: Uuid,
+    pub ai_id: Uuid,
     pub endpoint_type: String,
     pub endpoint_status: String,
     pub metadata: Value,
@@ -134,8 +136,8 @@ async fn owned_phone(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, identity: &
     ).bind(identity.tenant_id).bind(identity.principal_id)
       .fetch_optional(&mut **tx).await?.ok_or(PhoneError::NotFound)?;
     let phone = sqlx::query_as::<_, PhoneRecord>(
-        "INSERT INTO ai_phones(ai_phone_id,ai_id) VALUES($1,$2) ON CONFLICT(ai_id) DO UPDATE SET updated_at=ai_phones.updated_at RETURNING ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at"
-    ).bind(Uuid::new_v4()).bind(ai_id).fetch_one(&mut **tx).await?;
+        "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2"
+    ).bind(identity.tenant_id).bind(ai_id).fetch_optional(&mut **tx).await?.ok_or(PhoneError::NotFound)?;
     Ok(phone)
 }
 
@@ -182,12 +184,12 @@ pub async fn get_my_phone(pool: &PgPool, identity: &AuthenticatedIdentity) -> Re
     let mut tx = pool.begin().await?;
     let phone = owned_phone(&mut tx, identity).await?;
     let attachment = sqlx::query_as::<_, AttachmentRecord>(
-        "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE ai_phone_id=$1 AND attachment_status='ACTIVE'"
-    ).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await?;
+        "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND attachment_status='ACTIVE'"
+    ).bind(phone.ai_phone_id).bind(identity.tenant_id).fetch_optional(&mut *tx).await?;
     let mission = if let Some(task_id) = phone.current_task_id {
         Some(sqlx::query_scalar::<_, Value>(
-            "SELECT jsonb_build_object('task_id',task_id,'mission_id',mission_id,'status',status,'checkpoint',checkpoint,'checkpoint_version',checkpoint_version,'fencing_token',fencing_token,'lease_expires_at',lease_expires_at) FROM team_tasks WHERE task_id=$1 AND room_id=$2"
-        ).bind(task_id).bind(identity.room_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?)
+            "SELECT jsonb_build_object('task_id',task_id,'mission_id',mission_id,'status',status,'checkpoint',checkpoint,'checkpoint_version',checkpoint_version,'fencing_token',fencing_token,'lease_expires_at',lease_expires_at) FROM team_tasks WHERE task_id=$1 AND room_id=$2 AND tenant_id=$3"
+        ).bind(task_id).bind(identity.room_id).bind(identity.tenant_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?)
     } else { None };
     tx.commit().await?;
     Ok(PhoneSnapshot { phone, attachment, mission })
@@ -209,14 +211,14 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     ).bind(phone.ai_phone_id).fetch_one(&mut *tx).await?;
 
     let current = sqlx::query_as::<_, (Uuid, Uuid, i64)>(
-        "SELECT attachment_id,session_id,endpoint_fence FROM phone_attachments WHERE ai_phone_id=$1 AND attachment_status='ACTIVE' FOR UPDATE"
-    ).bind(phone.ai_phone_id).fetch_optional(&mut *tx).await?;
+        "SELECT attachment_id,session_id,endpoint_fence FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 AND attachment_status='ACTIVE' FOR UPDATE"
+    ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_optional(&mut *tx).await?;
     let had_current = current.is_some();
     if let Some((current_attachment, current_session, _)) = current {
         if current_session == identity.session_id {
             let existing = sqlx::query_as::<_, AttachmentRecord>(
                 "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1"
-            ).bind(current_attachment).fetch_one(&mut *tx).await?;
+            ).bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
             if existing.endpoint_id == request.endpoint_id {
                 tx.commit().await?;
                 return Ok(existing);
@@ -230,25 +232,25 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
         }
         sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1")
             .bind(current_attachment).execute(&mut *tx).await?;
-        sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=(SELECT endpoint_id FROM phone_attachments WHERE attachment_id=$1)")
+        sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=(SELECT endpoint_id FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3) AND tenant_id=$2 AND ai_id=$3")
             .bind(current_attachment).execute(&mut *tx).await?;
     }
 
     let endpoint_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND endpoint_status<>'REVOKED')"
-    ).bind(request.endpoint_id).bind(phone.ai_phone_id).fetch_one(&mut *tx).await?;
+        "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status<>'REVOKED')"
+    ).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
     if endpoint_exists {
-        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='ATTACHED',metadata=$2,last_seen_at=NOW(),detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4")
+        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='ATTACHED',metadata=$2,last_seen_at=NOW(),detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
             .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id)
             .execute(&mut *tx).await?;
     } else {
-        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,endpoint_type,endpoint_status,metadata,last_seen_at) VALUES($1,$2,$3,'ATTACHED',$4,NOW())")
+        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,last_seen_at) VALUES($1,$2,$3,$4,$5,'ATTACHED',$6,NOW())")
             .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(&request.endpoint_type).bind(&request.metadata)
             .execute(&mut *tx).await?;
     }
     let next_fence = phone.endpoint_fence + 1;
-    sqlx::query("UPDATE ai_phones SET endpoint_fence=$1,phone_status=$2,version=version+1,last_seen_at=NOW(),updated_at=NOW() WHERE ai_phone_id=$3")
-        .bind(next_fence).bind(if had_current { "ATTACHED_NEW_ENDPOINT" } else { "ATTACHED" }).bind(phone.ai_phone_id)
+    sqlx::query("UPDATE ai_phones SET endpoint_fence=$1,phone_status=$2,version=version+1,last_seen_at=NOW(),updated_at=NOW() WHERE ai_phone_id=$3 AND tenant_id=$4 AND ai_id=$5")
+        .bind(next_fence).bind(if had_current { "ATTACHED_NEW_ENDPOINT" } else { "ATTACHED" }).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
         .execute(&mut *tx).await?;
     let attachment_id = Uuid::new_v4();
     sqlx::query(
@@ -264,7 +266,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     tx.commit().await?;
     Ok(sqlx::query_as::<_, AttachmentRecord>(
         "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1"
-    ).bind(attachment_id).fetch_one(pool).await?)
+    ).bind(attachment_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(pool).await?)
 }
 
 pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64) -> Result<(), PhoneError> {
