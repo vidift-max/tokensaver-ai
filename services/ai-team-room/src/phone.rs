@@ -328,8 +328,13 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments WHERE ai_phone_id=$1 AND session_id=$2 AND attachment_status='ACTIVE' AND endpoint_fence=(SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1))")
         .bind(phone_id).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
-    sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() WHERE ai_phone_id=$1 AND message_state='PENDING'")
-        .bind(phone_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let delivered_count = sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() WHERE ai_phone_id=$1 AND message_state='PENDING'")
+        .bind(phone_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
+    if delivered_count > 0 {
+        record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_DELIVERED",
+            "phone.message.delivered", serde_json::json!({"count":delivered_count})
+        ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     let rows = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 ORDER BY sequence_no")
         .bind(phone_id).fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -361,6 +366,9 @@ async fn message_send_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
         .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let row = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    record_phone_event(&mut tx, &identity, phone_id, "MESSAGE_RECEIVED", "phone.message.sent",
+        serde_json::json!({"message_id":message_id,"sequence_no":sequence,"sender_principal_id":identity.principal_id})
+    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -369,9 +377,14 @@ async fn ack_handler(State(pool): State<PgPool>, Path((phone_id,message_id)): Pa
     -> Result<StatusCode, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
     require_permission(&pool, &identity, "phone.message.ack").await.map_err(|_| StatusCode::FORBIDDEN)?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let updated = sqlx::query("UPDATE phone_messages SET message_state='ACK',acknowledged_at=NOW(),updated_at=NOW() WHERE message_id=$1 AND ai_phone_id=$2 AND message_state='DELIVERED' AND EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id WHERE a.ai_phone_id=$2 AND a.session_id=$3 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
-        .bind(message_id).bind(phone_id).bind(identity.session_id).execute(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .bind(message_id).bind(phone_id).bind(identity.session_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if updated.rows_affected()==0 { return Err(StatusCode::PRECONDITION_FAILED); }
+    record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_ACK", "phone.message.acknowledged",
+        serde_json::json!({"message_id":message_id})
+    ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
