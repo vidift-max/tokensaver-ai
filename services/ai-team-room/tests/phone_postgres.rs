@@ -682,11 +682,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
     let endpoint_f = Uuid::new_v4();
+    let fence_before_endpoint_f:i64=sqlx::query_scalar("SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2")
+        .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
     let attached_f = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_f, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-F"}),
     },false).await.expect("reconnect to retrieve offline inbox");
     assert_eq!(attached_f.ai_phone_id,first.phone.ai_phone_id);
-    assert_eq!(attached_f.endpoint_fence,7);
+    assert_eq!(attached_f.endpoint_fence,fence_before_endpoint_f+1,"reconnect endpoint receives exactly the next fence");
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(pending,(next_sequence,"PENDING".to_string()));
