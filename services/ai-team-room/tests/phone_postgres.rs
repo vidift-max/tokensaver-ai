@@ -238,6 +238,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool).await.unwrap();
     let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_c),Some(serde_json::json!({"task_id":foreign_task}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"tenant B can link its own Team Room task");
+    let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_c),Some(serde_json::json!({"task_id":foreign_task}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"tenant B can link its own Team Room task");
     let tenant_phone_count:i64=sqlx::query_scalar("SELECT COUNT(DISTINCT ai_phone_id) FROM ai_phones WHERE ai_id=$1 AND tenant_id IN ($2,$3)")
         .bind(ai_id).bind(tenant).bind(foreign_tenant).fetch_one(&pool).await.unwrap();
     assert_eq!(tenant_phone_count,2,"same AI_ID must have independent phone IDs in two tenants");
