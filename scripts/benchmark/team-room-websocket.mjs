@@ -122,7 +122,7 @@ try {
   console.log(JSON.stringify({
     benchmark: "team-room-websocket-fanout",
     generated_at: new Date().toISOString(),
-    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
+    environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, dataset: { tenants: Number(process.env.BENCH_TENANTS || 0), rooms: Number(process.env.BENCH_ROOMS || 0), seeded_messages: Number(process.env.BENCH_SEED_MESSAGES || 0), seeded_tasks: Number(process.env.BENCH_SEED_TASKS || 0), seeded_decisions: Number(process.env.BENCH_SEED_DECISIONS || 0), seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0) }, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, settle_ms: settleMs },
     summary: {
       websocket_connections_opened: sockets.length,
       message_writes_accepted: sendStarts.size,
@@ -133,6 +133,8 @@ try {
       received_frames_total: receivedFrames,
       heartbeat_writes_accepted: heartbeatWritesAccepted,
       presence_changed_frames: presenceChangedFrames,
+      presence_frames_expected: heartbeatWritesAccepted * clients,
+      presence_frames_missing: Math.max(0, heartbeatWritesAccepted * clients - presenceChangedFrames),
       presence_frames_per_accepted_heartbeat: heartbeatWritesAccepted ? Number((presenceChangedFrames / heartbeatWritesAccepted).toFixed(3)) : null,
       duration_ms: Number(elapsed.toFixed(3)),
       delivery_latency_ms: { p50: pct(0.5), p95: pct(0.95), p99: pct(0.99) },
@@ -141,7 +143,7 @@ try {
     failures: failures.slice(0, 50),
     duplicate_samples: duplicates.slice(0, 20),
   }, null, 2));
-  if (sendStarts.size === 0 || observed === 0 || failures.length) process.exitCode = 1;
+  if (sendStarts.size === 0 || observed === 0 || observed !== expected || duplicates.length > 0 || failures.length || presenceChangedFrames < heartbeatWritesAccepted * clients) process.exitCode = 1;
 } finally {
   for (const socket of sockets) { try { socket.close(); } catch {} }
 }
