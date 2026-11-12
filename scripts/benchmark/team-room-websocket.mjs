@@ -47,16 +47,32 @@ async function ticket(token) {
 }
 function waitOpen(socket) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("websocket_open_timeout")), 10000);
-    socket.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, { once: true });
-    socket.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("websocket_open_error")); }, { once: true });
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) { settled = true; reject(new Error("websocket_open_timeout")); }
+    }, 10000);
+    socket.addEventListener("open", () => {
+      if (!settled) { settled = true; clearTimeout(timeout); resolve(); }
+    }, { once: true });
+    socket.addEventListener("error", () => {
+      if (!settled) { settled = true; clearTimeout(timeout); reject(new Error("websocket_open_error")); }
+    }, { once: true });
+    socket.addEventListener("close", event => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        reject(new Error("websocket_closed_before_open_" + event.code + "_" + String(event.reason || "").slice(0,80)));
+      }
+    }, { once: true });
   });
 }
+const openPromises = [];
 for (let i = 0; i < clients; i++) {
   const oneUseTicket = await ticket(tokens[i % tokens.length]);
   const wsUrl = base.replace(/^http/, "ws") + `/team-room/${room}/ws?ticket=${encodeURIComponent(oneUseTicket)}`;
   const socket = new WebSocket(wsUrl, ["team-room.v1"]);
   sockets.push(socket);
+  openPromises.push(waitOpen(socket));
   const index = i;
   socket.addEventListener("message", event => {
     receivedFrames++;
@@ -82,7 +98,7 @@ function record(messageId, client, at) {
 }
 
 try {
-  await Promise.all(sockets.map(waitOpen));
+  await Promise.all(openPromises);
   // Let each upgraded connection finish opening its dedicated PostgreSQL LISTEN subscription.
   await new Promise(resolve => setTimeout(resolve, 500));
   const writeStart = performance.now();
