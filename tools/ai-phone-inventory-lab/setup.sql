@@ -16,6 +16,8 @@ CREATE TABLE lab.team_tasks(task_id text PRIMARY KEY, tenant_id text NOT NULL, s
 CREATE TABLE lab.checkpoints(task_id text PRIMARY KEY, version integer NOT NULL, updated_at timestamptz NOT NULL, private_checkpoint text NOT NULL);
 CREATE TABLE lab.audit_events(event_id text PRIMARY KEY, tenant_id text NOT NULL, action text NOT NULL, result text NOT NULL, created_at timestamptz NOT NULL, private_metadata text NOT NULL);
 CREATE TABLE lab.outbox_events(event_id text PRIMARY KEY, tenant_id text NOT NULL, aggregate_type text NOT NULL, created_at timestamptz NOT NULL, payload text NOT NULL);
+CREATE TABLE lab.team_room_messages(message_id text PRIMARY KEY, tenant_id text NOT NULL, body text NOT NULL);
+CREATE TABLE lab.private_materials(id text PRIMARY KEY, token_value text NOT NULL, password_value text NOT NULL, connection_string text NOT NULL, headers_value text NOT NULL, secret_value text NOT NULL);
 
 INSERT INTO lab.tenants VALUES ('tenant-a','Synthetic Tenant A'),('tenant-b','Synthetic Tenant B');
 INSERT INTO lab.identities VALUES ('ai-global-1','TEST');
