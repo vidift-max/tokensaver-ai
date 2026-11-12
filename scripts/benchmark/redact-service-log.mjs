@@ -6,8 +6,9 @@ if (!source || !destination) throw new Error("Usage: redact-service-log.mjs sour
 let log = readFileSync(source, "utf8");
 let tokens = [];
 try {
-  const value = JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON || "[]");
-  if (Array.isArray(value)) tokens = value.filter(token => typeof token === "string" && token.length > 0);
+  const target = JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON || "[]");
+  const other = JSON.parse(process.env.TEAM_ROOM_OTHER_ROOM_SESSION_TOKENS_JSON || "[]");
+  tokens = [...(Array.isArray(target) ? target : []), ...(Array.isArray(other) ? other : [])].filter(token => typeof token === "string" && token.length > 0);
 } catch {}
 for (const token of tokens) log = log.split(token).join("[REDACTED_SESSION]");
 log = log.replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]");
