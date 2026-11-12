@@ -17,7 +17,7 @@ export function normalizeTeamRoomBaseUrl(value) {
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
     throw new TypeError("Team Room API must use HTTPS except explicit loopback development");
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") {
+  if (parsed.username || parsed.password || parsed.href !== `${parsed.origin}/`) {
     throw new TypeError("Team Room API URL cannot contain credentials, path, query or fragment");
   }
 

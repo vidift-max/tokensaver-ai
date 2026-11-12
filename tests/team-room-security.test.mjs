@@ -28,7 +28,9 @@ test("rejects insecure or ambiguous Team Room origins", () => {
     "https://user:password@team-room.example.test",
     "https://team-room.example.test/path",
     "https://team-room.example.test?next=https://evil.test",
-    "https://team-room.example.test#fragment"
+    "https://team-room.example.test#fragment",
+    "https://team-room.example.test?",
+    "https://team-room.example.test#"
   ]) {
     assert.throws(() => normalizeTeamRoomBaseUrl(value), undefined, value);
   }
