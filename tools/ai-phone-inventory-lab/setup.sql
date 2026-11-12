@@ -45,17 +45,29 @@ INSERT INTO lab.audit_events VALUES
 INSERT INTO lab.outbox_events VALUES
  ('outbox-a','tenant-a','phone',now(),'PRIVATE_OUTBOX_PAYLOAD_CANARY');
 
-CREATE VIEW lab.inventory_tenants AS SELECT tenant_id,name FROM lab.tenants;
-CREATE VIEW lab.inventory_identities AS SELECT ai_id,identity_kind FROM lab.identities;
-CREATE VIEW lab.inventory_identity_tenants AS SELECT ai_id,tenant_id,principal_id FROM lab.identity_tenants;
-CREATE VIEW lab.inventory_phones AS SELECT ai_phone_id,ai_id,status FROM lab.ai_phones;
-CREATE VIEW lab.inventory_endpoints AS SELECT endpoint_id,ai_phone_id,endpoint_type FROM lab.endpoints;
-CREATE VIEW lab.inventory_attachments AS SELECT attachment_id,ai_phone_id,endpoint_id,tenant_id,status FROM lab.attachments;
-CREATE VIEW lab.inventory_messages AS SELECT message_id,ai_phone_id,tenant_id,sequence_no,state,created_at FROM lab.phone_messages;
-CREATE VIEW lab.inventory_tasks AS SELECT task_id,tenant_id,status,checkpoint_version FROM lab.team_tasks;
-CREATE VIEW lab.inventory_checkpoints AS SELECT task_id,version,updated_at FROM lab.checkpoints;
-CREATE VIEW lab.inventory_audit AS SELECT event_id,tenant_id,action,result,created_at FROM lab.audit_events;
-CREATE VIEW lab.inventory_outbox AS SELECT event_id,tenant_id,aggregate_type,created_at FROM lab.outbox_events;
+CREATE VIEW lab.inventory_tenants WITH (security_invoker=true) AS SELECT tenant_id,name FROM lab.tenants;
+CREATE VIEW lab.inventory_identities WITH (security_invoker=true) AS SELECT ai_id,identity_kind FROM lab.identities;
+CREATE VIEW lab.inventory_identity_tenants WITH (security_invoker=true) AS SELECT ai_id,tenant_id,principal_id FROM lab.identity_tenants;
+CREATE VIEW lab.inventory_phones WITH (security_invoker=true) AS SELECT ai_phone_id,ai_id,status FROM lab.ai_phones;
+CREATE VIEW lab.inventory_endpoints WITH (security_invoker=true) AS SELECT endpoint_id,ai_phone_id,endpoint_type FROM lab.endpoints;
+CREATE VIEW lab.inventory_attachments WITH (security_invoker=true) AS SELECT attachment_id,ai_phone_id,endpoint_id,tenant_id,status FROM lab.attachments;
+CREATE VIEW lab.inventory_messages WITH (security_invoker=true) AS SELECT message_id,ai_phone_id,tenant_id,sequence_no,state,created_at FROM lab.phone_messages;
+CREATE VIEW lab.inventory_tasks WITH (security_invoker=true) AS SELECT task_id,tenant_id,status,checkpoint_version FROM lab.team_tasks;
+CREATE VIEW lab.inventory_checkpoints WITH (security_invoker=true) AS SELECT task_id,version,updated_at FROM lab.checkpoints;
+CREATE VIEW lab.inventory_audit WITH (security_invoker=true) AS SELECT event_id,tenant_id,action,result,created_at FROM lab.audit_events;
+CREATE VIEW lab.inventory_outbox WITH (security_invoker=true) AS SELECT event_id,tenant_id,aggregate_type,created_at FROM lab.outbox_events;
+
+GRANT SELECT (tenant_id,name) ON lab.tenants TO inventory_reader;
+GRANT SELECT (ai_id,identity_kind) ON lab.identities TO inventory_reader;
+GRANT SELECT (ai_id,tenant_id,principal_id) ON lab.identity_tenants TO inventory_reader;
+GRANT SELECT (ai_phone_id,ai_id,status) ON lab.ai_phones TO inventory_reader;
+GRANT SELECT (endpoint_id,ai_phone_id,endpoint_type) ON lab.endpoints TO inventory_reader;
+GRANT SELECT (attachment_id,ai_phone_id,endpoint_id,tenant_id,status) ON lab.attachments TO inventory_reader;
+GRANT SELECT (message_id,ai_phone_id,tenant_id,sequence_no,state,created_at) ON lab.phone_messages TO inventory_reader;
+GRANT SELECT (task_id,tenant_id,status,checkpoint_version) ON lab.team_tasks TO inventory_reader;
+GRANT SELECT (task_id,version,updated_at) ON lab.checkpoints TO inventory_reader;
+GRANT SELECT (event_id,tenant_id,action,result,created_at) ON lab.audit_events TO inventory_reader;
+GRANT SELECT (event_id,tenant_id,aggregate_type,created_at) ON lab.outbox_events TO inventory_reader;
 
 GRANT SELECT ON lab.inventory_tenants,lab.inventory_identities,lab.inventory_identity_tenants,
  lab.inventory_phones,lab.inventory_endpoints,lab.inventory_attachments,lab.inventory_messages,
@@ -67,6 +79,8 @@ INSERT INTO lab.rls_probe VALUES ('tenant-a','VISIBLE_SYNTHETIC_ROW'),('tenant-b
 ALTER TABLE lab.rls_probe ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_a_only ON lab.rls_probe FOR SELECT TO inventory_reader USING (tenant_id='tenant-a');
 GRANT SELECT (tenant_id,safe_marker) ON lab.rls_probe TO inventory_reader;
+CREATE VIEW lab.inventory_rls_probe WITH (security_invoker=true) AS SELECT tenant_id,safe_marker FROM lab.rls_probe;
+GRANT SELECT ON lab.inventory_rls_probe TO inventory_reader;
 
 DO $$
 BEGIN
