@@ -1,4 +1,4 @@
-use ai_team_room_service::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
+use crate::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
 use axum::{extract::{Path, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
