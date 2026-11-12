@@ -634,6 +634,31 @@ mod postgres_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws_b.next()).await.is_err(),
             "tenant B socket must reject an event whose payload room_id contradicts its DB aggregate");
 
+        // Composite-FK regression checks: deliberately mismatched tenant/room
+        // references must be rejected by PostgreSQL, not merely by handlers.
+        let channel_b:Uuid=sqlx::query_scalar("SELECT channel_id FROM team_room_channels WHERE tenant_id=$1 AND room_id=$2 AND channel_type='GENERAL'")
+            .bind(tenant_b).bind(room_b).fetch_one(&pool).await.unwrap();
+        let bad_message=sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body) VALUES($1,$2,$3,$4,$5,$6,'invalid cross-tenant message')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(channel_b).bind(a.principal).bind(Uuid::new_v4()).execute(&pool).await;
+        assert!(bad_message.is_err(),"message channel FK must bind tenant + room + channel");
+
+        let task_a=Uuid::new_v4();
+        sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id) VALUES($1,$2,$3,$4,'scope FK fixture',$5)")
+            .bind(task_a).bind(tenant).bind(room).bind(Uuid::new_v4()).bind(a.principal).execute(&pool).await.unwrap();
+        let bad_lease=sqlx::query("INSERT INTO task_lease_events(lease_event_id,tenant_id,room_id,task_id,fencing_token,event_type) VALUES($1,$2,$3,$4,1,'ACQUIRED')")
+            .bind(Uuid::new_v4()).bind(tenant_b).bind(room_b).bind(task_a).execute(&pool).await;
+        assert!(bad_lease.is_err(),"lease event FK must bind tenant + room + task");
+        let bad_handoff=sqlx::query("INSERT INTO task_handoffs(handoff_id,task_id,tenant_id,room_id,from_fencing_token,status) VALUES($1,$2,$3,$4,1,'PENDING')")
+            .bind(Uuid::new_v4()).bind(task_a).bind(tenant_b).bind(room_b).execute(&pool).await;
+        assert!(bad_handoff.is_err(),"handoff FK must bind tenant + room + task");
+
+        let bad_attachment=sqlx::query("INSERT INTO team_room_attachment_refs(attachment_id,tenant_id,room_id,channel_id,uploaded_by_principal_id,file_name,storage_ref) VALUES($1,$2,$3,$4,$5,'bad.txt','object://bad')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(channel_b).bind(a.principal).execute(&pool).await;
+        assert!(bad_attachment.is_err(),"attachment channel FK must bind tenant + room + channel");
+        let bad_ticket=sqlx::query("INSERT INTO team_room_ws_tickets(ticket_hash,tenant_id,room_id,principal_id,session_id,expires_at) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '30 seconds')")
+            .bind(Sha256::digest(Uuid::new_v4().as_bytes()).to_vec()).bind(tenant).bind(room).bind(a.principal).bind(actor_b.session).execute(&pool).await;
+        assert!(bad_ticket.is_err(),"WebSocket ticket FK must bind tenant + room + principal + session");
+
         ws_b.close(None).await.unwrap();
         server.abort();
 
