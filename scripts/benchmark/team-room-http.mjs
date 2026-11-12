@@ -9,13 +9,17 @@ import { performance } from "node:perf_hooks";
 
 const apiUrl = (process.env.TEAM_ROOM_API_URL || "").replace(/\/$/, "");
 const roomId = process.env.TEAM_ROOM_ROOM_ID || "";
-const token = process.env.TEAM_ROOM_SESSION_TOKEN || "";
+const tokenList = process.env.TEAM_ROOM_SESSION_TOKENS_JSON
+  ? JSON.parse(process.env.TEAM_ROOM_SESSION_TOKENS_JSON)
+  : [process.env.TEAM_ROOM_SESSION_TOKEN || ""];
+const tokens = Array.isArray(tokenList) ? tokenList.filter(value => typeof value === "string" && value.length > 0) : [];
+const participantCount = Number(process.env.BENCH_PARTICIPANTS || tokens.length);
 const clients = Number(process.env.BENCH_CLIENTS || 8);
 const events = Number(process.env.BENCH_EVENTS || 100);
 const messages = Number(process.env.BENCH_MESSAGES || 0);
 const timeoutMs = Number(process.env.BENCH_TIMEOUT_MS || 10000);
 
-if (!apiUrl || !roomId || !token) {
+if (!apiUrl || !roomId || tokens.length === 0) {
   console.error("Required: TEAM_ROOM_API_URL, TEAM_ROOM_ROOM_ID, TEAM_ROOM_SESSION_TOKEN");
   process.exit(2);
 }
@@ -54,13 +58,13 @@ const failures = [];
 let cursor = 0;
 const started = performance.now();
 
-async function execute(job, index) {
+async function execute(job, index, clientIndex) {
   const begin = performance.now();
   try {
     const response = await fetch(apiUrl + job.path, {
       method: job.method,
       headers: {
-        authorization: `Bearer ${token}`,
+        authorization: `Bearer ${tokens[clientIndex % tokens.length]}`,
         "content-type": "application/json",
       },
       body: job.body ? JSON.stringify(job.body) : undefined,
@@ -79,14 +83,14 @@ async function execute(job, index) {
   }
 }
 
-async function worker() {
+async function worker(clientIndex) {
   while (true) {
     const index = cursor++;
     if (index >= jobs.length) return;
-    await execute(jobs[index], index);
+    await execute(jobs[index], index, clientIndex);
   }
 }
-await Promise.all(Array.from({ length: clients }, () => worker()));
+await Promise.all(Array.from({ length: clients }, (_, clientIndex) => worker(clientIndex)));
 const elapsedMs = performance.now() - started;
 
 function percentile(sorted, p) {
@@ -118,6 +122,8 @@ console.log(JSON.stringify({
     api_origin: new URL(apiUrl).origin,
     room_id: roomId,
     clients,
+    participant_count: participantCount,
+    distinct_session_tokens: new Set(tokens).size,
     events_per_read_endpoint: events,
     message_writes: messages,
     timeout_ms: timeoutMs,
