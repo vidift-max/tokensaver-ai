@@ -628,9 +628,19 @@ mod postgres_tests {
         let accepted_cancel_task=tasks::create_task(&pool,&ids[0],CreateTask{mission_id:Uuid::new_v4(),title:"accepted cancel transition".into(),checkpoint:serde_json::json!({})}).await.unwrap();
         let accepted_cancel_lease=tasks::acquire_lease(&pool,&ids[0],accepted_cancel_task.task_id,60).await.unwrap();
         let accepted_cancel=create(&pool,&ids[0],accepted_cancel_task.task_id,request(&ids[1],accepted_cancel_lease.task.fencing_token)).await.unwrap();
-        sqlx::query("UPDATE sessions SET expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
+        let original_session_times:(DateTime<Utc>,DateTime<Utc>)=sqlx::query_as(
+            "SELECT issued_at,expires_at FROM sessions WHERE session_id=$1"
+        ).bind(ids[1].session_id).fetch_one(&pool).await.unwrap();
+        sqlx::query("UPDATE sessions SET issued_at=NOW()-INTERVAL '2 minutes',expires_at=NOW()-INTERVAL '1 second' WHERE session_id=$1")
+            .bind(ids[1].session_id).execute(&pool).await.unwrap();
+        let expired_session_is_temporally_valid:bool=sqlx::query_scalar(
+            "SELECT issued_at<expires_at AND expires_at<=NOW() FROM sessions WHERE session_id=$1"
+        ).bind(ids[1].session_id).fetch_one(&pool).await.unwrap();
+        assert!(expired_session_is_temporally_valid,"expired session fixture must preserve issued_at < expires_at");
         assert!(matches!(accept(&pool,&ids[1],accepted_cancel.handoff_id,60).await,Err(HandoffError::Forbidden)),"an expired recipient session cannot accept");
-        sqlx::query("UPDATE sessions SET expires_at=NOW()+INTERVAL '1 hour' WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE sessions SET issued_at=$2,expires_at=$3 WHERE session_id=$1")
+            .bind(ids[1].session_id).bind(original_session_times.0).bind(original_session_times.1)
+            .execute(&pool).await.unwrap();
         sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
         assert!(matches!(accept(&pool,&ids[1],accepted_cancel.handoff_id,60).await,Err(HandoffError::Forbidden)),"a revoked recipient session cannot accept");
         sqlx::query("UPDATE sessions SET status='ACTIVE',revoked_at=NULL WHERE session_id=$1").bind(ids[1].session_id).execute(&pool).await.unwrap();
