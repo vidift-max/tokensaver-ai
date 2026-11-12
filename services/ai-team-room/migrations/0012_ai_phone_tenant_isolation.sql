@@ -103,6 +103,7 @@ ALTER TABLE phone_mission_links ALTER COLUMN room_id SET NOT NULL;
 
 ALTER TABLE ai_phones
     ADD CONSTRAINT ai_phones_tenant_ai_unique UNIQUE (tenant_id,ai_id),
+    ADD CONSTRAINT ai_phones_phone_tenant_unique UNIQUE (ai_phone_id,tenant_id),
     ADD CONSTRAINT ai_phones_phone_tenant_ai_unique UNIQUE (ai_phone_id,tenant_id,ai_id),
     ADD CONSTRAINT ai_phones_tenant_binding_fk FOREIGN KEY (ai_id,tenant_id)
         REFERENCES ai_identity_tenants(ai_id,tenant_id) ON DELETE RESTRICT;
@@ -139,6 +140,10 @@ ALTER TABLE team_tasks ADD CONSTRAINT team_tasks_task_tenant_unique UNIQUE (task
 ALTER TABLE ai_phones
     ADD CONSTRAINT ai_phones_current_task_tenant_fk FOREIGN KEY (current_task_id,tenant_id)
         REFERENCES team_tasks(task_id,tenant_id) ON DELETE SET NULL (current_task_id);
+
+INSERT INTO permission_catalog(permission,description,privileged) VALUES
+ ('phone.provision','Provision a permanent AI phone for an enabled AI principal in the authenticated tenant',TRUE)
+ON CONFLICT (permission) DO NOTHING;
 
 COMMENT ON TABLE ai_identity_tenants IS 'Canonical tenant-scoped binding of a global AI identity; one AI phone is owned by each row.';
 COMMENT ON COLUMN ai_phones.tenant_id IS 'Ownership boundary. AI_ID remains global; AI_PHONE_ID is unique per tenant/AI binding.';
