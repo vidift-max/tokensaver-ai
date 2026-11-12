@@ -93,11 +93,19 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let app=ai_team_room_service::phone::router(pool.clone());
 
     let first = get_my_phone(&pool,&identity_a).await.expect("create permanent phone");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"REGISTERED");
     let endpoint_a = Uuid::new_v4();
     let attached_a = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("attach endpoint A");
     assert_eq!(attached_a.endpoint_fence,1);
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"CONNECTED");
 
     // Real Axum HTTP router E2E: authenticate with the persisted bearer hash and exercise
     // the public phone routes rather than calling only the internal service functions.
@@ -129,6 +137,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"unknown or unauthorized phone must not leak endpoint data");
     let response=http_call(&app,"GET","/ai-phone/me",Some("invalid-session-token"),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED);
+    sqlx::query("UPDATE phone_endpoints SET last_seen_at=NOW()-INTERVAL '2 minutes' WHERE endpoint_id=$1").bind(endpoint_a).execute(&pool).await.unwrap();
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"ATTACHED","stale endpoint heartbeat differs from session attachment");
+
     let retry_a = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("idempotent attach retry");
@@ -157,6 +171,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         issuer: "test-only".into(), subject: "test-only".into(),
     };
     let token_b=bearer_for(&pool,session_b).await;
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"OFFLINE","expired session A leaves the persistent phone offline");
     let endpoint_b = Uuid::new_v4();
     let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_b),Some(serde_json::json!({
         "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
@@ -171,6 +189,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"same AI phone reconnects through the HTTP route");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let presence:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(presence["presence_state"],"CONNECTED");
     let attached_b = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_b, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-B"}),
     },false).await.expect("idempotent view of HTTP reconnect");
