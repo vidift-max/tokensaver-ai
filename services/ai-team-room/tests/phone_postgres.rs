@@ -151,8 +151,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Force the outbox write to fail after the message INSERT. The API transaction
     // must roll back the message and audit row; retrying the same key must then work.
-    sqlx::query("CREATE OR REPLACE FUNCTION pg_temp.fail_ai_phone_outbox() RETURNS trigger LANGUAGE plpgsql AS $ BEGIN IF NEW.aggregate_type='ai_phone' AND NEW.aggregate_id=$1::uuid AND NEW.event_type='MESSAGE_RECEIVED' THEN RAISE EXCEPTION 'injected AI-PHONE outbox failure'; END IF; RETURN NEW; END $")
-        .bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
+    sqlx::query("CREATE OR REPLACE FUNCTION pg_temp.fail_ai_phone_outbox() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF NEW.aggregate_type='ai_phone' AND NEW.event_type='MESSAGE_RECEIVED' THEN RAISE EXCEPTION 'injected AI-PHONE outbox failure'; END IF; RETURN NEW; END $function$")
+        .execute(&pool).await.unwrap();
     sqlx::query("CREATE TRIGGER ai_phone_injected_outbox_failure BEFORE INSERT ON outbox_events FOR EACH ROW EXECUTE FUNCTION pg_temp.fail_ai_phone_outbox()")
         .execute(&pool).await.unwrap();
     let failed_retry=http_call(&app,"POST",&race_path,Some(&token_a),Some(serde_json::json!({
