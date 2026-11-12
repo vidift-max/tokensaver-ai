@@ -427,7 +427,7 @@ async fn presence_handler(
                   AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
                   AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()) THEN
               CASE WHEN EXISTS(SELECT 1 FROM phone_endpoints e JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id
-                    WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
+                    WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                       AND e.last_seen_at>NOW()-INTERVAL '90 seconds') THEN 'CONNECTED' ELSE 'ATTACHED' END
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
                 WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
