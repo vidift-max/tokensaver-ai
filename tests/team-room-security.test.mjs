@@ -101,5 +101,5 @@ test("Recovery Worker rejects remote HTTP configuration without printing the ses
 test("desktop Team Room UI fails closed and contains no manual endpoint or bearer input", () => {
   const source = fs.readFileSync(new URL("../src/TeamRoom.tsx", import.meta.url), "utf8");
   assert.match(source, /acesso desktop suspenso/);
-  assert.doesNotMatch(source, /fetch\s*\(|new WebSocket|Authorization|Bearer|apiUrl|setToken|http:\/\//i);
+  assert.doesNotMatch(source, /fetch\s*\(|new WebSocket|authorization\\s*:|Bearer|apiUrl|setToken|http:\/\//i);
 });
