@@ -135,7 +135,7 @@ Seven structural unit tests were added for:
 - streaming/input validation;
 - model identifier validation and retryability classification.
 
-These tests do not call external provider APIs. At the time of this report, GitHub Actions was validating the PR branch; only completed jobs on the final tested SHA can be counted as PASS. Earlier runs were cancelled when subsequent commits updated the PR branch and are not counted as successful validation.
+Four additional ignored live smoke tests (one per provider) were added as credential-gated integration entry points. They are not executed by default and have not been run. The seven structural tests do not call external provider APIs. At the time of this report, GitHub Actions was validating the PR branch; only completed jobs on the final tested SHA can be counted as PASS. Earlier runs were cancelled when subsequent commits updated the PR branch and are not counted as successful validation.
 
 ## 17. Integrations actually executed
 
