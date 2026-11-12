@@ -250,7 +250,8 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
         .redirect(reqwest::redirect::Policy::none()).build()
         .map_err(|_| GatewayError::new("TRANSPORT_ERROR", "Could not initialize provider transport.", false, &request_id, None))?;
 
-    let _permit = acquire_request_permit(&request_id)?;\n    let endpoint = req.provider.endpoint(&model);
+    let _permit = acquire_request_permit(&request_id)?;
+    let endpoint = req.provider.endpoint(&model);
     let mut builder = client.post(endpoint).header(header::CONTENT_TYPE, "application/json");
     let body = match req.provider {
         Provider::Openai | Provider::Kimi => {
@@ -380,7 +381,14 @@ mod tests {
         assert!(!retryable_status(StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(StatusCode::BAD_REQUEST));
     }
-    fn concurrency_permit_is_released_and_limit_is_explicit() {\n        let permit = acquire_request_permit("test").expect("permit under limit");\n        assert!(ACTIVE_REQUESTS.load(Ordering::Acquire) > 0);\n        drop(permit);\n        assert_eq!(ACTIVE_REQUESTS.load(Ordering::Acquire), 0);\n    }\n\n    fn live_request(provider: Provider) -> ChatRequest {
+    fn concurrency_permit_is_released_and_limit_is_explicit() {
+        let permit = acquire_request_permit("test").expect("permit under limit");
+        assert!(ACTIVE_REQUESTS.load(Ordering::Acquire) > 0);
+        drop(permit);
+        assert_eq!(ACTIVE_REQUESTS.load(Ordering::Acquire), 0);
+    }
+
+    fn live_request(provider: Provider) -> ChatRequest {
         ChatRequest {
             provider,
             model: None,
