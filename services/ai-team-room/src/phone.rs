@@ -239,6 +239,11 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     let endpoint_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status<>'REVOKED')"
     ).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
+    if !endpoint_exists {
+        let endpoint_id_claimed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
+            .bind(request.endpoint_id).fetch_one(&mut *tx).await?;
+        if endpoint_id_claimed { return Err(PhoneError::Conflict); }
+    }
     if endpoint_exists {
         sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='ATTACHED',metadata=$2,last_seen_at=NOW(),detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
             .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
