@@ -1,0 +1,53 @@
+name: AI-PHONE-01 Tenant Isolation Fix
+
+on:
+  push:
+    branches:
+      - fix/ai-phone-01-tenant-isolation
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-tenant-isolation-fix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-16-security:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_isolation_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_isolation_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_isolation_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm disposable PostgreSQL 16
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SHOW transaction_read_only;"
+      - name: Cargo check
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Full PostgreSQL integration and adversarial suite
+        run: cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ai-phone-tenant-isolation.log
+        shell: bash
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-tenant-isolation-fix-${{ github.run_id }}
+          path: ai-phone-tenant-isolation.log
+          if-no-files-found: warn
+          retention-days: 14
