@@ -69,9 +69,7 @@ INSERT INTO ai_identity_tenants(ai_id, tenant_id) SELECT DISTINCT ai_id, tenant_
 ALTER TABLE ai_phones ADD COLUMN tenant_id UUID;
 ALTER TABLE ai_phones DROP CONSTRAINT ai_phones_ai_id_key;
 CREATE TEMP TABLE ai_phone_tenant_backfill ON COMMIT DROP AS
-SELECT p.ai_phone_id AS legacy_phone_id, p.ai_id, p.current_task_id AS legacy_current_task_id,
-       p.current_mission_id AS legacy_current_mission_id, ip.tenant_id,
-       p.ai_phone_id AS target_phone_id
+SELECT p.ai_phone_id AS legacy_phone_id, p.ai_id, ip.tenant_id
 FROM ai_phones p
 JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id;
 
