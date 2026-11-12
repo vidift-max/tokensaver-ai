@@ -38,7 +38,7 @@ jobs:
       - run: npm install
       - run: npm run test:missions
       - name: Syntax-check benchmark probes
-        run: node --check scripts/benchmark/team-room-http.mjs && node --check scripts/benchmark/team-room-websocket.mjs && node --check scripts/benchmark/seed-team-room.mjs
+        run: node --check scripts/benchmark/team-room-http.mjs && node --check scripts/benchmark/team-room-websocket.mjs && node --check scripts/benchmark/seed-team-room.mjs && node --check scripts/benchmark/redact-service-log.mjs
       - run: npm run build
       - name: Package source ZIP
         run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
