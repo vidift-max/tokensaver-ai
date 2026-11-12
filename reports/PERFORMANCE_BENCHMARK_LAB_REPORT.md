@@ -260,3 +260,100 @@ The reproducible benchmark tools are committed, and existing correctness/integra
 
 Do not merge PR #6 as proof of performance improvement. Run the probes against a dedicated provisioned staging environment, attach raw outputs and exact-SHA provenance, then make only evidence-backed optimizations.
 </summary>
+
+
+---
+
+# CHECKPOINT_PARTIAL — 2026-11-12
+
+## Estado retomável da execução Mission 9.1
+
+**CHECKPOINT_PARTIAL — missão NÃO concluída.** Nenhum merge foi realizado. Nenhum trabalho, migration, teste, relatório ou artefato foi revertido ou descartado.
+
+- Branch: `mission-9/performance-benchmark-lab`
+- PR: #6 — aberto, sem merge
+- SHA exato observado antes deste registro: `b167b5f53f86d8634ebd7b66cf4bd9f7482af9b4`
+- Este commit altera somente este relatório. O SHA do commit de checkpoint será o novo HEAD; o SHA acima identifica o estado de código antes da atualização documental.
+
+### O que foi concluído
+
+1. O laboratório isolado foi executado no GitHub Actions, não apenas validado sintaticamente.
+2. No workflow TokenSaver AI CI #722, run `43219293235`, o job `team-room-performance-benchmark` terminou **success**. Os logs comprovam:
+   - PostgreSQL 16 iniciado em container;
+   - Team Room service compilado e iniciado;
+   - fixture de benchmark semeada;
+   - geração de planos PostgreSQL via `scripts/benchmark/team-room-postgres.sql`;
+   - snapshots de estatísticas PostgreSQL antes/depois da carga HTTP e após WebSocket;
+   - três execuções do benchmark HTTP read + heartbeat;
+   - uma execução de HTTP message writes;
+   - execução do benchmark WebSocket fanout/heartbeat com oito participantes independentes;
+   - coleta de amostras de recursos e logs sanitizados;
+   - upload dos resultados brutos.
+3. Artefato bruto do job:
+   - Nome: `team-room-performance-benchmark-43219293235`
+   - Artifact ID: `13944119889`
+   - SHA-256 do ZIP: `4ad05211bf5f61e825853c52d19aff70d88999dfa5a1368ddba642e326f89f81`
+   - Retenção configurada pelo workflow: 14 dias.
+4. No SHA atual `b167b5f...`, o CI #736 / run `43223918572` terminou **success**; os jobs Linux foundation, Windows foundation, Team Room service e Keycloak/OIDC terminaram sem falhas.
+5. No mesmo SHA, Distributed Runner PostgreSQL Lab #259 / run `43223918506` terminou **success**.
+6. O PR #6 continua aberto. Nenhum merge foi executado.
+
+### O que está parcialmente concluído
+
+- **HTTP:** carga real contra o Team Room service foi executada em três repetições de leitura/heartbeat e uma carga de escrita de mensagens. Os arquivos JSON brutos foram preservados no artefato. Os percentis, throughput e taxa de erro ainda precisam ser extraídos, conferidos e incorporados ao relatório final.
+- **WebSocket/fanout:** o probe real com oito participantes foi executado e o JSON bruto foi preservado. O cenário executado foi de uma sala; não comprova fanout multi-room, isolamento sob carga multi-room nem custo comparativo do canal global.
+- **PostgreSQL:** SQL de planos e snapshots de estatísticas foram executados e preservados. Os planos, buffers, WAL, índices, waits e cardinalidades ainda precisam ser examinados antes de qualquer conclusão de gargalo.
+- **Heartbeat/presence:** foi exercitado nos cenários HTTP e WebSocket. A quantificação separada de eventos `PRESENCE_CHANGED`, broadcasts e writes atribuíveis exclusivamente ao heartbeat ainda não foi consolidada.
+- **Ambiente:** trata-se de benchmark isolado em CI com PostgreSQL 16 e credenciais efêmeras; não é benchmark de produção nem capacidade de produção.
+- **Entrega de relatórios:** não há evidência de fluxo externo completo com destinatário IA externo, ACK de destinatário, retry durável e recovery end-to-end. Persistência de mensagem no Team Room não comprova entrega externa.
+- **Comunicação entre IAs externas:** não validada. O teste de WebSocket comprova transporte/fanout entre sessões autenticadas de teste, não agentes externos independentes conversando.
+
+### O que não foi iniciado ou não foi comprovado
+
+- Extração/análise numérica dos arquivos JSON e SQL do artefato #722.
+- Benchmark multi-room com eventos simultâneos e mensuração quantitativa do custo de notificações globais irrelevantes.
+- Experimento isolado de heartbeat com contagem exata de `PRESENCE_CHANGED`, broadcasts e writes.
+- Análise detalhada de locks/waits e cardinalidades do PostgreSQL sob cenários concorrentes.
+- Fluxo de entrega de relatório a destinatário externo com ACK/retry/recovery/idempotência/ordenação.
+- Benchmark antes/depois de qualquer otimização. Nenhuma otimização de desempenho foi justificada ou implementada nesta execução.
+- Regressão de benchmark comparativa pós-otimização.
+
+### Testes e workflows — evidência disponível
+
+**Passaram:**
+- Job `team-room-performance-benchmark` do CI #722 / run `43219293235`: success.
+- CI #736 / run `43223918572`, SHA `b167b5f...`: success; Linux, Windows, Team Room service e Keycloak/OIDC.
+- Distributed Runner PostgreSQL Lab #259 / run `43223918506`, SHA `b167b5f...`: success.
+
+**Falhas intermediárias conhecidas:**
+- Uma execução anterior do benchmark (#647, conforme histórico do PR) falhou durante o seeding por literais UUID não delimitados; a falha ocorreu antes de enviar carga. O seeder foi corrigido e uma execução posterior (#722) concluiu o job de benchmark com sucesso.
+- Houve falha transitória de provisionamento de dependências Linux por mirror HTTP indisponível; o workflow foi ajustado para usar mirror HTTPS e o CI #736 no SHA atual passou.
+- Não há falha conhecida nos workflows finais #736/#259 do SHA atual.
+
+**Ainda executando no momento deste checkpoint:** nenhum workflow associado ao SHA atual `b167b5f...` — ambos os workflows observados terminaram success. A execução longa está interrompida por solicitação; não foram iniciadas novas execuções.
+
+### Comandos e operações executados (resumo verificável nos logs)
+
+- `cargo build` do serviço Team Room, conforme step “Build Team Room service”.
+- Inicialização do serviço Team Room em `127.0.0.1:8081`.
+- `node scripts/benchmark/seed-team-room.mjs`.
+- `psql ... -f scripts/benchmark/team-room-postgres.sql`.
+- `psql ... -f scripts/benchmark/team-room-postgres-stats.sql` antes/depois das cargas.
+- `node scripts/benchmark/team-room-http.mjs` — três repetições read/heartbeat e uma execução message writes.
+- `node scripts/benchmark/team-room-websocket.mjs`.
+- Coleta de CPU/memória, logs sanitizados e upload do diretório `benchmark-artifacts/`.
+- CI e Distributed Runner workflows executados pelo GitHub Actions.
+
+### Próximos passos obrigatórios para retomada
+
+1. Baixar e inspecionar o artefato #722 (`13944119889`); validar JSONs, SQL plans, snapshots e amostras de recursos.
+2. Extrair e registrar requests, throughput, erros, p50/p95/p99/max, concorrência e duração para cada cenário HTTP; preservar os arquivos brutos e identificar a configuração exata.
+3. Extrair métricas WebSocket de entrega, atraso, perda e duplicação. Registrar explicitamente que o cenário atual é single-room.
+4. Interpretar EXPLAIN/ANALYZE/BUFFERS/WAL e estatísticas PostgreSQL; não inferir gargalos sem os planos e counters.
+5. Delimitar o que o experimento atual permite afirmar sobre heartbeat; executar cenário dedicado se for necessário atribuir causalidade.
+6. Implementar multi-room somente se necessário e seguro para testar o custo do canal global; não alterar o mecanismo de notificação sem evidência.
+7. Documentar a lacuna de entrega externa de relatórios e especificar o destinatário/contrato de ACK antes de implementar infraestrutura.
+8. Executar regressão completa e novo benchmark apenas após alterações justificadas por dados.
+9. Atualizar este relatório com resultados numéricos derivados dos artefatos e decidir GO / GO CONDITIONED / NO-GO. Até lá, manter **NO-GO** para sign-off de desempenho e entrega externa.
+
+**Classificação do checkpoint:** laboratório executado e artefato preservado — **TESTADO**; resultados quantitativos ainda não analisados — **PENDENTE**; entrega externa de relatórios — **PENDENTE**; missão — **CHECKPOINT_PARTIAL / NO-GO**.
