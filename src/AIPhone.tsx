@@ -127,7 +127,7 @@ export default function AIPhone({ apiUrl, token }: Props) {
     try {
       const identity = await request<AuthIdentity>("/auth/me");
       setPrincipalId(identity.principal_id);
-      await request<PhoneSnapshot>("/ai-phone/provision", {
+      await request<{ ai_phone_id: string }>("/ai-phone/provision", {
         method: "POST",
         body: JSON.stringify({ principal_id: identity.principal_id })
       });
