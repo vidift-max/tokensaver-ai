@@ -426,16 +426,18 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let human_mapping = sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(sender).execute(&pool).await;
     assert!(human_mapping.is_err(), "a HUMAN principal must never bind to a global AI identity");
+    let next_sequence:i64=sqlx::query_scalar("SELECT COALESCE(MAX(sequence_no),0)+1 FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2")
+        .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
     let message_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,2,'offline-msg-1',$6)")
-        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id)
+    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7)")
+        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     let state: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(state,"PENDING");
 
-    let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,3,'offline-msg-1',$6) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id)
+    let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
+        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence+1)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     assert_eq!(duplicate.rows_affected(),0);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key='offline-msg-1'")
