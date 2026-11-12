@@ -542,10 +542,13 @@ async fn sent_message_list_handler(State(pool): State<PgPool>, headers: HeaderMa
     -> Result<Json<Vec<PhoneMessage>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
     require_permission(&pool, &identity, "phone.message.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
     let rows = sqlx::query_as::<_, PhoneMessage>(
         "SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE tenant_id=$1 AND sender_principal_id=$2 ORDER BY created_at DESC LIMIT 200"
-    ).bind(identity.tenant_id).bind(identity.principal_id).fetch_all(&pool).await
+    ).bind(identity.tenant_id).bind(identity.principal_id).fetch_all(&mut *tx).await
       .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(rows))
 }
 
