@@ -629,7 +629,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert!(guard,"a legacy global phone shared by two tenant bindings must be detected");
     let guard_sql=format!("DO $ BEGIN IF EXISTS(SELECT p.ai_phone_id FROM ai_phones p JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id WHERE p.ai_phone_id='{}' GROUP BY p.ai_phone_id HAVING COUNT(DISTINCT ip.tenant_id)>1) THEN RAISE EXCEPTION 'AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants'; END IF; END $;",guard_phone_id);
     let blocked=sqlx::query(&guard_sql).execute(&pool).await;
-    assert!(blocked.is_err(),"the migration guard must abort before a shared legacy phone is rekeyed");
+    let guard_error=blocked.expect_err("the real PostgreSQL DO block must reject the shared legacy phone");
+    assert!(
+        guard_error.to_string().contains("AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants"),
+        "expected the explicit AI-PHONE migration guard; got a different database error: {guard_error}"
+    );
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(guard_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1").bind(guard_ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(guard_ai_id).execute(&pool).await.unwrap();
