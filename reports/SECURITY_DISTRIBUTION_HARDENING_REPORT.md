@@ -134,3 +134,90 @@ No test or workflow result from a superseded SHA is represented as validation of
 # NO-GO
 
 Do not distribute this build to customers as a signed or securely auto-updating release. The unsigned NSIS artifact, if successfully produced, is internal QA only. Keep PR #2 unmerged until the candidate workflows complete and the external signing/update dependencies and desktop authentication requirements are resolved.
+
+---
+
+## CHECKPOINT_PARTIAL — Mission 7 execution paused
+
+**Checkpoint captured:** 2026-11-12  
+**Mission state:** PARTIAL — do not treat as completed or release-approved.  
+**Product branch:** `mission-7/security-distribution-hardening`  
+**Exact branch HEAD at checkpoint:** `b63b1d73f68312ae2128ad476e750f7ae8bf9c90`  
+**Base branch / PR target:** `v2-saas-alpha` at `e18557c65753714bf926845639526b22c0309826`  
+**PR:** [#2 — Security & Distribution Hardening](https://github.com/vidift-max/tokensaver-ai/pull/2) — OPEN, DRAFT. No merge was performed.
+
+### Preservation status
+
+No rollback, merge, PR closure, branch deletion, or commit discard was performed for this checkpoint. Existing branch commits, code, tests, docs, report, workflows, and CI artifacts are preserved. The report update itself is a documentation-only commit on the same mission branch.
+
+### Work completed / partially completed
+
+- **IMPLEMENTADO:** Team Room desktop client security hardening, including stricter endpoint/config validation and in-memory session handling. The current client change also clears the injected environment token source after an HTTP 401, not only the client's copied token.
+- **IMPLEMENTADO:** server-side Team Room configuration/security validation and associated security regression tests.
+- **IMPLEMENTADO:** recovery-worker/client security changes and dedicated security test script.
+- **IMPLEMENTADO:** CI coverage for Linux, Windows, Team Room PostgreSQL integration, Keycloak/OIDC smoke, and an explicitly **unsigned internal-QA-only** Windows NSIS installer build.
+- **IMPLEMENTADO:** distributed-runner evidence metadata now distinguishes source/head SHA from the GitHub Actions merge SHA, preventing PR merge-ref SHA from being misrepresented as the tested source commit.
+- **IMPLEMENTADO:** explicit test-mode and loopback HTTP opt-in in the Mission Runner local test fixture; this fixed a regression test failure caused by the new safe-by-default endpoint policy.
+- **DOCUMENTADO:** security/distribution policy and a preliminary hardening report.
+- **PENDENTE:** final independent review of every changed security-sensitive path, comprehensive artifact inspection, and confirmation that the report's claims match the downloaded artifacts.
+- **PENDENTE — DEPENDÊNCIA EXTERNA:** production signing identity/certificate and protected signing workflow. The CI installer is unsigned and internal QA only.
+- **PENDENTE — DEPENDÊNCIA EXTERNA:** production update endpoint/metadata, signed update verification, downgrade protection, and tested rollback. No secure production auto-update has been proven.
+- **PENDENTE:** final release security gate and decision on whether remaining security/distribution blockers justify NO-GO or GO CONDITIONED. This checkpoint is not that decision.
+
+### Exact CI evidence at checkpoint
+
+Both latest PR workflows completed successfully against exact head SHA `b63b1d73f68312ae2128ad476e750f7ae8bf9c90`:
+
+1. [TokenSaver AI CI — run 43198969992](https://github.com/vidift-max/tokensaver-ai/actions/runs/43198969992) — **SUCCESS**.
+   - Linux foundation: `cargo check`, `cargo test`, `npm run test:missions`, `npm run build`, source ZIP packaging/upload — PASS.
+   - Team Room service with PostgreSQL integration — PASS.
+   - Windows foundation: BAT smoke, `cargo check`, `cargo test`, `npm run test:missions`, `npm run build` — PASS.
+   - Keycloak/OIDC smoke: discovery, client-credentials token, JWKS signature, token exchange, session, authorization, PostgreSQL admission — PASS.
+   - `desktop-nsis-unsigned`: Windows NSIS build, unsigned status/SHA-256 verification, internal-QA artifact upload — PASS. This proves buildability, **not** publisher authenticity or commercial installer trust.
+2. [Distributed Runner PostgreSQL Lab — run 43198970015](https://github.com/vidift-max/tokensaver-ai/actions/runs/43198970015) — **SUCCESS**.
+   - PostgreSQL 16 readiness, Rust lease/fencing integration, authenticated handoff/recovery integration, real Team Room service build, two independent Mission Runner processes, evidence consolidation and proof gate — PASS.
+
+Earlier workflow attempts on intermediate SHAs were cancelled or superseded. At least one intermediate CI attempt exposed a fixture incompatibility with safe-by-default endpoint validation; the fixture was explicitly updated to opt into test mode and loopback HTTP. Do not treat cancelled runs as passes or failures of the final SHA. No workflow was still running when this checkpoint was captured; the two latest runs above are completed.
+
+### Commands / execution evidence
+
+No local shell command or local test execution is claimed in this checkpoint. Changes were made through GitHub repository file/commit operations. The CI workflow logs show the actual commands/steps executed, including:
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm install`
+- `npm run test:missions`
+- `npm run build`
+- Team Room service unit and PostgreSQL integration test step
+- ephemeral Keycloak OIDC/JWKS/token/session/admission smoke steps
+- PostgreSQL 16 lease/fencing, authenticated handoff/recovery, and independent Runner process steps
+- Windows NSIS installer build and unsigned/SHA-256 verification steps
+
+### Changed files present in PR #2 at checkpoint
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/distributed-runner-lab.yml`
+- `docs/SECURITY_DISTRIBUTION.md`
+- `package.json`
+- `reports/SECURITY_DISTRIBUTION_HARDENING_REPORT.md`
+- `scripts/distributed-runner-process-e2e.mjs`
+- `scripts/team-room-client.mjs`
+- `scripts/team-room-recovery-worker.mjs`
+- `scripts/team-room-security.mjs`
+- `services/ai-team-room/Cargo.toml`
+- `services/ai-team-room/src/main.rs`
+- `src/TeamRoom.tsx`
+- `tests/mission-runner.test.mjs`
+- `tests/team-room-security.test.mjs`
+
+### Not completed / not proven
+
+- No production-signed installer exists as proven evidence in this mission.
+- No signing certificate, private signing key, or protected production signing environment was provisioned; do not fabricate or commit one.
+- No verified secure auto-update flow, signed update metadata, anti-downgrade enforcement, or rollback proof is established.
+- Artifact inspection must be completed for every relevant artifact, not inferred from successful upload or filename.
+- A passing CI does not prove production desktop ↔ Team Room deployment, live TLS/certificate operations, production secret handling, or commercial release readiness.
+- No merge or production release authorization is granted by this checkpoint.
+
+### Resumption instructions
+
+Resume from branch `mission-7/security-distribution-hardening` at `b63b1d73f68312ae2128ad476e750f7ae8bf9c90`. First verify branch HEAD and PR #2 state, then inspect the current report and all changed files before further edits. Continue the remaining artifact/secrets inspection and release-gate evidence; do not repeat successful CI unnecessarily unless the source SHA changes or a missing proof requires a targeted run. Preserve the unsigned status of the current NSIS artifact and keep signing/update dependencies explicitly pending until real external infrastructure and cryptographic verification exist.
