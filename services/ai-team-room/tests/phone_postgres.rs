@@ -258,7 +258,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_c),Some(serde_json::json!({
         "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
     }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot be replayed or reattached");
+    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot be reattached");
+    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
+        "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint-replay"}
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint UUID cannot be registered again");
     let duplicate_principal=Uuid::new_v4();
     sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','duplicate-test',$3)")
         .bind(duplicate_principal).bind(foreign_tenant).bind(format!("duplicate-subject-{duplicate_principal}"))
