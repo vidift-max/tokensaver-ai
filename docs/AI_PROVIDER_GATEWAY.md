@@ -51,4 +51,4 @@ Retryability is classified for HTTP 429 and 5xx responses only. No automatic ret
 
 Unit tests cover request validation, provider request/response mapping, usage normalization, capability declarations, model-name validation and retry classification. They are structural tests and do not call external providers.
 
-Live integration requires separately provisioned provider credentials and explicit execution. No provider API call is claimed by this mission until such a call is actually performed.
+Live integration requires separately provisioned provider credentials and explicit execution. No provider API call is claimed by this mission until such a call is actually performed. Four ignored live smoke tests are provided in the Rust module; run them individually with `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored <test_name>` only after configuring the matching credential and model environment variables. Each test makes a real provider request and may incur usage charges.
