@@ -1,11 +1,11 @@
-use crate::auth::{authenticate_session, AuthenticatedIdentity};
+use ai_team_room_service::auth::{authenticate_session, AuthenticatedIdentity, AuthError};
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -120,9 +120,9 @@ fn status(error: PhoneError) -> StatusCode {
     }
 }
 
-fn auth_status(error: crate::auth::AuthError) -> StatusCode {
+fn auth_status(error: AuthError) -> StatusCode {
     match error {
-        crate::auth::AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
+        AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
         crate::auth::AuthError::Forbidden | crate::auth::AuthError::IdentityUnavailable => StatusCode::FORBIDDEN,
         crate::auth::AuthError::RoomUnavailable => StatusCode::NOT_FOUND,
         crate::auth::AuthError::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
