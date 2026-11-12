@@ -17,6 +17,13 @@ BEGIN
     IF EXISTS (SELECT 1 FROM phone_mission_links l LEFT JOIN team_tasks t ON t.task_id=l.task_id WHERE t.task_id IS NULL) THEN
         RAISE EXCEPTION 'AI-PHONE-01 migration blocked: mission link references a missing Team Room task';
     END IF;
+    IF EXISTS (
+        SELECT 1 FROM phone_mission_links l JOIN ai_phones p ON p.ai_phone_id=l.ai_phone_id
+        JOIN team_tasks t ON t.task_id=l.task_id
+        WHERE NOT EXISTS (SELECT 1 FROM ai_identity_principals ip WHERE ip.ai_id=p.ai_id AND ip.tenant_id=t.tenant_id)
+    ) THEN
+        RAISE EXCEPTION 'AI-PHONE-01 migration blocked: mission task tenant has no binding for the linked global AI';
+    END IF;
 END $$;
 
 CREATE TABLE ai_identity_tenants (
@@ -30,7 +37,8 @@ INSERT INTO ai_identity_tenants(ai_id, tenant_id) SELECT DISTINCT ai_id, tenant_
 ALTER TABLE ai_phones ADD COLUMN tenant_id UUID;
 ALTER TABLE ai_phones DROP CONSTRAINT ai_phones_ai_id_key;
 CREATE TEMP TABLE ai_phone_tenant_backfill ON COMMIT DROP AS
-SELECT p.ai_phone_id AS legacy_phone_id, p.ai_id, tenants.tenant_id,
+SELECT p.ai_phone_id AS legacy_phone_id, p.ai_id, p.current_task_id AS legacy_current_task_id,
+       p.current_mission_id AS legacy_current_mission_id, tenants.tenant_id,
        CASE WHEN row_number() OVER (PARTITION BY p.ai_id ORDER BY tenants.tenant_id)=1
             THEN p.ai_phone_id ELSE gen_random_uuid() END AS target_phone_id,
        row_number() OVER (PARTITION BY p.ai_id ORDER BY tenants.tenant_id) AS tenant_ordinal
@@ -39,20 +47,19 @@ JOIN (SELECT DISTINCT ai_id, tenant_id FROM ai_identity_principals) tenants ON t
 
 UPDATE ai_phones p
 SET tenant_id=m.tenant_id,
-    current_task_id=CASE WHEN t.tenant_id=m.tenant_id THEN p.current_task_id ELSE NULL END,
-    current_mission_id=CASE WHEN t.tenant_id=m.tenant_id THEN p.current_mission_id ELSE NULL END
+    current_task_id=CASE WHEN (SELECT t.tenant_id FROM team_tasks t WHERE t.task_id=m.legacy_current_task_id)=m.tenant_id THEN m.legacy_current_task_id ELSE NULL END,
+    current_mission_id=CASE WHEN (SELECT t.tenant_id FROM team_tasks t WHERE t.task_id=m.legacy_current_task_id)=m.tenant_id THEN m.legacy_current_mission_id ELSE NULL END
 FROM ai_phone_tenant_backfill m
-LEFT JOIN team_tasks t ON t.task_id=p.current_task_id
 WHERE p.ai_phone_id=m.legacy_phone_id AND m.tenant_ordinal=1;
 
 INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at)
 SELECT m.target_phone_id,p.ai_id,m.tenant_id,p.phone_status,p.version,p.endpoint_fence,
-       CASE WHEN t.tenant_id=m.tenant_id THEN p.current_mission_id ELSE NULL END,
-       CASE WHEN t.tenant_id=m.tenant_id THEN p.current_task_id ELSE NULL END,
+       CASE WHEN t.tenant_id=m.tenant_id THEN m.legacy_current_mission_id ELSE NULL END,
+       CASE WHEN t.tenant_id=m.tenant_id THEN m.legacy_current_task_id ELSE NULL END,
        p.last_seen_at,p.created_at,p.updated_at
 FROM ai_phone_tenant_backfill m
 JOIN ai_phones p ON p.ai_phone_id=m.legacy_phone_id
-LEFT JOIN team_tasks t ON t.task_id=p.current_task_id
+LEFT JOIN team_tasks t ON t.task_id=m.legacy_current_task_id
 WHERE m.tenant_ordinal>1;
 
 UPDATE phone_messages m SET ai_phone_id=b.target_phone_id
@@ -80,6 +87,9 @@ FROM team_tasks t WHERE t.task_id=l.task_id;
 UPDATE phone_mission_links l SET ai_phone_id=b.target_phone_id
 FROM ai_phone_tenant_backfill b
 WHERE b.legacy_phone_id=l.ai_phone_id AND b.tenant_id=l.tenant_id;
+UPDATE ai_phones p SET current_task_id=l.task_id,current_mission_id=t.mission_id
+FROM phone_mission_links l JOIN team_tasks t ON t.task_id=l.task_id AND t.tenant_id=l.tenant_id
+WHERE p.ai_phone_id=l.ai_phone_id AND p.tenant_id=l.tenant_id;
 
 UPDATE ai_phones p SET current_task_id=NULL,current_mission_id=NULL
 WHERE p.current_task_id IS NOT NULL
