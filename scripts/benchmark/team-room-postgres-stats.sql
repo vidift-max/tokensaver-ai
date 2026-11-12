@@ -44,11 +44,15 @@ SELECT json_build_object(
     )
     FROM pg_stat_wal
   ),
-  'active_waits', (
-    SELECT count(*)
+  'waits', (
+    SELECT json_build_object(
+      'lock_waiting_backends',count(*) FILTER (WHERE wait_event_type='Lock'),
+      'non_lock_waiting_backends',count(*) FILTER (WHERE wait_event_type IS NOT NULL AND wait_event_type<>'Lock'),
+      'active_queries_waiting',count(*) FILTER (WHERE state='active' AND wait_event_type IS NOT NULL),
+      'ungranted_locks',(SELECT count(*) FROM pg_locks WHERE NOT granted)
+    )
     FROM pg_stat_activity
     WHERE datname=current_database()
       AND pid<>pg_backend_pid()
-      AND wait_event_type IS NOT NULL
   )
 )::text;
