@@ -71,10 +71,11 @@ export default function AIPhone({ apiUrl, token }: Props) {
       const inboxPromise = current.attachment?.attachment_status === "ACTIVE"
         ? request<PhoneMessage[]>("/ai-phone/" + current.phone.ai_phone_id + "/messages")
         : Promise.resolve([] as PhoneMessage[]);
+      const receivedPromise = request<PhoneMessage[]>("/ai-phone/received").catch(() => [] as PhoneMessage[]);
       const sentPromise = request<PhoneMessage[]>("/ai-phone/sent").catch(() => [] as PhoneMessage[]);
-      const [inbox, sent] = await Promise.all([inboxPromise, sentPromise]);
+      const [inbox, received, sent] = await Promise.all([inboxPromise, receivedPromise, sentPromise]);
       const unique = new Map<string, PhoneMessage>();
-      for (const message of [...inbox, ...sent]) unique.set(message.message_id, message);
+      for (const message of [...inbox, ...received, ...sent]) unique.set(message.message_id, message);
       setMessages([...unique.values()].sort((a, b) => a.created_at.localeCompare(b.created_at)));
       const active = current.attachment?.attachment_status === "ACTIVE";
       setAttached(Boolean(active));
