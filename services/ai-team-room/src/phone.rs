@@ -615,6 +615,7 @@ pub async fn provision_ai_identity(
         return Err(PhoneError::Invalid);
     }
     let mut tx = pool.begin().await?;
+    validate_live_binding(&mut tx, caller).await?;
     let target_is_ai: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM principals WHERE tenant_id=$1 AND principal_id=$2 AND principal_kind='AI' AND enabled=TRUE)"
     ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
