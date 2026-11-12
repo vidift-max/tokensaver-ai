@@ -1,9 +1,9 @@
-name: AI-PHONE-01 Tenant Isolation Fix
+name: AI-PHONE-03 Consolidated AI Phone + Team Room
 
 on:
   push:
     branches:
-      - fix/ai-phone-01-tenant-isolation
+      - mission/ai-phone-03-consolidation
 
 permissions:
   contents: read
