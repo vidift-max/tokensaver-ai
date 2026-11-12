@@ -413,8 +413,84 @@ async fn transfer_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(r
             PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
+
+#[derive(Debug, Deserialize)]
+pub struct IdentityProvisionRequest {
+    pub identity_key: String,
+    pub identity_kind: String,
+    pub display_label: String,
+    pub tenant_id: Uuid,
+    pub principal_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IdentityProvisionResult {
+    pub ai_id: Uuid,
+    pub tenant_id: Uuid,
+    pub principal_id: Uuid,
+}
+
+pub async fn provision_ai_identity(
+    pool: &PgPool,
+    caller: &AuthenticatedIdentity,
+    request: IdentityProvisionRequest,
+) -> Result<IdentityProvisionResult, PhoneError> {
+    require_permission(pool, caller, "ai.identity.provision").await.map_err(|_| PhoneError::Forbidden)?;
+    if request.identity_key.trim().is_empty() || request.identity_key.len() > 200
+        || request.display_label.trim().is_empty() || request.display_label.len() > 120
+        || !matches!(request.identity_kind.as_str(), "TEST" | "EXTERNAL") {
+        return Err(PhoneError::Invalid);
+    }
+    let mut tx = pool.begin().await?;
+    let target_is_ai: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM principals WHERE tenant_id=$1 AND principal_id=$2 AND principal_kind='AI' AND enabled=TRUE)"
+    ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
+    if !target_is_ai { return Err(PhoneError::Forbidden); }
+    let ai_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,$3,$4)")
+        .bind(ai_id).bind(&request.identity_key).bind(&request.identity_kind).bind(&request.display_label)
+        .execute(&mut *tx).await.map_err(|error| {
+            if let sqlx::Error::Database(db) = &error {
+                if db.code().as_deref() == Some("23505") { return PhoneError::Conflict; }
+            }
+            PhoneError::Database(error)
+        })?;
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(ai_id).bind(request.tenant_id).bind(request.principal_id)
+        .execute(&mut *tx).await.map_err(|error| {
+            if let sqlx::Error::Database(db) = &error {
+                if db.code().as_deref() == Some("23505") { return PhoneError::Conflict; }
+            }
+            PhoneError::Database(error)
+        })?;
+    sqlx::query("INSERT INTO audit_events(audit_event_id,tenant_id,room_id,actor_principal_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,$3,$4,'ai.identity.provisioned','ai_identity',$5,'SUCCESS',$6)")
+        .bind(Uuid::new_v4()).bind(caller.tenant_id).bind(caller.room_id).bind(caller.principal_id)
+        .bind(ai_id).bind(serde_json::json!({"target_tenant_id":request.tenant_id,"target_principal_id":request.principal_id,"identity_kind":request.identity_kind}))
+        .execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(IdentityProvisionResult { ai_id, tenant_id: request.tenant_id, principal_id: request.principal_id })
+}
+
+async fn provision_identity_handler(
+    State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<IdentityProvisionRequest>,
+) -> Result<(StatusCode, Json<IdentityProvisionResult>), StatusCode> {
+    let caller = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    provision_ai_identity(&pool, &caller, request).await
+        .map(|result| (StatusCode::CREATED, Json(result)))
+        .map_err(|error| match error {
+            PhoneError::NotFound => StatusCode::NOT_FOUND,
+            PhoneError::Forbidden => StatusCode::FORBIDDEN,
+            PhoneError::Conflict => StatusCode::CONFLICT,
+            PhoneError::Invalid => StatusCode::BAD_REQUEST,
+            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+            PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        })
+}
+
 pub fn router(pool: PgPool) -> Router {
     Router::new()
+        .route("/ai-phone/identities", post(provision_identity_handler))
         .route("/ai-phone/me", get(get_phone_handler))
         .route("/ai-phone/attach", post(attach_handler))
         .route("/ai-phone/detach", post(detach_handler))
