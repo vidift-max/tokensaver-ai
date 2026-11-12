@@ -249,9 +249,10 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
             .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
             .execute(&mut *tx).await?;
     } else {
-        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,last_seen_at) VALUES($1,$2,$3,$4,$5,'ATTACHED',$6,NOW())")
+        let inserted=sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,last_seen_at) VALUES($1,$2,$3,$4,$5,'ATTACHED',$6,NOW()) ON CONFLICT(endpoint_id) DO NOTHING")
             .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(&request.endpoint_type).bind(&request.metadata)
             .execute(&mut *tx).await?;
+        if inserted.rows_affected()==0 { return Err(PhoneError::Conflict); }
     }
     let next_fence = phone.endpoint_fence + 1;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=$1,phone_status=$2,version=version+1,last_seen_at=NOW(),updated_at=NOW() WHERE ai_phone_id=$3 AND tenant_id=$4 AND ai_id=$5")
@@ -401,9 +402,10 @@ async fn register_endpoint_handler(
             .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
-        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,$5,'REGISTERED',$6)")
+        let inserted=sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,$5,'REGISTERED',$6) ON CONFLICT(endpoint_id) DO NOTHING")
             .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(&request.endpoint_type).bind(&request.metadata)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if inserted.rows_affected()==0 { return Err(StatusCode::CONFLICT); }
     }
     record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REGISTERED","phone.endpoint.registered",
         serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_type":request.endpoint_type}))
