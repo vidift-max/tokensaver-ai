@@ -29,6 +29,7 @@ const room = encodeURIComponent(roomId);
 const routes = [
   ["messages_history_unread", "GET", `/team-room/${room}/messages?limit=50`],
   ["presence", "GET", `/team-room/${room}/presence`],
+  ["heartbeat", "POST", "/team-room/heartbeat", {}],
   ["participants", "GET", `/team-room/${room}/participants`],
   ["tasks", "GET", `/team-room/${room}/tasks`],
   ["decisions", "GET", `/team-room/${room}/decisions`],
