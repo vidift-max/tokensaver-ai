@@ -128,6 +128,7 @@ ALTER TABLE phone_messages
         REFERENCES ai_phones(ai_phone_id,tenant_id,ai_id) ON DELETE RESTRICT;
 CREATE INDEX phone_messages_tenant_inbox_idx ON phone_messages(tenant_id,ai_phone_id,sequence_no)
     WHERE message_state IN ('PENDING','DELIVERED');
+CREATE INDEX phone_messages_sender_history_idx ON phone_messages(tenant_id,sender_principal_id,created_at DESC);
 
 CREATE UNIQUE INDEX team_tasks_task_tenant_room_unique ON team_tasks(task_id,tenant_id,room_id);
 ALTER TABLE phone_mission_links
