@@ -83,6 +83,8 @@ function record(messageId, client, at) {
 
 try {
   await Promise.all(sockets.map(waitOpen));
+  // Let each upgraded connection finish opening its dedicated PostgreSQL LISTEN subscription.
+  await new Promise(resolve => setTimeout(resolve, 500));
   const writeStart = performance.now();
   for (let i = 0; i < messages; i++) {
     const clientMessageId = randomUUID();
