@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - mission/ai-phone-03-consolidation
+      - mission/ai-phone-06-p1-hardening
 
 permissions:
   contents: read
