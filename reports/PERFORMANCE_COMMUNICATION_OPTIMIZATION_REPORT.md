@@ -234,3 +234,163 @@ No regression is established. The new scheduler tests and full CI have not compl
 # NO-GO
 
 The Team Room refresh amplification fix and CI cache changes are committed on an isolated PR. The synthetic scheduler benchmark is encoded as a regression test, but candidate CI has not completed and no production latency, database or CI-duration gain has been measured. Do not merge or claim system-wide performance improvement until the exact candidate workflows pass and representative runtime/DB benchmarks are recorded.
+
+
+---
+
+# FINAL VALIDATION ADDENDUM — 2026-11-12
+
+This addendum supersedes the earlier pending CI statements above. The earlier sections are retained as the implementation-time record; the evidence below is the final validation result for the code SHA.
+
+## A. Exact validated code state
+
+- Repository: `vidift-max/tokensaver-ai`
+- PR: #4 — https://github.com/vidift-max/tokensaver-ai/pull/4
+- Branch: `mission-8/performance-communication-optimization`
+- Base: `v2-saas-alpha`
+- Base SHA: `e18557c65753714bf926845639526b22c0309826`
+- **Code SHA validated by CI and Distributed Runner:** `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`
+- Compare result before this report-only commit: 7 commits ahead, 0 behind, 7 changed files.
+- The report update below creates a new HEAD. It changes documentation only; it does not change the code SHA that the two workflows tested.
+
+## B. Round-by-round final evidence
+
+| Round | Scope | Final result | Evidence / limitation |
+|---|---|---|---|
+| 1 | Exact-SHA main CI | **PASS** | TokenSaver AI CI #610 / run `43200229347`, head SHA `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`; all four jobs completed successfully. |
+| 2 | Distributed Runner | **PASS** | Distributed Runner PostgreSQL Lab #133 / run `43200229767`, same head SHA; one integration job completed successfully and uploaded its evidence artifact. |
+| 3 | Coalescing | **VALIDATED — scheduler callback level** | Executed in Linux and Windows CI. 100 burst notifications resulted in one scheduled refresh callback. The test does not instrument HTTP requests. |
+| 4 | Scheduler tests | **PASS** | Four scheduler tests passed: 100-event burst; 20 events while refresh is active produce one trailing refresh; maximum active refresh count is one; cancellation prevents a scheduled callback; invalid delay windows rejected. |
+| 5 | Frontend / Tauri | **PARTIAL PASS** | Linux and Windows Rust tests, npm suite and frontend production build passed. Scheduler lifecycle tests passed. Full browser/WebSocket integration asserting initial/manual refresh and React unmount against a live UI was not present; those specific UI flows remain unmeasured as end-to-end behavior. |
+| 6 | Communication benchmark | **PENDING / BLOCKED as HTTP benchmark** | Scheduler unit workload executed and callback counts asserted. No HTTP mock/server instrumentation, request trace or elapsed end-to-end communication benchmark exists. Do not call 100→1 refresh callbacks an HTTP or production benchmark. |
+| 7 | PostgreSQL query benchmark | **BLOCKED** | CI PostgreSQL was used for service and Runner integration tests, not a representative Team Room query performance dataset. No EXPLAIN ANALYZE/BUFFERS, presence/unread query timings, lock/wait measurements or comparable dataset were captured. |
+| 8 | Regression | **PASS for CI-covered suites** | Linux, Windows, Team Room service, Keycloak/OIDC, Node, frontend build and Distributed Runner all passed. Recovery Worker is covered by existing mission/Rust suites; no dedicated production-like recovery throughput benchmark was run. |
+| 9 | Final gate | **NO-GO for performance release / GO CONDITIONED for code quality checks** | CI and distributed integration are green, but HTTP communication and PostgreSQL query benchmarks are absent, and complete live UI lifecycle integration is not demonstrated. |
+| 10 | Report | **UPDATED** | This addendum records the final workflow evidence. The report-only commit changes report HEAD; the tested code SHA remains explicitly identified above. |
+
+## C. TokenSaver AI CI #610 — final result
+
+**Workflow:** TokenSaver AI CI  
+**Run ID:** `43200229347`  
+**Conclusion:** `success`  
+**Head SHA:** `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`
+
+All jobs reached completed/success:
+
+| Job | Result | Recorded details |
+|---|---|---|
+| `foundation` (Ubuntu 24.04) | PASS | `cargo check`; `cargo test`; npm install; `npm run test:missions`; `npm run build`; source ZIP package/upload. |
+| `foundation-windows` | PASS | Windows BAT smoke; `cargo check`; `cargo test`; npm install; `npm run test:missions`; `npm run build`. |
+| `ai-team-room-service` | PASS | Independent service check and PostgreSQL-backed service tests. |
+| `keycloak-oidc-smoke` | PASS | Live Keycloak discovery, client-credentials token, JWKS/RS256 validation, exchange/session/authorization and PostgreSQL admission/replay checks. |
+
+### Test/build counts from job logs
+
+- Linux Rust: **86 passed, 0 failed**.
+- Windows Rust: **83 passed, 0 failed**.
+- Team Room service Rust test binaries: **6 + 8 + 3 + 4 passed; 0 failed**.
+- Node mission suite: **23 passed, 0 failed** on Linux.
+- Node mission suite: **23 passed, 0 failed** on Windows.
+- Scheduler subset: **4 passed** on each platform (included in the 23; do not add them again to the total).
+- Frontend build: passed on Linux (Vite reported 899 ms build step) and Windows (Vite reported 1.25 s build step).
+- Source ZIP packaging and upload: passed on Linux.
+- Windows `CONTINUE_MISSION.bat` smoke test: passed.
+
+These are CI measurements for these workflow executions, not comparable before/after performance benchmarks. Cache performance improvement was not measured.
+
+### CI source artifact
+
+- Name: `tokensaver-ai-v2-saas-alpha-source`
+- Artifact ID: `13934219829`
+- SHA-256: `bc8363df85706d7bd14bd83c876415d26019c95b44747043abcea21058d87f6d`
+- Workflow: #610 / `43200229347`
+- Artifact was associated with the validated code SHA above.
+
+## D. Distributed Runner PostgreSQL Lab #133
+
+- Workflow run: `43200229767`
+- Conclusion: **success**
+- Head SHA: `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`
+- Job: PostgreSQL 16 + Team Room + independent Runner processes — **success**
+- Steps passed: PostgreSQL 16 readiness; Rust PostgreSQL lease/fencing integration test; authenticated handoff state/authorization/recovery integration test; real Team Room service build; two independent Mission Runner processes against shared PostgreSQL; evidence consolidation and proof gate; artifact upload.
+
+Artifact:
+- Name: `distributed-runner-postgres-evidence-43200229767`
+- ID: `13935241404`
+- SHA-256: `0f52c1b7764e6a71566e1cf2c762b14c4fe54e064153883da520bf9642d811aa`
+
+This is evidence for distributed Runner correctness/integration. It is not a query-performance benchmark.
+
+## E. Coalescing — executed numbers
+
+The actual Node test output on both platforms reported:
+
+- `# tests 23`
+- `# pass 23`
+- `# fail 0`
+
+Scheduler assertions:
+
+| Test case | Input | Measured assertion |
+|---|---:|---:|
+| Burst | 100 calls to `schedule()` inside the debounce window | 1 timer accepted; refresh callback invoked **1** time. |
+| Notifications during active refresh | 20 additional notifications while first callback is running | Total refresh callbacks **2** (one initial + one trailing); maximum concurrent callbacks **1**. |
+| Cancellation / unmount cleanup | 1 scheduled refresh followed by `cancel()` before timer fires | Refresh callback invoked **0** times. |
+| Invalid scheduling windows | Negative and >5000 ms values | Both rejected with `RangeError`. |
+
+Observed scheduler test durations in Linux job logs:
+- Burst: **41.202686 ms**.
+- In-flight/trailing refresh: **79.99913 ms**.
+- Cancellation: **40.366087 ms**.
+- Entire Node test command: **6517.020936 ms**.
+
+These timings include test timer waits and runner overhead; they are not UI latency or network latency.
+
+### Before / after distinction
+
+- **Before (source-derived upper-bound estimate):** one refresh per notification; each refresh starts five HTTP resource requests. For 100 notifications, up to 100 refresh invocations and 500 HTTP requests, assuming each event is processed independently and all five fetches are issued.
+- **After (measured scheduler callback count):** 100 notifications in one burst -> 1 refresh callback. During an active callback, 20 further notifications -> one trailing callback; concurrency maximum 1.
+- **HTTP requests after:** **not measured**. The test injects a callback and counts callback invocations; it does not mock/intercept the five fetch calls in `TeamRoom.tsx`.
+- **Projected only:** if each refresh callback executes the five existing requests, one burst callback corresponds to five HTTP calls instead of the estimated 500. This is a code-derived projection, not an observed request count or benchmark.
+- **Production traffic/performance:** not measured.
+
+## F. PostgreSQL and communication benchmark limitations
+
+### PostgreSQL
+
+No reproducible query benchmark was available in the mission environment. The ephemeral PostgreSQL CI environment validates service and Runner integration but does not seed representative Team Room channel/member/message/task cardinalities for performance comparison. No SQL timing, query plan, buffers, row counts, lock waits or contention samples were recorded.
+
+Status: **BLOCKED — benchmark not run**.
+
+### Communication
+
+The scheduler test validates callback coalescing and non-overlap, but no HTTP-level harness, synthetic server, network trace or production telemetry was available in the existing mission artifacts. No elapsed time for a full WebSocket-event-to-five-REST-requests cycle was measured.
+
+Status: **PENDING/BLOCKED — real communication benchmark not run**.
+
+## G. Security and behavioral scope
+
+The Mission 8 diff is limited to the seven files listed in section 11. No PostgreSQL schema/query, authentication, authorization, audit, message idempotency, Runner lease, fencing token, ownership, recovery or handoff semantics were modified. The CI and Distributed Runner workflows passed their relevant integration checks. This is evidence that the existing checks passed; it is not a new independent security audit.
+
+## H. Final classification
+
+| Item | State |
+|---|---|
+| CI principal | **PASS** |
+| Distributed Runner | **PASS** |
+| Coalescing | **VALIDATED** (scheduler callback level) |
+| Communication | **PENDENTE** (HTTP benchmark not measured) |
+| PostgreSQL | **BLOQUEADO** (query benchmark not run) |
+| Frontend/Tauri | **PENDENTE** for full live UI lifecycle; CI build and platform tests PASS |
+| Regression | **PASS** for all suites executed by CI |
+| Security | **PRESERVED by scope review; relevant CI integration checks PASS** |
+
+### Final decision
+
+# NO-GO — PERFORMANCE VALIDATION INCOMPLETE
+
+The code and cross-platform CI checks are green, and the scheduler's deterministic behavior is validated. However, the explicit acceptance criteria for a real communication benchmark and PostgreSQL query benchmark have not been met. Full live React/WebSocket lifecycle integration is also not demonstrated. The PR must not be described as performance-validated or production-performance-proven.
+
+**Code SHA with successful CI and Distributed Runner evidence:** `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`.
+
+**Report commit:** to be recorded from the GitHub update result. This report-only commit advances branch HEAD; it does not change the tested code SHA.
