@@ -706,8 +706,15 @@ mod postgres_tests {
         let reconnect_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(reconnect_frame.into_text().unwrap().as_str()).unwrap()["type"],"MESSAGE_CREATED");
         sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(actor_b.session).execute(&pool).await.unwrap();
-        let revoked_frame=tokio::time::timeout(std::time::Duration::from_secs(17),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
-        assert!(matches!(revoked_frame,tokio_tungstenite::tungstenite::Message::Close(_)),"revoked session must close its active websocket");
+        // Force an outbox notification after revocation. The socket must revalidate
+        // at the delivery boundary and close immediately rather than wait 15 seconds.
+        let revoked_probe=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'REVOCATION_PROBE',$4)")
+            .bind(revoked_probe).bind(tenant_b).bind(room_b).bind(json!({"room_id":room_b.to_string(),"probe":"must-not-deliver-after-revocation"}))
+            .execute(&pool).await.unwrap();
+        sqlx::query("SELECT pg_notify('team_room_outbox',$1)").bind(revoked_probe.to_string()).execute(&pool).await.unwrap();
+        let revoked_frame=tokio::time::timeout(std::time::Duration::from_secs(2),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(revoked_frame,tokio_tungstenite::tungstenite::Message::Close(_)),"revoked session must close before the next event payload is delivered");
 
         // Composite-FK regression checks: deliberately mismatched tenant/room
         // references must be rejected by PostgreSQL, not merely by handlers.
