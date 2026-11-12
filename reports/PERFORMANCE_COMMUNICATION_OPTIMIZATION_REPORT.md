@@ -393,4 +393,4 @@ The code and cross-platform CI checks are green, and the scheduler's determinist
 
 **Code SHA with successful CI and Distributed Runner evidence:** `e34f26ac0a20ebaa0f7620ba5a8aed383c1b7cc6`.
 
-**Report commit:** to be recorded from the GitHub update result. This report-only commit advances branch HEAD; it does not change the tested code SHA.
+**First final-report commit:** `3f5252ad89923008dfc69faa4f6bb6d125af621f` (documentation-only). The current report revision is a subsequent documentation-only commit; its SHA is recorded in the validation handoff. Neither report commit changes the tested code SHA.
