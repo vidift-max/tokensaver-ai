@@ -32,50 +32,6 @@ impl Provider {
         }
     }
 
-    fn live_request(provider: Provider) -> ChatRequest {
-        ChatRequest {
-            provider,
-            model: None,
-            system: Some("Answer with a short provider connectivity confirmation.".into()),
-            messages: vec![ChatMessage { role: MessageRole::User, content: "Reply with the word connected.".into() }],
-            temperature: Some(0.0),
-            max_output_tokens: Some(24),
-            stream: false,
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires TOKENSAVER_OPENAI_API_KEY and TOKENSAVER_OPENAI_MODEL; sends a real provider request"]
-    async fn live_openai_chat_smoke() {
-        let response = complete(live_request(Provider::Openai)).await.expect("live OpenAI request");
-        assert_eq!(response.provider, Provider::Openai);
-        assert!(!response.text.trim().is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires TOKENSAVER_ANTHROPIC_API_KEY and TOKENSAVER_ANTHROPIC_MODEL; sends a real provider request"]
-    async fn live_anthropic_chat_smoke() {
-        let response = complete(live_request(Provider::Anthropic)).await.expect("live Anthropic request");
-        assert_eq!(response.provider, Provider::Anthropic);
-        assert!(!response.text.trim().is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires TOKENSAVER_GEMINI_API_KEY and TOKENSAVER_GEMINI_MODEL; sends a real provider request"]
-    async fn live_gemini_chat_smoke() {
-        let response = complete(live_request(Provider::Gemini)).await.expect("live Gemini request");
-        assert_eq!(response.provider, Provider::Gemini);
-        assert!(!response.text.trim().is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires TOKENSAVER_KIMI_API_KEY and TOKENSAVER_KIMI_MODEL; sends a real provider request"]
-    async fn live_kimi_chat_smoke() {
-        let response = complete(live_request(Provider::Kimi)).await.expect("live Kimi request");
-        assert_eq!(response.provider, Provider::Kimi);
-        assert!(!response.text.trim().is_empty());
-    }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -407,4 +363,49 @@ mod tests {
         assert!(retryable_status(StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(StatusCode::BAD_REQUEST));
     }
+    fn live_request(provider: Provider) -> ChatRequest {
+        ChatRequest {
+            provider,
+            model: None,
+            system: Some("Answer with a short provider connectivity confirmation.".into()),
+            messages: vec![ChatMessage { role: MessageRole::User, content: "Reply with the word connected.".into() }],
+            temperature: Some(0.0),
+            max_output_tokens: Some(24),
+            stream: false,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TOKENSAVER_OPENAI_API_KEY and TOKENSAVER_OPENAI_MODEL; sends a real provider request"]
+    async fn live_openai_chat_smoke() {
+        let response = complete(live_request(Provider::Openai)).await.expect("live OpenAI request");
+        assert_eq!(response.provider, Provider::Openai);
+        assert!(!response.text.trim().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TOKENSAVER_ANTHROPIC_API_KEY and TOKENSAVER_ANTHROPIC_MODEL; sends a real provider request"]
+    async fn live_anthropic_chat_smoke() {
+        let response = complete(live_request(Provider::Anthropic)).await.expect("live Anthropic request");
+        assert_eq!(response.provider, Provider::Anthropic);
+        assert!(!response.text.trim().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TOKENSAVER_GEMINI_API_KEY and TOKENSAVER_GEMINI_MODEL; sends a real provider request"]
+    async fn live_gemini_chat_smoke() {
+        let response = complete(live_request(Provider::Gemini)).await.expect("live Gemini request");
+        assert_eq!(response.provider, Provider::Gemini);
+        assert!(!response.text.trim().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TOKENSAVER_KIMI_API_KEY and TOKENSAVER_KIMI_MODEL; sends a real provider request"]
+    async fn live_kimi_chat_smoke() {
+        let response = complete(live_request(Provider::Kimi)).await.expect("live Kimi request");
+        assert_eq!(response.provider, Provider::Kimi);
+        assert!(!response.text.trim().is_empty());
+    }
+
+
 }
