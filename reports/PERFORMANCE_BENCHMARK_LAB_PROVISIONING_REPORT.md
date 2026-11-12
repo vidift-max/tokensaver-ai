@@ -46,19 +46,26 @@ No HTTP, WebSocket or PostgreSQL benchmark was run. No live endpoint, session to
 
 ## 7. Exact commands for Mission 9.1
 
-After staging is provisioned and environment variables are securely loaded, set the libpq connection variables (PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE) through the secret manager; keep DATABASE_URL only in the process environment for manifest capture, never as a command-line argument:
+After staging is provisioned, set DATABASE_URL and TEAM_ROOM_API_URL through the secret manager. Set the libpq variables (PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE) through the secret manager for psql; do not pass DATABASE_URL as a command-line argument. Set both source and deployed SHA to the exact deployed commit:
 
 ```bash
+export BENCH_ARTIFACT_DIR="$PWD/benchmark-artifacts"
+export BENCH_ENV_FILE="$PWD/.private/benchmark-session.env"
 export BENCH_CONFIG_FILE="$PWD/scripts/benchmark/benchmark-config.example.json"
-node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http.json
-node scripts/benchmark/team-room-websocket.mjs > benchmark-artifacts/websocket.json
-psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+export BENCH_CODE_SHA="<40-character-deployed-sha>"
+export BENCH_DEPLOYED_SHA="$BENCH_CODE_SHA"
+mkdir -p "$BENCH_ARTIFACT_DIR" .private && chmod 700 .private
+node scripts/benchmark/seed-team-room.mjs
+set -a; . "$BENCH_ENV_FILE"; set +a
+node scripts/benchmark/capture-run-manifest.mjs
+node scripts/benchmark/team-room-http.mjs > "$BENCH_ARTIFACT_DIR/http.json"
+node scripts/benchmark/team-room-websocket.mjs > "$BENCH_ARTIFACT_DIR/websocket.json"
+psql -X -v ON_ERROR_STOP=1 \
   -v tenant_id="$TEAM_ROOM_TENANT_ID" \
   -v room_id="$TEAM_ROOM_ROOM_ID" \
   -v channel_id="$TEAM_ROOM_CHANNEL_ID" \
   -v principal_id="$TEAM_ROOM_PRINCIPAL_ID" \
-  -f scripts/benchmark/team-room-postgres.sql > benchmark-artifacts/postgres-explain.txt
-```
+  -f scripts/benchmark/team-room-postgres.sql > "$BENCH_ARTIFACT_DIR/postgres-explain.txt"
 
 The example JSON is a baseline configuration, not a performance threshold. Copy it to a private file and tune load only after staging capacity and safety limits are agreed. Record the deployed SHA in the run manifest before execution.
 
