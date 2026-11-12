@@ -3,14 +3,16 @@
 -- psql "$DATABASE_URL" -X -v tenant_id=... -v room_id=... -v channel_id=... -f scripts/benchmark/team-room-postgres.sql
 -- EXPLAIN ANALYZE executes each SELECT. Run only against a benchmark/staging database.
 \echo '=== Dataset cardinality ==='
-SELECT 'tenants' AS relation, count(*) FROM tenants
-UNION ALL SELECT 'rooms', count(*) FROM rooms
-UNION ALL SELECT 'room_memberships', count(*) FROM room_memberships
-UNION ALL SELECT 'messages', count(*) FROM team_room_messages
-UNION ALL SELECT 'tasks', count(*) FROM team_tasks
-UNION ALL SELECT 'decisions', count(*) FROM team_room_decisions
-UNION ALL SELECT 'attachment_refs', count(*) FROM team_room_attachment_refs
-UNION ALL SELECT 'presence_memberships', count(*) FROM room_memberships WHERE status='ACTIVE';
+SELECT 'tenant' AS relation, count(*) FROM tenants WHERE tenant_id=:'tenant_id'::uuid
+UNION ALL SELECT 'rooms', count(*) FROM rooms WHERE tenant_id=:'tenant_id'::uuid
+UNION ALL SELECT 'participants_in_room', count(DISTINCT participant_id) FROM room_memberships WHERE room_id=:'room_id'::uuid
+UNION ALL SELECT 'room_memberships', count(*) FROM room_memberships WHERE room_id=:'room_id'::uuid
+UNION ALL SELECT 'active_presence_rows', count(*) FROM room_memberships WHERE room_id=:'room_id'::uuid AND status='ACTIVE'
+UNION ALL SELECT 'channels', count(*) FROM team_room_channels WHERE room_id=:'room_id'::uuid
+UNION ALL SELECT 'messages', count(*) FROM team_room_messages WHERE tenant_id=:'tenant_id'::uuid AND room_id=:'room_id'::uuid
+UNION ALL SELECT 'tasks', count(*) FROM team_tasks WHERE tenant_id=:'tenant_id'::uuid AND room_id=:'room_id'::uuid
+UNION ALL SELECT 'decisions', count(*) FROM team_room_decisions WHERE tenant_id=:'tenant_id'::uuid AND room_id=:'room_id'::uuid
+UNION ALL SELECT 'attachment_refs', count(*) FROM team_room_attachment_refs WHERE tenant_id=:'tenant_id'::uuid AND room_id=:'room_id'::uuid;
 
 \echo '=== Message history ==='
 EXPLAIN (ANALYZE, BUFFERS, WAL, SETTINGS, FORMAT TEXT)
