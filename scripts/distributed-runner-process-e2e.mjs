@@ -260,6 +260,8 @@ try{
   mustRun(owner,ownerHandoffA,"start");
   mustRun(owner,ownerHandoffA,"checkpoint","owner checkpoint before authenticated transfer");
   const ownerHandoffTask=stateForMission(ownerHandoffA,ownerHandoffMission).execution.task_id;
+  const persistedOwnerCheckpoint=JSON.parse(sqlOk(`SELECT checkpoint::text FROM team_tasks WHERE task_id=${quote(ownerHandoffTask)}`));
+  assert.equal(persistedOwnerCheckpoint.description,"owner checkpoint before authenticated transfer","PostgreSQL must store the checkpoint document without an extra wrapper");
   assert.equal(stateForMission(ownerHandoffA,ownerHandoffMission).execution.fencing_token,1);
   for(const [identity,age] of [[owner,40],[replacement,5],[recoveryWorkerA,15],[recoveryWorkerB,25]]){
     sqlOk(`UPDATE room_memberships SET last_seen_at=NOW()-INTERVAL '${age} seconds' WHERE session_id=${quote(identity.sessionId)};
