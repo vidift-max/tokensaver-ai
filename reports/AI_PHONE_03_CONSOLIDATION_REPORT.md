@@ -1,37 +1,125 @@
-# AI-PHONE-03 — Consolidation Execution Report
+# AI-PHONE-03 — Relatório de Consolidação e Validação
 
-Date: 2026-11-12
+Data: 2026-11-12
 
-## Identity
-- Source branch: `fix/ai-phone-01-tenant-isolation`
-- Source SHA: `349ee06f1bd6223158c11d406ffa9404930105ba`
-- Consolidation branch: `mission/ai-phone-03-consolidation`
-- Initial consolidation SHA: source SHA above
-- Base: source branch (not PR #8, #7, #9, or default branch)
-- PR: not created
-- Merge: not performed
+## 1. Identidade
 
-## Changes committed
-1. `0013_team_room_tenant_scope_constraints.sql`: copied the Team Room-01 tenant-scope migration from `mission/team-room-tenant-boundaries-01`, preserving its fail-closed preflight and composite constraints. Renumbered the file from 0012 to 0013 because AI-PHONE tenant isolation already owns 0012. Diagnostic prefix changed to `TEAM_ROOM_0013_BLOCKED`.
-2. `src/communication.rs`: imported the exact Team Room-01 WebSocket/outbox tenant-scope implementation. Three-way baseline check found the fix branch file identical to the merge-base file; Team Room changes applied without overlapping edits.
-3. `tests/phone_postgres.rs`: replaced the invalid anonymous dollar quote with a named PostgreSQL dollar-quoted block and asserts the exact PostgreSQL exception message, so syntax errors and unrelated DB errors fail the test.
-4. This report and a branch-specific PostgreSQL 16 CI workflow.
+- Branch de origem: `fix/ai-phone-01-tenant-isolation`
+- SHA inicial: `349ee06f1bd6223158c11d406ffa9404930105ba`
+- Branch consolidada: `mission/ai-phone-03-consolidation`
+- SHA de código com teste de concorrência: `32f1044f0c6fd94cea9dc1b5988ef67052d25803`
+- Base direta: `fix/ai-phone-01-tenant-isolation`
+- PR de consolidação: não criada
+- Merge: não realizado
+- Alterações em PRs #7, #8, #9 e #10: nenhuma
+- Banco persistente/produção: não acessado
 
-## Migration order
-- 0011 `ai_phone_foundation`
-- 0012 `ai_phone_tenant_isolation`
-- 0013 `team_room_tenant_scope_constraints`
+## 2. Commits desta consolidação
 
-The Team Room-01 migration is retained as a distinct forward-only migration. No historical migration was deleted or rewritten. The original Team Room-01 migration source was preserved except for its versioned diagnostic identifier and explanatory header.
+1. `969917a66c624e91dcbaaf194b2832ea949003a7` — adiciona a migration Team Room-01 como 0013.
+2. `3a4b36666116bce80ecf3ef4da34fe2446b717ae` — integra o hardening WebSocket/outbox Team Room-01.
+3. `578d3f3688e7021ca93cf67841227958562363ce` — primeira correção do teste guard.
+4. `ca874a59ff53d9e05e65dd5b37288f56c356ef3b` — exige mensagem exata do PostgreSQL com dollar-quoting nomeado.
+5. `cbfba6727d7017d386f733f45fcb2056fd81b7a7` — configura workflow PostgreSQL 16 para a branch consolidada.
+6. `b280d055c39611b83cad8d73a76af7036a3b7be6` — registra o relatório inicial.
+7. `32f1044f0c6fd94cea9dc1b5988ef67052d25803` — adiciona corrida concorrente de idempotência de mensagens.
 
-## Validation state
-- The source branch had prior PostgreSQL 16 CI evidence on SHA `349ee06f1bd6223158c11d406ffa9404930105ba`; this report does not treat it as validation of the consolidated tree.
-- Consolidated PostgreSQL 16 CI has been configured to run on this branch. Its result must be read from the actual run for the final consolidation SHA.
-- The corrected guard test now asserts the exact database exception; execution remains NOT RUN until the branch CI completes.
-- A full legacy-upgrade fixture executing the actual 0012 migration from a pre-0012 schema has NOT been implemented or proven in this commit.
-- Browser automation and mobile/desktop visual validation are NOT RUN.
-- Concurrent same-key message idempotency (same and conflicting payload) is NOT PROVEN by this commit.
-- No production database was accessed. No PR #7/#8/#9 was modified. No merge was performed.
+## 3. Migrations
 
-## Current technical decision
-PARTIALLY CONSOLIDATED. The migration version collision is resolved in the consolidation branch and Team Room-01 source changes are retained. Do not approve the MVP until CI, real legacy upgrade behavior, cross-tenant attack matrix, concurrent idempotency, and UI validation are evidenced.
+| Versão | Arquivo | Propósito | Compatibilidade |
+|---|---|---|---|
+| 0011 | `0011_ai_phone_foundation.sql` | Identidade global, telefone, endpoints, attachments, mailbox, mission links e permissões | Fundação do AI-PHONE |
+| 0012 | `0012_ai_phone_tenant_isolation.sql` | Converte a propriedade do telefone para tenant + AI_ID; adiciona FKs compostas e guard fail-closed | Bloqueia telefone legado compartilhado; não executa reatribuição automática |
+| 0013 | `0013_team_room_tenant_scope_constraints.sql` | Constraints compostas para tasks, leases, handoffs, mensagens, attachments e WebSocket tickets | Copiada da Team Room-01; preflight fail-closed preservado |
+
+A listagem da branch contém versões 0001 a 0013 sem duplicatas. A colisão entre duas migrations 0012 foi resolvida por renumeração forward-only da migration Team Room-01 para 0013. Nenhuma migration histórica foi apagada.
+
+## 4. Alterações de código
+
+- `services/ai-team-room/src/communication.rs`: substituído pela implementação Team Room-01 com tenant completo retido durante o WebSocket, revalidação da sessão e filtragem do outbox por tenant/room/aggregate.
+- `services/ai-team-room/tests/phone_postgres.rs`: guard agora usa `DO $ai_phone_guard$ ... $ai_phone_guard$` e compara exatamente `DatabaseError::message()`; erro de sintaxe não pode ser aceito como sucesso.
+- O teste concorrente envia duas requisições simultâneas com a mesma idempotency key e mesmo payload; espera um 201 e um 200, mesmo message_id e uma única linha. Em seguida reutiliza a chave com payload diferente e espera 409 e uma única linha.
+
+## 5. Estado das 10 rodadas
+
+| Rodada | Resultado | Evidência / limite |
+|---|---|---|
+| 1 — Rebaseline | PASS | SHA inicial, histórico e árvore da branch recuperados; comparação consolidada contém 5 arquivos alterados em relação à origem |
+| 2 — Colisão 0012 | IMPLEMENTADO / NOT PROVEN | Sequência 0011→0012→0013 e listagem sem duplicatas. Execução PostgreSQL 16 da cadeia consolidada aguarda CI |
+| 3 — Guard | IMPLEMENTADO / NOT PROVEN | SQL corrigido para dollar-quoting nomeado e mensagem exata. Execução aguarda CI |
+| 4 — Banco legado real | NOT PROVEN | Não foi criado fixture pré-0012 com shared phone, endpoints, attachments, mensagens e histórico, nem executada migration 0012 nesse estado legado |
+| 5 — Ataque cross-tenant | IMPLEMENTADO / NOT PROVEN na árvore final | Teste existente cobre AI_ID compartilhado entre tenants, AI_PHONE_ID distinto, consultas de mailbox/endpoints/presence, envio/ACK e mission/task. CI consolidado ainda não concluiu |
+| 6 — AI-PHONE + Team Room | IMPLEMENTADO / NOT PROVEN na árvore final | Migration 0013 e WebSocket/outbox Team Room-01 integrados. Execução da suíte conjunta aguarda CI |
+| 7 — Mensageria e concorrência | TESTE ADICIONADO / NOT PROVEN | Concorrência de idempotency key com payload igual e diferente adicionada em SHA 32f1044; aguarda CI |
+| 8 — UI + backend | STATIC REVIEW PASS / BROWSER VALIDATION NOT AVAILABLE | AIPhone.tsx está montado em TeamRoom.tsx e aponta para rotas existentes. Não foi executada automação de browser nem teste visual mobile/desktop |
+| 9 — Suíte completa e CI | IN PROGRESS / NOT PROVEN | Workflow PostgreSQL 16 #70 e #72 observados; ver seção 6 |
+| 10 — Entrega | PARTIALLY CONSOLIDATED | Esta árvore está isolada e pronta para revisão técnica, não para aprovação de MVP |
+
+## 6. CI e PostgreSQL
+
+Workflow dedicado:
+`AI-PHONE-03 Consolidated AI Phone + Team Room`
+
+- Run #70: `43305554477`
+  - SHA: `cbfba6727d7017d386f733f45fcb2056fd81b7a7`
+  - Job: `postgres-16-security`
+  - PostgreSQL 16 disposable: inicialização e healthcheck concluídos.
+  - `cargo check --manifest-path services/ai-team-room/Cargo.toml`: SUCCESS.
+  - Suíte `cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output`: estava IN PROGRESS na última leitura; resultado final não disponível.
+- Run #71: `43305559444`
+  - SHA: `b280d055c39611b83cad8d73a76af7036a3b7be6`
+  - Cancelado pela política de concorrência do workflow ao chegar commit mais novo.
+- Run #72: `43305696147`
+  - SHA: `32f1044f0c6fd94cea9dc1b5988ef67052d25803`
+  - Estado: PENDING na última leitura; job ainda não iniciado.
+
+Links:
+- [Run #70](https://github.com/vidift-max/tokensaver-ai/actions/runs/43305554477)
+- [Run #72](https://github.com/vidift-max/tokensaver-ai/actions/runs/43305696147)
+
+Não declarar PASS para cargo test, migration 0013, teste guard ou concorrência até o run #72 concluir com sucesso no SHA correspondente.
+
+## 7. P0 e upgrade legado
+
+### CROSS_TENANT_VULNERABILITY_CONFIRMED
+
+**NOT PROVEN na árvore consolidada até a conclusão do CI.**
+
+O código e os testes existentes representam o cenário Tenant A + Tenant B com o mesmo AI_ID e exigem AI_PHONE_IDs distintos. Também há tentativas cross-tenant pela API e constraints compostas no banco. Contudo, a suíte consolidada ainda não concluiu.
+
+### LEGACY UPGRADE
+
+**NOT PROVEN.**
+
+A migration 0012 declara fail-closed para telefone global compartilhado. Não foi executado um upgrade fixture a partir do schema 0011 com shared phone e histórico real. O comportamento de produção legado não foi comprovado por teste de migração completo.
+
+## 8. Primeiro AI-PHONE
+
+| Capacidade | Estado |
+|---|---|
+| Identidade persistente | Implementada; revalidação consolidada pendente |
+| Isolamento multi-tenant | Implementado; revalidação consolidada pendente |
+| Provisioning explícito | Implementado |
+| Reconexão e continuidade | Implementadas; revalidação consolidada pendente |
+| Fencing | Implementado; revalidação consolidada pendente |
+| Mailbox persistente/offline | Implementado; revalidação consolidada pendente |
+| Mensagens e ACK | Implementados; revalidação consolidada pendente |
+| Idempotência concorrente | Teste adicionado; resultado NOT PROVEN |
+| Team Room lease/checkpoint/handoff/recovery | Código e testes existentes; execução conjunta NOT PROVEN |
+| UI | Implementação React montada; browser/mobile/desktop NOT RUN |
+| Voz/PSTN | Fora de escopo |
+
+## 9. Limitações remanescentes
+
+1. Fixture legado real e execução da migration 0012 em estado pré-tenant-scope não existem.
+2. A suíte consolidada ainda não concluiu.
+3. Não há evidência de browser automation nem validação de viewport.
+4. A concorrência da idempotência foi adicionada, mas não executada com resultado confirmado.
+5. A integração final com Team Room-01 ainda precisa passar pela suíte conjunta PostgreSQL 16.
+6. Nenhuma evidência desta missão autoriza produção ou merge.
+
+## 10. Veredito
+
+`PARTIALLY_CONSOLIDATED`
+
+A árvore consolidada preserva a implementação existente, elimina a colisão nominal das migrations, incorpora o hardening Team Room-01 e corrige o teste de guard. O MVP não está aprovado: legacy upgrade e CI final continuam sem prova.
