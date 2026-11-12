@@ -148,6 +148,28 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"unknown or unauthorized phone must not leak endpoint data");
     let response=http_call(&app,"GET","/ai-phone/me",Some("invalid-session-token"),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED);
+
+    // A valid phone UUID in another tenant is not sufficient to send to or inspect that phone.
+    let foreign_tenant=Uuid::new_v4();
+    let foreign_principal=Uuid::new_v4();
+    let foreign_ai=Uuid::new_v4();
+    let foreign_phone=Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'ai-phone-foreign-tenant')")
+        .bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','foreign-test',$3)")
+        .bind(foreign_principal).bind(foreign_tenant).bind(format!("foreign-subject-{foreign_principal}"))
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','foreign-phone')")
+        .bind(foreign_ai).bind(format!("test:foreign-phone:{foreign_ai}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(foreign_ai).bind(foreign_tenant).bind(foreign_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id) VALUES($1,$2)")
+        .bind(foreign_phone).bind(foreign_ai).execute(&pool).await.unwrap();
+    let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_a),
+        Some(serde_json::json!({"idempotency_key":"cross-tenant-probe","content":{"text":"must-not-cross-tenant"}}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"cross-tenant phone message send is concealed");
+    let response=http_call(&app,"GET",&format!("/ai-phone/{foreign_phone}/endpoints"),Some(&token_a),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"cross-tenant endpoint registry is concealed");
     sqlx::query("UPDATE phone_endpoints SET last_seen_at=NOW()-INTERVAL '2 minutes' WHERE endpoint_id=$1").bind(endpoint_a).execute(&pool).await.unwrap();
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
@@ -323,6 +345,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(presence["presence_state"],"DISCONNECTED");
 
+    sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(foreign_ai).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(foreign_ai).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoints WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(first.phone.ai_phone_id).execute(&pool).await.unwrap();
