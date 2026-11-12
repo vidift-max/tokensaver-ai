@@ -64,6 +64,22 @@ test("loopback HTTP requires an explicit development opt-in in Runner clients", 
   assert.throws(() => new TeamRoomClient(validEnv("http://127.0.0.1:8081", true, "production")), error => error.code === "CONFIG_INVALID");
 });
 
+test("loopback client requests retain the explicit development environment opt-in", async () => {
+  const client = new TeamRoomClient(validEnv("http://127.0.0.1:8081", true, "test"));
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async url => {
+    requestedUrl = String(url);
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    await client.request("GET", "/auth/me");
+    assert.equal(requestedUrl, "http://127.0.0.1:8081/auth/me");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Team Room requests reject redirects and keep the bearer on the configured origin", async () => {
   const client = new TeamRoomClient(validEnv());
   const originalFetch = globalThis.fetch;

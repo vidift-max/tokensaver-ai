@@ -49,7 +49,7 @@ export class TeamRoomClient {
   async request(method, route, body) {
     let requestUrl;
     try {
-      requestUrl = resolveTeamRoomRequestUrl(this.baseUrl, route, { allowHttpLoopback: this.allowHttpLoopback });
+      requestUrl = resolveTeamRoomRequestUrl(this.baseUrl, route, { allowHttpLoopback: this.allowHttpLoopback, environment: this.environment });
     } catch {
       throw new TeamRoomError("Team Room route is invalid or outside the configured origin", 0, "CONFIG_INVALID");
     }
