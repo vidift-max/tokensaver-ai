@@ -324,7 +324,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(foreign_endpoint).bind(tenant).bind(room).bind(principal).bind(participant).bind(session_a).bind(execution_a)
         .execute(&pool).await;
     assert!(invalid_attachment.is_err(),"composite FK rejects cross-tenant endpoint attachment");
-    let invalid_session_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,'ACTIVE')")
+    let invalid_session_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,999,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(endpoint_a).bind(tenant)
         .bind(foreign_room).bind(foreign_principal).bind(foreign_participant).bind(foreign_session).bind(foreign_execution)
         .execute(&pool).await;
