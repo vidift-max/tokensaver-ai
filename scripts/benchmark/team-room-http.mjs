@@ -126,6 +126,8 @@ const total = [...measurements.values()].reduce((sum, samples) => sum + samples.
 const successful = [...measurements.values()].flat().filter(x => x.ok).length;
 console.log(JSON.stringify({
   benchmark: "team-room-http",
+  source_sha: process.env.BENCH_CODE_SHA || process.env.GITHUB_SHA || null,
+  run_id: process.env.BENCH_RUN_ID || process.env.GITHUB_RUN_ID || null,
   generated_at: new Date().toISOString(),
   environment: {
     api_origin: new URL(apiUrl).origin,

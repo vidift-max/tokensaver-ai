@@ -174,6 +174,8 @@ try {
   const pct = p => latencies.length ? Number(latencies[Math.max(0, Math.ceil(p * latencies.length) - 1)].toFixed(3)) : null;
   console.log(JSON.stringify({
     benchmark: "team-room-websocket-fanout",
+    source_sha: process.env.BENCH_CODE_SHA || process.env.GITHUB_SHA || null,
+    run_id: process.env.BENCH_RUN_ID || process.env.GITHUB_RUN_ID || null,
     generated_at: new Date().toISOString(),
     environment: { api_origin: new URL(base).origin, room_id: roomId, clients, participant_count: participantCount, distinct_session_tokens: new Set(tokens).size, distinct_participant_per_socket: new Set(tokens).size >= clients, dataset: { tenants: Number(process.env.BENCH_TENANTS || 0), rooms: Number(process.env.BENCH_ROOMS || 0), seeded_messages: Number(process.env.BENCH_SEED_MESSAGES || 0), seeded_tasks: Number(process.env.BENCH_SEED_TASKS || 0), seeded_decisions: Number(process.env.BENCH_SEED_DECISIONS || 0), seeded_attachment_references: Number(process.env.BENCH_SEED_ATTACHMENTS || 0) }, message_writes_requested: messages, heartbeat_writes_requested: heartbeats, other_room_ids: otherRoomIds, irrelevant_writes_per_room: irrelevantWritesPerRoom, settle_ms: settleMs, duration_limit_seconds: durationSeconds, rate_limit_writes_per_second: ratePerSecond, message_size_bytes: messageBytes },
     summary: {

@@ -46,7 +46,7 @@ No HTTP, WebSocket or PostgreSQL benchmark was run. No live endpoint, session to
 
 ## 7. Exact commands for Mission 9.1
 
-After staging is provisioned and environment variables are securely loaded:
+After staging is provisioned and environment variables are securely loaded, set the libpq connection variables (PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE) through the secret manager; keep DATABASE_URL only in the process environment for manifest capture, never as a command-line argument:
 
 ```bash
 export BENCH_CONFIG_FILE="$PWD/scripts/benchmark/benchmark-config.example.json"
