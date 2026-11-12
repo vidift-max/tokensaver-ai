@@ -220,6 +220,10 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
                 "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3"
             ).bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
             if existing.endpoint_id == request.endpoint_id {
+                let endpoint_active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status='ATTACHED')")
+                    .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+                    .fetch_one(&mut *tx).await?;
+                if !endpoint_active { return Err(PhoneError::Conflict); }
                 tx.commit().await?;
                 return Ok(existing);
             }
