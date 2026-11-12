@@ -235,11 +235,17 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
     let body = match req.provider {
         Provider::Openai | Provider::Kimi => {
             builder = builder.bearer_auth(&key);
-            json!({"model":model,"messages":messages_openai(&req),"temperature":req.temperature,"max_tokens":req.max_output_tokens})
+            let mut payload = json!({"model":model,"messages":messages_openai(&req)});
+            if let Some(temp) = req.temperature { payload["temperature"] = json!(temp); }
+            if let Some(max) = req.max_output_tokens { payload["max_tokens"] = json!(max); }
+            payload
         }
         Provider::Anthropic => {
             builder = builder.header("x-api-key", &key).header("anthropic-version", "2023-06-01");
-            json!({"model":model,"system":req.system,"messages":messages_anthropic(&req),"max_tokens":req.max_output_tokens.unwrap_or(1024),"temperature":req.temperature})
+            let mut payload = json!({"model":model,"messages":messages_anthropic(&req),"max_tokens":req.max_output_tokens.unwrap_or(1024)});
+            if let Some(system) = req.system.as_ref().filter(|s| !s.is_empty()) { payload["system"] = json!(system); }
+            if let Some(temp) = req.temperature { payload["temperature"] = json!(temp); }
+            payload
         }
         Provider::Gemini => {
             builder = builder.header("x-goog-api-key", &key);
@@ -263,13 +269,19 @@ pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
     let status = response.status();
     let provider_request_id = response.headers().get("x-request-id").or_else(|| response.headers().get("request-id")).or_else(|| response.headers().get("x-goog-request-id"))
         .and_then(|v| v.to_str().ok()).map(str::to_string);
-    let bytes = response.bytes().await.map_err(|_| GatewayError::new("RESPONSE_READ_ERROR", "Could not read provider response.", false, &request_id, Some(status.as_u16())))?;
-    if bytes.len() > 4_000_000 {
+    if !status.is_success() {
+        // Drop error bodies: they can contain user content or sensitive diagnostics.
+        return Err(GatewayError::new("PROVIDER_HTTP_ERROR", "Provider rejected the request.", retryable_status(status), &request_id, Some(status.as_u16())));
+    }
+    if response.content_length().is_some_and(|length| length > 4_000_000) {
         return Err(GatewayError::new("RESPONSE_TOO_LARGE", "Provider response exceeded the gateway limit.", false, &request_id, Some(status.as_u16())));
     }
-    if !status.is_success() {
-        // Do not forward provider error bodies: they can contain user content or sensitive diagnostics.
-        return Err(GatewayError::new("PROVIDER_HTTP_ERROR", "Provider rejected the request.", retryable_status(status), &request_id, Some(status.as_u16())));
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| GatewayError::new("RESPONSE_READ_ERROR", "Could not read provider response.", false, &request_id, Some(status.as_u16())))? {
+        if bytes.len().saturating_add(chunk.len()) > 4_000_000 {
+            return Err(GatewayError::new("RESPONSE_TOO_LARGE", "Provider response exceeded the gateway limit.", false, &request_id, Some(status.as_u16())));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| GatewayError::new("MALFORMED_RESPONSE", "Provider returned malformed JSON.", false, &request_id, Some(status.as_u16())))?;
     let text = response_text(req.provider, &parsed).ok_or_else(|| GatewayError::new("MALFORMED_RESPONSE", "Provider response did not contain supported text output.", false, &request_id, Some(status.as_u16())))?;
