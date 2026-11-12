@@ -14,9 +14,19 @@ if (!api || !databaseUrl) throw new Error("TEAM_ROOM_API_URL and DATABASE_URL ar
 const apiUrl = new URL(api);
 if (apiUrl.username || apiUrl.password) throw new Error("TEAM_ROOM_API_URL must not contain embedded credentials");
 const dbUrl = new URL(databaseUrl);
-const pg = spawnSync("psql", [databaseUrl, "-X", "-At", "-v", "ON_ERROR_STOP=1", "-c",
+const pgEnv = {
+  ...process.env,
+  PGHOST: dbUrl.hostname,
+  PGPORT: dbUrl.port || "5432",
+  PGUSER: decodeURIComponent(dbUrl.username),
+  PGPASSWORD: decodeURIComponent(dbUrl.password),
+  PGDATABASE: decodeURIComponent(dbUrl.pathname.replace(/^\\//, "")),
+};
+const sslmode = dbUrl.searchParams.get("sslmode");
+if (sslmode) pgEnv.PGSSLMODE = sslmode;
+const pg = spawnSync("psql", ["-X", "-At", "-v", "ON_ERROR_STOP=1", "-c",
   "SELECT json_build_object('server_version',current_setting('server_version'),'settings',(SELECT json_object_agg(name,setting) FROM pg_settings WHERE name IN ('shared_buffers','work_mem','max_connections','effective_cache_size','track_io_timing','jit')))::text"],
-  { encoding: "utf8", env: process.env });
+  { encoding: "utf8", env: pgEnv });
 if (pg.status !== 0) throw new Error(pg.stderr || "Unable to query PostgreSQL provenance");
 const configPath = process.env.BENCH_CONFIG_FILE;
 const config = configPath ? JSON.parse(readFileSync(configPath, "utf8")) : {};
