@@ -490,6 +490,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(serde_json::json!({"step":"persisted","progress":40})).execute(&pool).await.unwrap();
     sqlx::query("UPDATE ai_phones SET current_task_id=$1,current_mission_id=$2 WHERE ai_phone_id=$3 AND tenant_id=$4")
         .bind(task_id).bind(mission_id).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await.unwrap();
+    let invalid_current_mission=sqlx::query("UPDATE ai_phones SET current_mission_id=$1 WHERE ai_phone_id=$2 AND tenant_id=$3")
+        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await;
+    assert!(invalid_current_mission.is_err(),"composite task/mission FK rejects a mission ID not owned by the current task");
     let current = get_my_phone(&pool,&identity_b).await.expect("same phone and mission after reconnect");
     assert_eq!(current.phone.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(current.phone.ai_id,ai_id);
