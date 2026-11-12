@@ -456,7 +456,7 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments WHERE ai_phone_id=$1 AND session_id=$2 AND attachment_status='ACTIVE' AND endpoint_fence=(SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1))")
         .bind(phone_id).bind(identity.session_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
-    let delivered_count = sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() WHERE ai_phone_id=$1 AND message_state='PENDING'")
+    let delivered_count = sqlx::query("UPDATE phone_messages SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() WHERE ai_phone_id=$1 AND message_state IN ('PENDING','DELIVERED')")
         .bind(phone_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
     if delivered_count > 0 {
         record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_DELIVERED",
