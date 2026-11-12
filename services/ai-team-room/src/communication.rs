@@ -584,6 +584,10 @@ mod postgres_tests {
         let private_event=client.post(format!("http://{address}/team-room/{room}/private/{}/messages",b.principal)).bearer_auth(&a.token)
             .json(&json!({"client_message_id":Uuid::new_v4(),"body":"private event must not fan out to C","parent_message_id":null})).send().await.unwrap();
         assert_eq!(private_event.status(),reqwest::StatusCode::CREATED);
+        let a_private_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws.next()).await.unwrap().unwrap().unwrap();
+        let a_private_event:serde_json::Value=serde_json::from_str(a_private_frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(a_private_event["type"],"MESSAGE_CREATED");
+        assert_eq!(a_private_event["payload"]["message"]["body"],"private event must not fan out to C");
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
 
         // Independent tenant B: each socket must receive only events whose
@@ -667,7 +671,8 @@ mod postgres_tests {
         // actor reference and intentionally has no cascading delete policy.
         sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
             .bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_b).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-        let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+        let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session,actor_b.participant,actor_b.session);
     }
 }
