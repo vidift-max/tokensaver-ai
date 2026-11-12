@@ -152,6 +152,18 @@ CREATE TRIGGER phone_message_transition_guard
 BEFORE UPDATE ON phone_messages
 FOR EACH ROW EXECUTE FUNCTION enforce_phone_message_transition();
 
+
+INSERT INTO permission_catalog(permission,description,privileged) VALUES
+ ('phone.read','Read the AI-owned phone and its authorized continuity pointer',FALSE),
+ ('phone.attach','Attach an authenticated execution endpoint to its own AI phone',FALSE),
+ ('phone.detach','Detach the caller current endpoint from its own AI phone',FALSE),
+ ('phone.transfer','Explicitly transfer an AI phone endpoint and fence the previous attachment',TRUE),
+ ('phone.message.read','Read messages from the caller own AI phone inbox',FALSE),
+ ('phone.message.send','Send a durable message to a phone when separately granted',FALSE),
+ ('phone.message.ack','Acknowledge delivery on the currently attached phone endpoint',FALSE),
+ ('ai.identity.provision','Provision global AI identities and tenant principal bindings',TRUE)
+ON CONFLICT (permission) DO NOTHING;
+
 -- A global AI identity may only bind to an enabled AI principal, never a human account.
 CREATE FUNCTION enforce_ai_identity_principal_kind() RETURNS TRIGGER AS $$
 DECLARE
