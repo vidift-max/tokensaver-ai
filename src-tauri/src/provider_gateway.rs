@@ -43,7 +43,7 @@ pub struct ProviderCapabilities {
     pub model_discovery: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderStatus {
     pub provider: Provider,
     pub label: String,
@@ -54,12 +54,12 @@ pub struct ProviderStatus {
     pub note: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderRegistry {
     pub providers: Vec<ProviderStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole { User, Assistant }
 
@@ -124,7 +124,7 @@ fn valid_model_name(model: &str) -> bool {
     !model.is_empty() && model.len() <= 128 && model.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
 }
 
-fn provider_capabilities(provider: Provider) -> ProviderCapabilities {
+fn provider_capabilities(_provider: Provider) -> ProviderCapabilities {
     // Only features implemented by this gateway are advertised. Do not infer model-specific features.
     ProviderCapabilities { streaming: false, tools: false, structured_output: false, vision: false, embeddings: false, model_discovery: false }
 }
