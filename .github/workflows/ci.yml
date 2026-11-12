@@ -514,7 +514,7 @@ jobs:
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-http.mjs > benchmark-artifacts/http-message-writes.json
       - name: Capture PostgreSQL counters after HTTP load
-        run: psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-http.json
+        run: sleep 2 && psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-http.json
       - name: WebSocket fanout and heartbeat benchmark — 8 independent participants
         env:
           BENCH_CLIENTS: "8"
@@ -524,8 +524,6 @@ jobs:
           BENCH_IRRELEVANT_WRITES_PER_ROOM: "5"
           BENCH_REQUIRE_DISTINCT_PARTICIPANTS: "true"
         run: node scripts/benchmark/team-room-websocket.mjs > benchmark-artifacts/websocket-fanout.json
-      - name: Capture PostgreSQL counters after WebSocket load
-        run: psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-websocket.json
       - name: Preserve sanitized Team Room diagnostics
         if: always()
         run: |
@@ -539,6 +537,11 @@ jobs:
           if [ -f "$RUNNER_TEMP/team-room-service.pid" ]; then kill "$(cat "$RUNNER_TEMP/team-room-service.pid")" 2>/dev/null || true; fi
       - name: Upload raw benchmark evidence
         if: always()
+      - name: Capture PostgreSQL counters after WebSocket load
+        if: always()
+        run: |
+          sleep 2
+          psql "$DATABASE_URL" -X -At -v ON_ERROR_STOP=1 -f scripts/benchmark/team-room-postgres-stats.sql > benchmark-artifacts/postgres-stats-after-websocket.json
         uses: actions/upload-artifact@v4
         with:
           name: team-room-performance-benchmark-${{ github.run_id }}
