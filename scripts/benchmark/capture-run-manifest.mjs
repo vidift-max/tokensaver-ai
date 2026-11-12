@@ -20,7 +20,7 @@ const pgEnv = {
   PGPORT: dbUrl.port || "5432",
   PGUSER: decodeURIComponent(dbUrl.username),
   PGPASSWORD: decodeURIComponent(dbUrl.password),
-  PGDATABASE: decodeURIComponent(dbUrl.pathname.replace(/^\\//, "")),
+  PGDATABASE: decodeURIComponent(dbUrl.pathname.slice(1)),
 };
 const sslmode = dbUrl.searchParams.get("sslmode");
 if (sslmode) pgEnv.PGSSLMODE = sslmode;
