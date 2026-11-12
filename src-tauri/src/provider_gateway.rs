@@ -243,6 +243,10 @@ fn retryable_status(status: StatusCode) -> bool {
 
 pub async fn complete(req: ChatRequest) -> Result<ChatResponse, GatewayError> {
     let request_id = Uuid::new_v4().to_string();
+    complete_with_request_id(req, request_id).await
+}
+
+pub async fn complete_with_request_id(req: ChatRequest, request_id: String) -> Result<ChatResponse, GatewayError> {
     validate_request(&req, &request_id)?;
     let model = model_for(&req, &request_id)?;
     let key = env::var(req.provider.key_env()).ok().filter(|s| !s.trim().is_empty())
