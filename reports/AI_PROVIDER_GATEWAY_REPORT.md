@@ -175,7 +175,7 @@ No Team Room, Runner, Recovery Worker or PostgreSQL implementation file was chan
 
 ## 21. Commits
 
-The PR contains the following commits (chronological):
+The PR contains the following gateway implementation commits (chronological):
 - `de9ac3a7c192be98b471288f5a73386d6d0bac4f` — gateway core.
 - `fed4566ec072565f2f9d4dcdc414b7341a5303ba` — HTTP dependency.
 - `d08082dc5ab1d9027ff5dec470a18068a4a7aff1` — Tauri command registration.
@@ -188,11 +188,9 @@ The PR contains the following commits (chronological):
 - `eb4bc1f8c1ca60888f35e658e7a93f0548b0c295` — gateway documentation.
 - `cc14e5fae8ee96b877243a2a92d5361da5be8069` — explicit chat/unknown limits capability fields.
 - `70034c29b85c386589b00f449d32dbd8591ec126` — frontend capability contract alignment.
-- `4a30be92a35827767a5d60546cd8ab3299d82658` — initial Mission 8 report.
 - `6b77a170eca6e9da054282433f10ed3e1184fb84` — credential-gated live provider smoke tests.
 - `2790918bf7e09f446ecd7c50a34b85cc74aa5bc8` — Tokio test runtime.
 - `8c211425b5a712b4ae028b4567f98b85f17f4a3d` — live smoke test documentation.
-- `eabda3a341f702efe1b377737df2393cc3ee7894` — report addendum for live test entry points.
 - `4d1c1dffc7d9196fea20e8a1a64f6d3cd5231c69` — correct placement of live tests.
 
 ## 22. CI
