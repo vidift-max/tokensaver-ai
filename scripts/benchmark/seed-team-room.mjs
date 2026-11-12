@@ -6,7 +6,7 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const databaseUrl = process.env.DATABASE_URL;
