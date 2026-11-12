@@ -695,7 +695,7 @@ mod tests {
 
         // 10. Session A -> Session B, preserving the same phone after old session revocation.
         let session_b=new_session(&pool,&identity).await;
-        let reconnect=attach(&pool,&session_b,AttachRequest{endpoint_id:endpoint_a.endpoint_id,idempotency_key:Uuid::new_v4(),lease_seconds:Some(60)}).await.unwrap();
+        let reconnect=attach(&pool,&session_b,AttachRequest{endpoint_id:endpoint_b.endpoint_id,idempotency_key:Uuid::new_v4(),lease_seconds:Some(60)}).await.unwrap();
         assert_eq!(reconnect.ai_phone_id,phone.ai_phone_id);
         assert!(reconnect.fencing_generation>transfer.fencing_generation);
 
