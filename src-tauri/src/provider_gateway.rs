@@ -35,6 +35,8 @@ impl Provider {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderCapabilities {
+    pub chat: bool,
+    pub limits_known: bool,
     pub streaming: bool,
     pub tools: bool,
     pub structured_output: bool,
@@ -126,7 +128,7 @@ fn valid_model_name(model: &str) -> bool {
 
 fn provider_capabilities(_provider: Provider) -> ProviderCapabilities {
     // Only features implemented by this gateway are advertised. Do not infer model-specific features.
-    ProviderCapabilities { streaming: false, tools: false, structured_output: false, vision: false, embeddings: false, model_discovery: false }
+    ProviderCapabilities { chat: true, limits_known: false, streaming: false, tools: false, structured_output: false, vision: false, embeddings: false, model_discovery: false }
 }
 
 pub fn registry() -> ProviderRegistry {
@@ -302,7 +304,7 @@ mod tests {
         assert_eq!(providers.len(), 4);
         for provider in providers {
             let caps = provider_capabilities(provider);
-            assert!(!caps.streaming && !caps.model_discovery);
+            assert!(caps.chat && !caps.limits_known && !caps.streaming && !caps.model_discovery);
         }
     }
 
