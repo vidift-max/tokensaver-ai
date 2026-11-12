@@ -52,7 +52,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
         .bind(ai_id).bind(tenant).bind(principal).execute(&pool).await.unwrap();
 
-    for permission in ["phone.read","phone.attach","phone.detach"] {
+    for permission in ["phone.read","phone.attach","phone.detach","phone.transfer"] {
         grant(&pool,tenant,room,principal,permission).await;
     }
 
@@ -72,6 +72,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
     },false).await.expect("attach endpoint A");
     assert_eq!(attached_a.endpoint_fence,1);
+    let retry_a = attach(&pool,&identity_a,AttachRequest {
+        endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
+    },false).await.expect("idempotent attach retry");
+    assert_eq!(retry_a.attachment_id,attached_a.attachment_id);
 
     // A different endpoint cannot attach while the previous authenticated session remains live.
     let blocked = attach(&pool,&identity_a,AttachRequest {
@@ -101,10 +105,35 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(attached_b.endpoint_fence,2);
     assert_ne!(attached_b.endpoint_id,attached_a.endpoint_id);
 
-    // The old endpoint/session cannot detach or mutate the newly fenced phone attachment.
+    // The expired old session cannot detach or mutate the newly fenced phone attachment.
     let stale = detach(&pool,&identity_a,attached_a.endpoint_fence).await;
     assert!(matches!(stale,Err(PhoneError::InvalidSession)));
-    detach(&pool,&identity_b,attached_b.endpoint_fence).await.expect("detach current endpoint");
+
+    // Explicit transfer is separately permission-gated and fences endpoint B.
+    let endpoint_c = Uuid::new_v4();
+    let transferred = attach(&pool,&identity_b,AttachRequest {
+        endpoint_id: endpoint_c, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-C"}),
+    },true).await.expect("explicit authorized transfer");
+    assert_eq!(transferred.ai_phone_id,first.phone.ai_phone_id);
+    assert_eq!(transferred.endpoint_fence,3);
+    let stale_endpoint = detach(&pool,&identity_b,attached_b.endpoint_fence).await;
+    assert!(matches!(stale_endpoint,Err(PhoneError::Fenced)));
+    detach(&pool,&identity_b,transferred.endpoint_fence).await.expect("detach transferred endpoint");
+
+    // Two concurrent endpoints race for a disconnected phone: the row lock + partial
+    // unique index must produce exactly one winner and one conflict.
+    let endpoint_d = Uuid::new_v4();
+    let endpoint_e = Uuid::new_v4();
+    let (race_left,race_right) = tokio::join!(
+        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_d, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false),
+        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_e, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false)
+    );
+    let race_winner = match (race_left,race_right) {
+        (Ok(winner),Err(PhoneError::Conflict)) | (Err(PhoneError::Conflict),Ok(winner)) => winner,
+        other => panic!("expected one concurrent attach winner and one conflict, got {other:?}"),
+    };
+    assert_eq!(race_winner.endpoint_fence,5);
+    detach(&pool,&identity_b,race_winner.endpoint_fence).await.expect("release concurrent winner");
 
     // Persistent offline inbox: no active attachment is required to enqueue a message.
     let sender = Uuid::new_v4();
@@ -127,11 +156,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(count,1);
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
-    let endpoint_c = Uuid::new_v4();
-    let attached_c = attach(&pool,&identity_b,AttachRequest {
-        endpoint_id: endpoint_c, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-C"}),
+    let endpoint_f = Uuid::new_v4();
+    let attached_f = attach(&pool,&identity_b,AttachRequest {
+        endpoint_id: endpoint_f, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-F"}),
     },false).await.expect("reconnect to retrieve offline inbox");
-    assert_eq!(attached_c.ai_phone_id,first.phone.ai_phone_id);
+    assert_eq!(attached_f.ai_phone_id,first.phone.ai_phone_id);
+    assert_eq!(attached_f.endpoint_fence,7);
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(pending,(1,"PENDING".to_string()));
