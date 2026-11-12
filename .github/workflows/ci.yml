@@ -24,12 +24,12 @@ jobs:
         timeout-minutes: 8
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|azure.archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/apt-mirrors.txt
-            echo "Using Ubuntu package mirror list:"
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g; s|http://mirrors.edge.kernel.org/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/apt-mirrors.txt
+            echo "Using Ubuntu HTTPS package mirror list:"
             cat /etc/apt/apt-mirrors.txt
           fi
           if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's|azure.archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g; s|http://mirrors.edge.kernel.org/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources
           fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
