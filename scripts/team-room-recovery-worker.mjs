@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { normalizeTeamRoomBaseUrl, resolveTeamRoomRequestUrl } from "./team-room-security.mjs";
 /**
  * Authenticated Team Room recovery worker.
  * In --watch mode it polls for an eligible replacement until the bounded deadline.
@@ -10,21 +11,35 @@ const positional=args.filter(value=>value!=="--watch");
 const [roomId,taskId,previousOwnerPrincipalId]=positional;
 const pollMs=Number(process.env.TEAM_ROOM_RECOVERY_POLL_MS||"2000");
 const maxWaitMs=Number(process.env.TEAM_ROOM_RECOVERY_MAX_WAIT_MS||"300000");
-const baseUrl=(process.env.TEAM_ROOM_API_URL||"").replace(/\/+$/,"");
+const configuredBaseUrl=process.env.TEAM_ROOM_API_URL||"";
 const token=process.env.TEAM_ROOM_SESSION_TOKEN||"";
-if(!baseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
+const allowHttpLoopback=process.env.TEAM_ROOM_ALLOW_HTTP_LOOPBACK==="true";
+const environment=process.env.TEAM_ROOM_ENV||"production";
+if(!configuredBaseUrl||!token||!roomId||!taskId||!previousOwnerPrincipalId||
    !Number.isSafeInteger(pollMs)||pollMs<250||pollMs>60000||
    !Number.isSafeInteger(maxWaitMs)||maxWaitMs<1000||maxWaitMs>900000){
   console.error("usage: TEAM_ROOM_API_URL=... TEAM_ROOM_SESSION_TOKEN=... [TEAM_ROOM_RECOVERY_POLL_MS=2000] [TEAM_ROOM_RECOVERY_MAX_WAIT_MS=300000] node team-room-recovery-worker.mjs <room_id> <task_id> <previous_owner_principal_id> [--watch]");
   process.exit(2);
 }
+let baseUrl;
+try { baseUrl=normalizeTeamRoomBaseUrl(configuredBaseUrl,{allowHttpLoopback,environment}); }
+catch { console.error("TEAM_ROOM_API_URL is invalid or insecure"); process.exit(2); }
 async function request(method,route,body){
-  const response=await fetch(baseUrl+route,{
-    method,
-    headers:{authorization:"Bearer "+token,accept:"application/json",...(body?{"content-type":"application/json"}:{})},
-    ...(body?{body:JSON.stringify(body)}:{}),
-    signal:AbortSignal.timeout(10000)
-  });
+  let requestUrl;
+  try { requestUrl=resolveTeamRoomRequestUrl(baseUrl,route,{allowHttpLoopback,environment}); }
+  catch { throw new Error("invalid Team Room API route"); }
+  let response;
+  try {
+    response=await fetch(requestUrl,{
+      method,
+      headers:{authorization:"Bearer "+token,accept:"application/json",...(body?{"content-type":"application/json"}:{})},
+      ...(body?{body:JSON.stringify(body)}:{}),
+      redirect:"error",
+      signal:AbortSignal.timeout(10000)
+    });
+  } catch {
+    throw new Error("Team Room recovery request failed or redirect was rejected");
+  }
   const responseText=await response.text();
   let value={};
   try{value=responseText?JSON.parse(responseText):{};}catch{value={error:"non-JSON response"};}

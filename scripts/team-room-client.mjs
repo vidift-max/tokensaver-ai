@@ -4,6 +4,7 @@
  * persisted in mission state or included in diagnostics.
  */
 import crypto from "node:crypto";
+import { normalizeTeamRoomBaseUrl, resolveTeamRoomRequestUrl } from "./team-room-security.mjs";
 
 const UUID_NAMESPACE = Buffer.from("8f3d7a4b6c2e41a9b5d0f1738c4e2a61", "hex");
 const uuidFromMission = (missionId) => {
@@ -26,7 +27,10 @@ export class TeamRoomError extends Error {
 export class TeamRoomClient {
   constructor(env = process.env) {
     this.baseUrl = (env.TEAM_ROOM_API_URL || "").replace(/\/+$/, "");
+    this.tokenSource = env;
     this.token = env.TEAM_ROOM_SESSION_TOKEN || "";
+    this.allowHttpLoopback = env.TEAM_ROOM_ALLOW_HTTP_LOOPBACK === "true";
+    this.environment = env.TEAM_ROOM_ENV || "production";
     this.roomId = env.TEAM_ROOM_ROOM_ID || "";
     const configuredLeaseSeconds = env.TEAM_ROOM_LEASE_SECONDS ? Number(env.TEAM_ROOM_LEASE_SECONDS) : 60;
     if (!Number.isInteger(configuredLeaseSeconds) || configuredLeaseSeconds < 15 || configuredLeaseSeconds > 300) {
@@ -36,24 +40,38 @@ export class TeamRoomClient {
     if (!this.baseUrl || !this.token || !this.roomId) {
       throw new TeamRoomError("TEAM_ROOM_API_URL, TEAM_ROOM_SESSION_TOKEN and TEAM_ROOM_ROOM_ID are required; remote authority is unavailable", 0, "CONFIG_REQUIRED");
     }
-    let parsed;
-    try { parsed = new URL(this.baseUrl); } catch { throw new TeamRoomError("TEAM_ROOM_API_URL must be an absolute URL", 0, "CONFIG_INVALID"); }
-    if (!["https:", "http:"].includes(parsed.protocol) || (parsed.protocol === "http:" && !["localhost","127.0.0.1","::1"].includes(parsed.hostname))) {
-      throw new TeamRoomError("Team Room API must use HTTPS except loopback development", 0, "INSECURE_API_URL");
+    try {
+      this.baseUrl = normalizeTeamRoomBaseUrl(env.TEAM_ROOM_API_URL || "", { allowHttpLoopback: this.allowHttpLoopback, environment: this.environment });
+    } catch {
+      throw new TeamRoomError("TEAM_ROOM_API_URL is invalid or insecure; use an origin-only HTTPS URL (loopback HTTP is development-only)", 0, "CONFIG_INVALID");
     }
   }
 
   async request(method, route, body) {
+    let requestUrl;
+    try {
+      requestUrl = resolveTeamRoomRequestUrl(this.baseUrl, route, { allowHttpLoopback: this.allowHttpLoopback, environment: this.environment });
+    } catch {
+      throw new TeamRoomError("Team Room route is invalid or outside the configured origin", 0, "CONFIG_INVALID");
+    }
     let response;
     try {
-      response = await fetch(this.baseUrl + route, {
+      response = await fetch(requestUrl, {
         method,
         headers: { authorization: "Bearer " + this.token, accept: "application/json", ...(body === undefined ? {} : {"content-type":"application/json"}) },
         ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+        redirect: "error",
         signal: AbortSignal.timeout(10000)
       });
     } catch {
-      throw new TeamRoomError("Team Room request failed; execution is fail-closed", 0, "NETWORK_FAILURE");
+      throw new TeamRoomError("Team Room request failed or redirect was rejected; execution is fail-closed", 0, "NETWORK_FAILURE");
+    }
+    if (response.status === 401) {
+      this.token = "";
+      if (this.tokenSource && typeof this.tokenSource.TEAM_ROOM_SESSION_TOKEN === "string") {
+        this.tokenSource.TEAM_ROOM_SESSION_TOKEN = "";
+      }
+      throw new TeamRoomError("Team Room session expired or was revoked; the in-memory token was cleared", 401, "SESSION_INVALID");
     }
     const raw = await response.text();
     let payload = {};

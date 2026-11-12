@@ -18,11 +18,13 @@ use sqlx::PgPool;
 use std::{collections::{HashMap, VecDeque}, env, net::SocketAddr, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+use url::Url;
 
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
     oidc: Option<OidcConfig>,
+    require_oidc: bool,
 }
 
 #[derive(Serialize)]
@@ -63,8 +65,62 @@ async fn live() -> (StatusCode, Json<HealthResponse>) {
     (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "live" }))
 }
 
+fn environment_requires_oidc(environment: &str) -> Result<bool, &'static str> {
+    match environment {
+        "development" | "test" => Ok(false),
+        "staging" | "production" => Ok(true),
+        _ => Err("TEAM_ROOM_ENV must be development, test, staging or production"),
+    }
+}
+
+fn validate_database_target(
+    environment: &str,
+    database_url: &str,
+    expected_host: Option<&str>,
+    expected_database: Option<&str>,
+) -> Result<(), &'static str> {
+    if environment == "development" || environment == "test" {
+        return Ok(());
+    }
+
+    let expected_host = expected_host.filter(|value| !value.trim().is_empty())
+        .ok_or("TEAM_ROOM_EXPECTED_DB_HOST is required in staging and production")?;
+    let expected_database = expected_database.filter(|value| !value.trim().is_empty())
+        .ok_or("TEAM_ROOM_EXPECTED_DATABASE is required in staging and production")?;
+    let parsed = Url::parse(database_url).map_err(|_| "DATABASE_URL is invalid")?;
+    if parsed.scheme() != "postgres" && parsed.scheme() != "postgresql" {
+        return Err("DATABASE_URL must use the PostgreSQL scheme");
+    }
+    if !parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case(expected_host)) {
+        return Err("DATABASE_URL host does not match TEAM_ROOM_EXPECTED_DB_HOST");
+    }
+    if !parsed.path().starts_with('/') || parsed.path().starts_with("//") {
+        return Err("DATABASE_URL must contain exactly one database path segment");
+    }
+    let database_name = parsed.path().trim_start_matches('/');
+    if database_name.is_empty() || database_name.contains('/') || database_name != expected_database {
+        return Err("DATABASE_URL database does not match TEAM_ROOM_EXPECTED_DATABASE");
+    }
+    let ssl_mode_count = parsed.query_pairs().filter(|(key, _)| key == "sslmode").count();
+    let verify_full_count = parsed.query_pairs()
+        .filter(|(key, value)| key == "sslmode" && value == "verify-full")
+        .count();
+    if ssl_mode_count != 1 || verify_full_count != 1 || parsed.fragment().is_some() {
+        return Err("Staging and production DATABASE_URL must use exactly one sslmode=verify-full parameter");
+    }
+    Ok(())
+}
+
+fn oidc_configuration_ready(required: bool, configured: bool) -> bool {
+    !required || configured
+}
+
+fn production_oidc_transport_safe(required: bool, allow_http_localhost: bool) -> bool {
+    !required || !allow_http_localhost
+}
+
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    if readiness(&state.pool).await {
+    if oidc_configuration_ready(state.require_oidc, state.oidc.is_some()) && readiness(&state.pool).await {
         (StatusCode::OK, Json(HealthResponse { service: "ai-team-room", status: "ready" }))
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(HealthResponse { service: "ai-team-room", status: "not_ready" }))
@@ -450,18 +506,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
+    let environment = env::var("TEAM_ROOM_ENV").unwrap_or_else(|_| "production".to_string());
+    let require_oidc = environment_requires_oidc(environment.as_str())?;
+    let oidc = match OidcConfig::from_env() {
+        Ok(config) if !production_oidc_transport_safe(require_oidc, config.allow_http_localhost) => {
+            return Err("OIDC_ALLOW_HTTP_LOCALHOST must be disabled in staging and production".into());
+        }
+        Ok(config) => { tracing::info!(%environment, "OIDC workload trust configuration loaded"); Some(config) }
+        Err(reason) if require_oidc => {
+            return Err(format!("OIDC configuration is mandatory in {environment}: {reason}").into());
+        }
+        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled in explicit non-production environment"); None }
+    };
+
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
+    let expected_db_host = env::var("TEAM_ROOM_EXPECTED_DB_HOST").ok();
+    let expected_database = env::var("TEAM_ROOM_EXPECTED_DATABASE").ok();
+    validate_database_target(
+        environment.as_str(),
+        database_url.as_str(),
+        expected_db_host.as_deref(),
+        expected_database.as_deref(),
+    )?;
     let bind: SocketAddr = env::var("TEAM_ROOM_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8081".to_string()).parse()?;
-
     let pool = connect_pool(&database_url).await?;
     migrate(&pool).await?;
-    let oidc = match OidcConfig::from_env() {
-        Ok(config) => { tracing::info!("OIDC workload trust configuration loaded"); Some(config) }
-        Err(reason) => { tracing::warn!(%reason, "OIDC authentication disabled until trust configuration is provided"); None }
-    };
-    let state = AppState { pool, oidc };
+    let state = AppState { pool, oidc, require_oidc };
 
     let app = build_router(state);
 
@@ -483,7 +555,60 @@ mod http_security_tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://test:test@127.0.0.1/test")
             .expect("lazy pool configuration");
-        build_router(AppState { pool, oidc: None })
+        build_router(AppState { pool, oidc: None, require_oidc: false })
+    }
+
+    #[test]
+    fn production_database_target_requires_exact_host_database_and_verified_tls() {
+        let secure = "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=verify-full";
+        assert!(validate_database_target(
+            "production", secure, Some("db.prod.example"), Some("tokensaver_prod")
+        ).is_ok());
+        assert!(validate_database_target(
+            "production", secure, None, Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "staging", secure, Some("db.prod.example"), Some("tokensaver_stage")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=require",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432/tokensaver_prod?sslmode=verify-full&sslmode=disable",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "production",
+            "postgres://app:synthetic@db.prod.example:5432//tokensaver_prod?sslmode=verify-full",
+            Some("db.prod.example"),
+            Some("tokensaver_prod")
+        ).is_err());
+        assert!(validate_database_target(
+            "development", "postgres://localhost/test", None, None
+        ).is_ok());
+        assert!(validate_database_target(
+            "test", "postgres://localhost/test", None, None
+        ).is_ok());
+    }
+
+    #[test]
+    fn production_and_staging_require_oidc_configuration() {
+        assert_eq!(environment_requires_oidc("development"), Ok(false));
+        assert_eq!(environment_requires_oidc("test"), Ok(false));
+        assert_eq!(environment_requires_oidc("staging"), Ok(true));
+        assert_eq!(environment_requires_oidc("production"), Ok(true));
+        assert!(environment_requires_oidc("prod").is_err());
+        assert!(!oidc_configuration_ready(true, false));
+        assert!(oidc_configuration_ready(true, true));
+        assert!(oidc_configuration_ready(false, false));
+        assert!(!production_oidc_transport_safe(true, true));
+        assert!(production_oidc_transport_safe(true, false));
+        assert!(production_oidc_transport_safe(false, true));
     }
 
     #[tokio::test]
@@ -567,7 +692,7 @@ mod http_security_tests {
             .bind(execution).bind(tenant).bind(room).bind(participant).bind(principal).bind(session)
             .bind(format!("{issuer}|{subject}")).execute(&pool).await.unwrap();
 
-        let app = build_router(AppState { pool: pool.clone(), oidc: None });
+        let app = build_router(AppState { pool: pool.clone(), oidc: None, require_oidc: false });
         let auth_response = app.clone().oneshot(
             axum::http::Request::builder().uri("/auth/me")
                 .header("authorization", format!("Bearer {raw_token}"))

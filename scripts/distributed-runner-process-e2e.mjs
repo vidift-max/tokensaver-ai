@@ -82,7 +82,7 @@ function seed(){
   }
 }
 function runnerEnv(identity,stateDir){
-  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId,TEAM_ROOM_LEASE_SECONDS:"15"};
+  return {...process.env,MISSION_STATE_DIR:stateDir,TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token,TEAM_ROOM_ROOM_ID:roomId,TEAM_ROOM_LEASE_SECONDS:"15"};
 }
 function runSync(identity,stateDir,...args){
   const result=spawnSync(process.execPath,[runnerScript,...args],{encoding:"utf8",env:runnerEnv(identity,stateDir),timeout:20000,maxBuffer:1024*1024});
@@ -107,7 +107,7 @@ function stateForMission(stateDir,id){
 function runRecoveryAsync(identity,...args){
   return new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[recoveryScript,...args],{
-      env:{...process.env,TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:identity.token},
+      env:{...process.env,TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:identity.token},
       stdio:["ignore","pipe","pipe"]
     });
     let stdout="",stderr="";
@@ -139,7 +139,7 @@ function mustRun(identity,stateDir,...args){
 const dirs=[];
 try{
   seed();
-  const client=new TeamRoomClient({TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_SESSION_TOKEN:runnerA.token,TEAM_ROOM_ROOM_ID:roomId});
+  const client=new TeamRoomClient({TEAM_ROOM_ENV:"test",TEAM_ROOM_API_URL:apiUrl,TEAM_ROOM_ALLOW_HTTP_LOOPBACK:"true",TEAM_ROOM_SESSION_TOKEN:runnerA.token,TEAM_ROOM_ROOM_ID:roomId});
   const missionUuid=client.missionUuid(missionLabel);
   const stateA=fs.mkdtempSync(path.join(os.tmpdir(),"runner-a-"));dirs.push(stateA);
   const stateB=fs.mkdtempSync(path.join(os.tmpdir(),"runner-b-"));dirs.push(stateB);
@@ -374,7 +374,7 @@ try{
   };
   const outputDir=process.env.DISTRIBUTED_EVIDENCE_DIR||"distributed-runner-evidence";
   fs.mkdirSync(outputDir,{recursive:true});
-  fs.writeFileSync(path.join(outputDir,"runner-process-evidence.json"),JSON.stringify({commit_sha:process.env.GITHUB_SHA||null,...evidence},null,2)+"\n");
+  fs.writeFileSync(path.join(outputDir,"runner-process-evidence.json"),JSON.stringify({commit_sha:process.env.MISSION_SOURCE_SHA||process.env.GITHUB_SHA||null,merge_commit_sha:process.env.GITHUB_SHA||null,...evidence},null,2)+"\n");
   console.log("RUNNER_PROCESS_EVIDENCE="+JSON.stringify(evidence));
 }catch(error){
   console.error(error instanceof Error?error.stack:String(error));

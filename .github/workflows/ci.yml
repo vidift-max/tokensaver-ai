@@ -5,6 +5,9 @@ concurrency:
   group: tokensaver-ai-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [v2-saas-alpha]
@@ -39,7 +42,7 @@ jobs:
       - run: npm run test:missions
       - run: npm run build
       - name: Package source ZIP
-        run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
+        run: git archive --format=zip --output=tokensaver-ai-v2-saas-alpha.zip HEAD
       - name: Upload source ZIP
         uses: actions/upload-artifact@v4
         with:
@@ -313,7 +316,7 @@ jobs:
           echo "$TOKEN_SCOPE" | tr ' ' '\n' | grep -Fxq 'team_room:connect'
 
           STAGE="service-startup"
-          export OIDC_ISSUER="$ISSUER" OIDC_AUDIENCE="team-room-api" OIDC_ALLOW_HTTP_LOCALHOST="true"
+          export TEAM_ROOM_ENV="test" OIDC_ISSUER="$ISSUER" OIDC_AUDIENCE="team-room-api" OIDC_ALLOW_HTTP_LOCALHOST="true"
           RUST_LOG=info ./services/ai-team-room/target/debug/ai-team-room-service > ai-team-room-service.log 2>&1 &
           SERVICE_PID=$!
           for attempt in $(seq 1 60); do
@@ -399,3 +402,33 @@ jobs:
           fi
           echo "PASS: live Keycloak JWT -> /auth/exchange -> registered workload -> opaque session digest -> permission check -> PostgreSQL room admission"
           echo "PASS: real issuer/subject/session/workload binding, expiry, denied room.read, admission audit, and replay rejection"
+
+  desktop-nsis-unsigned:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install NSIS bundler
+        run: choco install nsis --yes --no-progress
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Build Windows NSIS installer (unsigned CI validation only)
+        run: npm run tauri build -- --bundles nsis
+      - name: Verify installer is unsigned and record SHA-256
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe")
+          if ($files.Count -ne 1) { throw "Expected exactly one NSIS installer; found $($files.Count)" }
+          $signature = Get-AuthenticodeSignature -FilePath $files[0].FullName
+          if ($signature.Status -ne "NotSigned") { throw "Expected an unsigned internal QA artifact, got $($signature.Status)" }
+          Get-FileHash -Path $files[0].FullName -Algorithm SHA256 | Format-List
+      - name: Upload unsigned installer for internal QA only
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokensaver-ai-0.1.0-nsis-UNSIGNED
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
