@@ -129,6 +129,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let http_message=inbox.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
     assert_eq!(http_message["message_state"],"DELIVERED");
     let message_id=http_message["message_id"].as_str().unwrap();
+    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
+    let retried:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
+    let retried_message=retried.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
+    assert_eq!(retried_message["attempt_count"],2,"unacknowledged delivery is retried on the next authenticated poll");
+    assert_eq!(retried_message["message_state"],"DELIVERED");
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
