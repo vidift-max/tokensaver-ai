@@ -438,7 +438,8 @@ pub async fn provision_ai_identity(
     require_permission(pool, caller, "ai.identity.provision").await.map_err(|_| PhoneError::Forbidden)?;
     if request.identity_key.trim().is_empty() || request.identity_key.len() > 200
         || request.display_label.trim().is_empty() || request.display_label.len() > 120
-        || !matches!(request.identity_kind.as_str(), "TEST" | "EXTERNAL") {
+        || !matches!(request.identity_kind.as_str(), "TEST" | "EXTERNAL")
+        || request.tenant_id != caller.tenant_id {
         return Err(PhoneError::Invalid);
     }
     let mut tx = pool.begin().await?;
@@ -446,29 +447,30 @@ pub async fn provision_ai_identity(
         "SELECT EXISTS(SELECT 1 FROM principals WHERE tenant_id=$1 AND principal_id=$2 AND principal_kind='AI' AND enabled=TRUE)"
     ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
     if !target_is_ai { return Err(PhoneError::Forbidden); }
-    let ai_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,$3,$4)")
-        .bind(ai_id).bind(&request.identity_key).bind(&request.identity_kind).bind(&request.display_label)
-        .execute(&mut *tx).await.map_err(|error| {
-            if let sqlx::Error::Database(db) = &error {
-                if db.code().as_deref() == Some("23505") { return PhoneError::Conflict; }
-            }
-            PhoneError::Database(error)
-        })?;
-    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
-        .bind(ai_id).bind(request.tenant_id).bind(request.principal_id)
-        .execute(&mut *tx).await.map_err(|error| {
-            if let sqlx::Error::Database(db) = &error {
-                if db.code().as_deref() == Some("23505") { return PhoneError::Conflict; }
-            }
-            PhoneError::Database(error)
-        })?;
-    sqlx::query("INSERT INTO audit_events(audit_event_id,tenant_id,room_id,actor_principal_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,$3,$4,'ai.identity.provisioned','ai_identity',$5,'SUCCESS',$6)")
+
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,$3,$4) ON CONFLICT(identity_key) DO NOTHING")
+        .bind(Uuid::new_v4()).bind(&request.identity_key).bind(&request.identity_kind).bind(&request.display_label)
+        .execute(&mut *tx).await?;
+    let existing: (Uuid,String,String) = sqlx::query_as(
+        "SELECT ai_id,identity_kind,display_label FROM ai_identities WHERE identity_key=$1 FOR UPDATE"
+    ).bind(&request.identity_key).fetch_one(&mut *tx).await?;
+    if existing.1 != request.identity_kind || existing.2 != request.display_label {
+        return Err(PhoneError::Conflict);
+    }
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,principal_id) DO NOTHING")
+        .bind(existing.0).bind(request.tenant_id).bind(request.principal_id)
+        .execute(&mut *tx).await?;
+    let bound_ai: Uuid = sqlx::query_scalar(
+        "SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2"
+    ).bind(request.tenant_id).bind(request.principal_id).fetch_one(&mut *tx).await?;
+    if bound_ai != existing.0 { return Err(PhoneError::Conflict); }
+
+    sqlx::query("INSERT INTO audit_events(audit_event_id,tenant_id,room_id,actor_principal_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,$3,$4,'ai.identity.bound','ai_identity',$5,'SUCCESS',$6)")
         .bind(Uuid::new_v4()).bind(caller.tenant_id).bind(caller.room_id).bind(caller.principal_id)
-        .bind(ai_id).bind(serde_json::json!({"target_tenant_id":request.tenant_id,"target_principal_id":request.principal_id,"identity_kind":request.identity_kind}))
+        .bind(existing.0).bind(serde_json::json!({"target_tenant_id":request.tenant_id,"target_principal_id":request.principal_id,"identity_kind":request.identity_kind}))
         .execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(IdentityProvisionResult { ai_id, tenant_id: request.tenant_id, principal_id: request.principal_id })
+    Ok(IdentityProvisionResult { ai_id: existing.0, tenant_id: request.tenant_id, principal_id: request.principal_id })
 }
 
 async fn provision_identity_handler(
