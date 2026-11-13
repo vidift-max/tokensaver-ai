@@ -208,7 +208,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
                 "metadata":{"fixture":"disposable-scale-1-to-7","generation":"initial"}
             }))).await;
         assert_eq!(initial.status(),StatusCode::CREATED,"operator enrolls initial endpoint");
-        assert_eq!(initial.headers().get(axum::http::header::CACHE_CONTROL).unwrap(),"no-store");
+        assert_eq!(initial.headers().get(axum::http::header::CACHE_CONTROL).unwrap().to_str().unwrap(),"no-store");
         let initial_body:Value=serde_json::from_slice(
             &axum::body::to_bytes(initial.into_body(),32_000).await.unwrap()).unwrap();
         actor.endpoint_credential=initial_body["endpoint_credential"].as_str().unwrap().to_owned();
