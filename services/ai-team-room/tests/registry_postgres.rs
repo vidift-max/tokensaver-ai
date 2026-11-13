@@ -24,6 +24,12 @@ async fn grant(pool: &PgPool, tenant: Uuid, room: Uuid, principal: Uuid, permiss
         .execute(pool).await.unwrap();
 }
 
+async fn grant_tenant_wide(pool: &PgPool, tenant: Uuid, principal: Uuid, permission: &str) {
+    sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,NULL,$4)")
+        .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(permission)
+        .execute(pool).await.unwrap();
+}
+
 struct RegistryActor {
     identity: AuthenticatedIdentity,
     token: String,
@@ -87,6 +93,9 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
             grant(&pool, tenant, room, principal, permission).await;
         }
         if index == 0 {
+            grant_tenant_wide(&pool, tenant, principal, "phone.registry.read").await;
+        } else if index == 1 {
+            // A room-scoped permission must not authorize a tenant-wide registry.
             grant(&pool, tenant, room, principal, "phone.registry.read").await;
         }
         actors.push(RegistryActor {
