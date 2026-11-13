@@ -38,7 +38,7 @@ jobs:
       - name: Checkout audit harness and workflow
         uses: actions/checkout@v4
         with:
-          ref: audit/ai-phone-02c-execution
+          ref: ${{ github.sha }}
           path: audit-harness
           fetch-depth: 0
 
@@ -76,7 +76,10 @@ jobs:
             echo "COMMUNICATION_SOURCE_BLOB_SHA=$communication_blob"
             echo "TASKS_SOURCE_BLOB_SHA=$tasks_blob"
             echo "HANDOFFS_SOURCE_BLOB_SHA=$handoffs_blob"
+            echo "HARNESS_SHA=$(git -C audit-harness rev-parse HEAD)"
+            echo "AUDIT_EVIDENCE_DIR=$GITHUB_WORKSPACE/audit-evidence"
           } >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/audit-evidence"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -150,6 +153,7 @@ jobs:
             ai-phone-02c-full-suite.log
             ai-phone-02c-frontend.log
             ai-phone-02c-evidence-manifest.txt
+            audit-evidence/*.jsonl
             audit-harness/services/ai-team-room/tests/ai_phone_02c_network.rs
             audit-harness/.github/workflows/ai-phone-02c-dynamic-audit.yml
           if-no-files-found: warn

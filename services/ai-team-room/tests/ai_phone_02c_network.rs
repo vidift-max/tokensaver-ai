@@ -4,6 +4,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
+use futures_util::StreamExt;
+use std::{fs::OpenOptions, io::Write};
 
 // These modules are compiled directly from the immutable TARGET_SHA checkout.
 // The workflow injects this test into that checkout; neither source file is copied
@@ -1270,4 +1272,146 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "revoked operator key cannot enroll or rotate endpoint credentials");
     server.abort();
 
+}
+
+
+fn append_websocket_evidence(client_id: usize, stage: &str, expected: &str, observed: &str, passed: bool) {
+    let directory = std::env::var("AUDIT_EVIDENCE_DIR").expect("AUDIT_EVIDENCE_DIR must be configured by CI");
+    std::fs::create_dir_all(&directory).expect("create audit evidence directory");
+    let path = std::path::Path::new(&directory).join("websocket-seven-clients.jsonl");
+    let target_sha = std::env::var("TARGET_SHA").expect("TARGET_SHA");
+    let harness_sha = std::env::var("HARNESS_SHA").expect("HARNESS_SHA");
+    let record = serde_json::json!({
+        "client_id": client_id,
+        "stage": stage,
+        "expected": expected,
+        "observed": observed,
+        "status": if passed { "PASS" } else { "FAIL" },
+        "target_sha": target_sha,
+        "harness_sha": harness_sha
+    });
+    let mut file = OpenOptions::new().create(true).append(true).open(path).expect("open websocket JSONL evidence");
+    writeln!(file, "{}", record).expect("append websocket JSONL evidence");
+}
+
+#[tokio::test]
+async fn ai_phone_02c_seven_real_websockets_revoke_one_and_preserve_six() {
+    let database_url = std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool = connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("apply exact-target migrations");
+
+    let tenant_id = Uuid::new_v4();
+    let room_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'AI-PHONE-02C seven websocket revocation')")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO rooms(room_id,tenant_id,name,capacity_limit) VALUES($1,$2,'seven websocket revocation room',15)")
+        .bind(room_id).bind(tenant_id).execute(&pool).await.unwrap();
+
+    let mut actors: Vec<(Uuid, Uuid, String)> = Vec::new();
+    for index in 0..7 {
+        let (principal, _participant, session, _execution, _unused, _subject) =
+            add_ai(&pool, tenant_id, room_id, &format!("WS-REVOCATION-{}", index + 1)).await;
+        grant_permission(&pool, tenant_id, room_id, principal, "room.read").await;
+        grant_permission(&pool, tenant_id, room_id, principal, "room.write").await;
+        let token = bearer_for(&pool, session).await;
+        actors.push((principal, session, token));
+    }
+
+    let router = communication::router(pool.clone())
+        .merge(ai_team_room_service::phone::router(pool.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base = format!("http://{address}");
+    let client = reqwest::Client::new();
+    let mut sockets = Vec::new();
+
+    for (index, (_, _, token)) in actors.iter().enumerate() {
+        let (status, body) = call(
+            &base, "POST", &format!("/team-room/{room_id}/ws-ticket"), token, Some(serde_json::json!({}))
+        ).await;
+        assert_eq!(status, StatusCode::OK, "client {} receives a real session-authorized ticket", index + 1);
+        let ticket: Value = serde_json::from_slice(&body).unwrap();
+        let ws_url = format!("ws://{address}/team-room/{room_id}/ws?ticket={}", ticket["ticket"].as_str().unwrap());
+        let mut request = ws_url.into_client_request().unwrap();
+        request.headers_mut().insert("Sec-WebSocket-Protocol", "team-room.v1".parse().unwrap());
+        let (socket, _) = tokio_tungstenite::connect_async(request).await
+            .unwrap_or_else(|error| panic!("client {} real WebSocket handshake failed: {error}", index + 1));
+        append_websocket_evidence(index + 1, "connected", "authenticated WebSocket established", "handshake accepted", true);
+        sockets.push(socket);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let (general_status, _) = call(
+        &base, "POST", &format!("/team-room/{room_id}/messages"), &actors[0].2,
+        Some(serde_json::json!({
+            "client_message_id": Uuid::new_v4(),
+            "body": "general fanout before session revocation",
+            "parent_message_id": null
+        }))
+    ).await;
+    assert_eq!(general_status, StatusCode::CREATED);
+    for (index, socket) in sockets.iter_mut().enumerate() {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await.expect("initial fanout timeout").unwrap().unwrap();
+        let event: Value = serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(event["type"], "MESSAGE_CREATED");
+        append_websocket_evidence(index + 1, "general_fanout", "receive general event", "MESSAGE_CREATED received", true);
+    }
+
+    // Revoke exactly client #4's Team Room session. Endpoint ownership is untouched.
+    sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1")
+        .bind(actors[3].1).execute(&pool).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+
+    let revoked_close = tokio::time::timeout(std::time::Duration::from_secs(5), sockets[3].next())
+        .await.expect("revoked WebSocket must close after the 15-second revalidation");
+    let close_observed = match revoked_close {
+        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => "close frame received",
+        Some(Err(_)) => "connection closed with transport error",
+        None => "connection ended",
+        Some(Ok(other)) => panic!("revoked client received unexpected frame instead of close: {other:?}"),
+    };
+    append_websocket_evidence(4, "session_revalidation", "blocked and WebSocket closed", close_observed, true);
+
+    let (after_revoke_status, _) = call(
+        &base, "POST", &format!("/team-room/{room_id}/messages"), &actors[0].2,
+        Some(serde_json::json!({
+            "client_message_id": Uuid::new_v4(),
+            "body": "general fanout after one session revocation",
+            "parent_message_id": null
+        }))
+    ).await;
+    assert_eq!(after_revoke_status, StatusCode::CREATED, "the other six sessions remain authorized");
+
+    for (index, socket) in sockets.iter_mut().enumerate() {
+        if index == 3 { continue; }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await.expect("remaining active WebSocket fanout timeout").unwrap().unwrap();
+        let event: Value = serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(event["type"], "MESSAGE_CREATED");
+        append_websocket_evidence(index + 1, "session_revalidation", "remain connected and receive fanout", "MESSAGE_CREATED received", true);
+    }
+
+    let (reconnect_status, _) = call(
+        &base, "POST", &format!("/team-room/{room_id}/ws-ticket"), &actors[3].2, Some(serde_json::json!({}))
+    ).await;
+    assert_eq!(reconnect_status, StatusCode::UNAUTHORIZED, "revoked session cannot obtain a reconnect ticket");
+    append_websocket_evidence(4, "reconnect", "reconnect rejected", format!("HTTP {}", reconnect_status.as_u16()).as_str(), true);
+
+    let revoked_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE session_id=$1 AND status='REVOKED' AND revoked_at IS NOT NULL")
+        .bind(actors[3].1).fetch_one(&pool).await.unwrap();
+    let active_others: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE session_id=ANY($1) AND status='ACTIVE' AND revoked_at IS NULL")
+        .bind(actors.iter().enumerate().filter(|(i,_)| *i != 3).map(|(_,a)| a.1).collect::<Vec<_>>())
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(revoked_count, 1, "exactly one session is revoked in PostgreSQL");
+    assert_eq!(active_others, 6, "the other six sessions remain active in PostgreSQL");
+
+    drop(sockets);
+    server.abort();
+    sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
 }
