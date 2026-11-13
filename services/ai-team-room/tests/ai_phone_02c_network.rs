@@ -1419,7 +1419,7 @@ async fn ai_phone_02c_seven_real_websockets_revoke_one_and_preserve_six() {
         .bind(tenant_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_principals WHERE tenant_id=$1")
         .bind(tenant_id).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
 }
 
