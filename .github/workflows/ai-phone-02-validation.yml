@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - mission/ai-phone-02
+      - mission/ai-phone-02b-security-convergence
   workflow_dispatch:
     inputs:
       target_sha:
@@ -54,7 +55,10 @@ jobs:
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
           test "$actual" = "$TARGET_SHA"
-          test "$GITHUB_REF_NAME" = "mission/ai-phone-02"
+          case "$GITHUB_REF_NAME" in
+            mission/ai-phone-02|mission/ai-phone-02b-security-convergence) ;;
+            *) echo "Unexpected validation branch: $GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
           printf 'TARGET_SHA=%s\nHEAD=%s\nBRANCH=%s\n' "$TARGET_SHA" "$actual" "$GITHUB_REF_NAME" | tee ai-phone-02-run-context.txt
 
       - name: Install Rust stable
