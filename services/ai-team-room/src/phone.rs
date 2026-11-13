@@ -1,5 +1,8 @@
 use crate::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
 use axum::{extract::{Path, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::{rngs::OsRng, RngCore};
+use sha2::{Digest, Sha256};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +23,8 @@ pub enum PhoneError {
     InvalidSession,
     #[error("invalid phone request")]
     Invalid,
+    #[error("endpoint credential is missing, expired, revoked, or bound to another endpoint generation")]
+    EndpointUnauthorized,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -161,6 +166,101 @@ async fn validate_live_binding(
       .fetch_one(&mut **tx).await?;
     if !valid { return Err(PhoneError::InvalidSession); }
     Ok(())
+}
+
+fn credential_hash(secret: &str) -> Vec<u8> {
+    Sha256::digest(secret.as_bytes()).to_vec()
+}
+
+fn endpoint_secret_from_headers(headers: &HeaderMap) -> Result<String, PhoneError> {
+    headers.get("x-ai-phone-endpoint-credential")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() >= 40 && value.len() <= 128)
+        .map(str::to_owned)
+        .ok_or(PhoneError::EndpointUnauthorized)
+}
+
+fn operator_secret_from_headers(headers: &HeaderMap) -> Result<String, StatusCode> {
+    headers.get("x-ai-phone-operator-key")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() >= 40 && value.len() <= 128)
+        .map(str::to_owned)
+        .ok_or(StatusCode::FORBIDDEN)
+}
+
+fn generate_endpoint_secret() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+async fn require_endpoint_operator(
+    pool: &PgPool,
+    identity: &AuthenticatedIdentity,
+    ai_id: Uuid,
+    headers: &HeaderMap,
+) -> Result<(), StatusCode> {
+    require_permission(pool, identity, "phone.endpoint.manage").await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    let secret = operator_secret_from_headers(headers)?;
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM phone_endpoint_operator_keys WHERE tenant_id=$1 AND ai_id=$2 AND key_hash=$3 AND key_status='ACTIVE' AND (expires_at IS NULL OR expires_at>NOW()))"
+    ).bind(identity.tenant_id).bind(ai_id).bind(credential_hash(&secret))
+        .fetch_one(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if allowed { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
+}
+
+/// Locks the phone, active attachment, endpoint and credential together. A transfer/detach
+/// takes the same phone row lock, so an old credential cannot race a generation change.
+async fn require_current_endpoint_credential(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    identity: &AuthenticatedIdentity,
+    phone: &PhoneRecord,
+    secret: &str,
+) -> Result<(Uuid, Uuid, i64), PhoneError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, i64)>(
+        r#"SELECT c.credential_id,a.endpoint_id,a.endpoint_fence
+           FROM phone_endpoint_credentials c
+           JOIN phone_endpoints e ON e.endpoint_id=c.endpoint_id AND e.ai_phone_id=c.ai_phone_id
+             AND e.tenant_id=c.tenant_id AND e.ai_id=c.ai_id
+           JOIN ai_phones p ON p.ai_phone_id=c.ai_phone_id AND p.tenant_id=c.tenant_id AND p.ai_id=c.ai_id
+           JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id AND a.ai_phone_id=p.ai_phone_id
+             AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id
+           WHERE c.credential_hash=$1 AND c.ai_phone_id=$2 AND c.tenant_id=$3 AND c.ai_id=$4
+             AND c.credential_status='ACTIVE' AND c.expires_at>NOW()
+             AND c.endpoint_fence=p.endpoint_fence AND e.endpoint_status='ATTACHED'
+             AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence
+             AND a.session_id=$5 AND a.execution_id=$6
+           FOR UPDATE OF p,a,e,c"#
+    ).bind(credential_hash(secret)).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+      .bind(identity.session_id).bind(identity.execution_id)
+      .fetch_optional(&mut **tx).await?.ok_or(PhoneError::EndpointUnauthorized)?;
+    sqlx::query("UPDATE phone_endpoint_credentials SET last_used_at=NOW() WHERE credential_id=$1")
+        .bind(row.0).execute(&mut **tx).await?;
+    Ok(row)
+}
+
+async fn require_registered_endpoint_credential(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    identity: &AuthenticatedIdentity,
+    phone: &PhoneRecord,
+    endpoint_id: Uuid,
+    secret: &str,
+) -> Result<Uuid, PhoneError> {
+    let credential_id: Uuid = sqlx::query_scalar(
+        r#"SELECT c.credential_id FROM phone_endpoint_credentials c
+           JOIN phone_endpoints e ON e.endpoint_id=c.endpoint_id AND e.ai_phone_id=c.ai_phone_id
+             AND e.tenant_id=c.tenant_id AND e.ai_id=c.ai_id
+           JOIN ai_phones p ON p.ai_phone_id=c.ai_phone_id AND p.tenant_id=c.tenant_id AND p.ai_id=c.ai_id
+           WHERE c.credential_hash=$1 AND c.endpoint_id=$2 AND c.ai_phone_id=$3
+             AND c.tenant_id=$4 AND c.ai_id=$5 AND c.credential_status='ACTIVE'
+             AND c.endpoint_fence IS NULL AND c.expires_at>NOW()
+             AND e.endpoint_status IN ('REGISTERED','DETACHED')
+           FOR UPDATE OF p,e,c"#
+    ).bind(credential_hash(secret)).bind(endpoint_id).bind(phone.ai_phone_id)
+      .bind(identity.tenant_id).bind(phone.ai_id)
+      .fetch_optional(&mut **tx).await?.ok_or(PhoneError::EndpointUnauthorized)?;
+    Ok(credential_id)
 }
 
 fn valid_endpoint_type(value: &str) -> bool {
