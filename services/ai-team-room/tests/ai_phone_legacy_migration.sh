@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MIGRATIONS="$ROOT/services/ai-team-room/migrations"
 MIGRATION_0012="$MIGRATIONS/0012_ai_phone_tenant_isolation.sql"
+MIGRATION_0013="$MIGRATIONS/0013_ai_phone_endpoint_credentials.sql"
 RUN_SUFFIX="${GITHUB_RUN_ID:-$$}"
 
 create_legacy_db() {
@@ -13,7 +14,7 @@ create_legacy_db() {
   local url="${DATABASE_URL%/*}/$db"
   createdb --maintenance-db="$DATABASE_URL" "$db"
   for migration in "$MIGRATIONS"/[0-9][0-9][0-9][0-9]_*.sql; do
-    [[ "$(basename "$migration")" == 0012_* ]] && continue
+    [[ "$(basename "$migration")" == 0012_* || "$(basename "$migration")" == 0013_* ]] && continue
     psql "$url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
   done
   printf '%s\n' "$url"
@@ -146,6 +147,29 @@ run_compatible_legacy_case() {
     exit 1
   }
   echo "PASS: compatible legacy migration applied; all legacy resource rows preserved and mapped to tenant A ($after)"
+
+  # AI-PHONE-02B must fence legacy attachments that have no endpoint credential.
+  psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0013"
+  local endpoint_backfill
+  endpoint_backfill="$(psql "$url" -Atc "
+    SELECT p.phone_status||':'||p.endpoint_fence||':'||e.endpoint_status||':'||a.attachment_status
+      FROM ai_phones p
+      JOIN phone_endpoints e ON e.ai_phone_id=p.ai_phone_id
+      JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id AND a.ai_phone_id=e.ai_phone_id
+     WHERE p.ai_phone_id='a0000000-0000-0000-0000-000000000001'
+       AND e.endpoint_id='b0000000-0000-0000-0000-000000000001'
+       AND a.attachment_id='c0000000-0000-0000-0000-000000000001'")"
+  [[ "$endpoint_backfill" == "DISCONNECTED:3:DETACHED:FENCED" ]] || {
+    echo "FAIL: 0013 did not fence the legacy endpoint attachment: $endpoint_backfill" >&2
+    exit 1
+  }
+  local after_0013
+  after_0013="$(snapshot "$url")"
+  [[ "$after_0013" == "$before" ]] || {
+    echo "FAIL: 0013 deleted or duplicated legacy durable resources: before=$before after=$after_0013" >&2
+    exit 1
+  }
+  echo "PASS: 0013 preserved phone/mailbox/mission rows and fenced legacy endpoint generation ($endpoint_backfill)"
 }
 
 run_shared_legacy_case
