@@ -1413,7 +1413,14 @@ async fn ai_phone_02c_seven_real_websockets_revoke_one_and_preserve_six() {
     server.abort();
     sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
         .bind(tenant_id).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
+    // Identity-to-tenant bindings are deliberately restrictive. Remove the
+    // disposable fixture mappings explicitly before deleting its tenant.
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_principals WHERE tenant_id=$1")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
 }
 
 
