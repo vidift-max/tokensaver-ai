@@ -784,7 +784,7 @@ Endpoint REVOKED is terminal under the current register handler, which returns c
 ### 15.3 Authority model
 
 Current code proves:
-- endpoint registration and endpoint revocation require phone.endpoint.manage plus a valid AI/tenant-scoped operator key;
+- endpoint registration and endpoint revocation require phone.endpoint.manage plus a valid AI/tenant-scoped operator key; attach requires phone.attach (or phone.transfer for transfer), and detach requires phone.detach plus the current endpoint credential/fence;
 - session-authenticated Phone operations require a valid tenant/room/principal/session/execution binding;
 - the schema has no dedicated phone.lifecycle.manage permission or Phone lifecycle approver.
 
