@@ -562,6 +562,85 @@ mod postgres_tests {
         sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
             .bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+    }
+
+    #[tokio::test]
+    async fn seven_ai_team_room_websockets_receive_general_but_not_private_fanout() {
+        let database=std::env::var("DATABASE_URL").expect("PostgreSQL integration database required");
+        let pool=connect_pool(&database).await.unwrap();
+        migrate(&pool).await.unwrap();
+        let tenant=Uuid::new_v4();
+        let room=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'seven-websocket-scale-test')")
+            .bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name,capacity_limit) VALUES($1,$2,'seven-websocket-scale-room',15)")
+            .bind(room).bind(tenant).execute(&pool).await.unwrap();
+
+        let grants=["room.join","room.read","room.write","private_chat","presence.update","task.read"];
+        let mut actors=Vec::new();
+        for index in 0..7 {
+            actors.push(actor(&pool,tenant,room,&format!("Scale WebSocket AI {}",index+1),&grants).await);
+        }
+        let app=router(pool.clone());
+        let participants=request(app.clone(),"GET",format!("/team-room/{room}/participants"),&actors[0].token,None).await;
+        assert_eq!(participants.status(),StatusCode::OK);
+        let participants_json:serde_json::Value=serde_json::from_slice(
+            &axum::body::to_bytes(participants.into_body(),32_000).await.unwrap()).unwrap();
+        assert_eq!(participants_json.as_array().unwrap().len(),7,
+            "Team Room must expose exactly seven active AI participants");
+
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server_pool=pool.clone();
+        let server=tokio::spawn(async move{axum::serve(listener,router(server_pool)).await.unwrap();});
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let mut sockets=Vec::new();
+        for actor in &actors {
+            let ticket=request(app.clone(),"POST",format!("/team-room/{room}/ws-ticket"),&actor.token,Some(json!({}))).await;
+            assert_eq!(ticket.status(),StatusCode::OK);
+            let ticket_json:serde_json::Value=serde_json::from_slice(
+                &axum::body::to_bytes(ticket.into_body(),4096).await.unwrap()).unwrap();
+            let ws_url=format!("ws://{address}/team-room/{room}/ws?ticket={}",ticket_json["ticket"].as_str().unwrap());
+            let mut ws_request=ws_url.into_client_request().unwrap();
+            ws_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+            let (socket,_)=tokio_tungstenite::connect_async(ws_request).await
+                .expect("each of seven authenticated AI sessions must establish its own WebSocket");
+            sockets.push(socket);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let client=reqwest::Client::new();
+        let general=client.post(format!("http://{address}/team-room/{room}/messages"))
+            .bearer_auth(&actors[0].token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"general fanout to seven","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(general.status(),reqwest::StatusCode::CREATED);
+        for (index,socket) in sockets.iter_mut().enumerate() {
+            let frame=tokio::time::timeout(std::time::Duration::from_secs(5),socket.next())
+                .await.expect("general event fanout timeout").unwrap().unwrap();
+            let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(event["type"],"MESSAGE_CREATED","general event must reach AI #{}",index+1);
+        }
+
+        let private=client.post(format!("http://{address}/team-room/{room}/private/{}/messages",actors[1].principal))
+            .bearer_auth(&actors[0].token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"private only for AI one and two","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(private.status(),reqwest::StatusCode::CREATED);
+        for index in 0..2 {
+            let frame=tokio::time::timeout(std::time::Duration::from_secs(5),sockets[index].next())
+                .await.expect("private event must reach its two channel members").unwrap().unwrap();
+            let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(event["type"],"MESSAGE_CREATED");
+        }
+        for index in 2..7 {
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(500),sockets[index].next()).await.is_err(),
+                "private event must not fan out to AI #{}",index+1);
+        }
+        server.abort();
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
 }
