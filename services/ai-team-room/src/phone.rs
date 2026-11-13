@@ -677,8 +677,23 @@ async fn endpoint_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
         .fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !owns { return Err(StatusCode::NOT_FOUND); }
+
+    // Endpoint enumeration is endpoint-authorized, not merely AI-bearer-authorized.
+    // A transferred-away process may retain its AI bearer but must not discover the
+    // replacement endpoint or its current generation through this route.
+    let endpoint_credential = endpoint_secret_from_headers(&headers).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx, &identity).await.map_err(|error| match error {
+        PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
+    let phone = owned_phone(&mut tx, &identity).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    if phone.ai_phone_id != phone_id { return Err(StatusCode::NOT_FOUND); }
+    require_current_endpoint_credential(&mut tx, &identity, &phone, &endpoint_credential)
+        .await.map_err(|_| StatusCode::UNAUTHORIZED)?;
     let endpoints = sqlx::query_as::<_, PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 AND tenant_id=$2 ORDER BY created_at,endpoint_id")
-        .bind(phone_id).bind(identity.tenant_id).fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .bind(phone_id).bind(identity.tenant_id).fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(endpoints))
 }
 
