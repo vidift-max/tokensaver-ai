@@ -222,6 +222,18 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         assert_eq!(item["availability"], "AVAILABLE");
     }
 
+    // A phone whose endpoint credential is revoked must not remain AVAILABLE,
+    // even if the endpoint row, session and workload heartbeat still look live.
+    sqlx::query("UPDATE phone_endpoint_credentials SET credential_status='REVOKED',revoked_at=NOW() WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
+        .bind(actors[2].endpoint_id).execute(&pool).await.unwrap();
+    let revoked_credential_page = http_call(&app, "GET", "/ai-phone/registry?limit=100", Some(&actors[0].token)).await;
+    let revoked_credential_page: Value = serde_json::from_slice(
+        &axum::body::to_bytes(revoked_credential_page.into_body(), 100_000).await.unwrap()).unwrap();
+    let revoked_credential_item = revoked_credential_page["items"].as_array().unwrap().iter()
+        .find(|item| item["ai_phone_id"] == actors[2].phone_id.to_string()).unwrap();
+    assert_eq!(revoked_credential_item["availability"], "OFFLINE",
+        "registry availability requires the active endpoint credential for the current fence");
+
     // Revoking a different phone's session changes only that phone's derived availability.
     sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1")
         .bind(actors[1].identity.session_id).execute(&pool).await.unwrap();
