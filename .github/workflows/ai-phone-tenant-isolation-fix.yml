@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-phone-tenant-isolation-fix-${{ github.ref }}
+  group: ai-phone-tenant-isolation-closure-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
