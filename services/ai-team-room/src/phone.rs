@@ -570,6 +570,50 @@ async fn register_endpoint_handler(
     Ok((StatusCode::CREATED,Json(EndpointRegistration{endpoint,endpoint_credential})))
 }
 
+async fn revoke_endpoint_handler(
+    State(pool): State<PgPool>,
+    Path(endpoint_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<StatusCode,StatusCode> {
+    let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
+    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx,&identity).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
+    let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
+    let _locked=sqlx::query("SELECT ai_phone_id FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE")
+        .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    require_endpoint_operator(&pool,&identity,phone.ai_id,&headers).await?;
+    let endpoint_status:Option<String>=sqlx::query_scalar(
+        "SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE"
+    ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+      .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let endpoint_status=endpoint_status.ok_or(StatusCode::NOT_FOUND)?;
+    if endpoint_status!="REVOKED" {
+        let active_attachment:Option<Uuid>=sqlx::query_scalar(
+            "SELECT attachment_id FROM phone_attachments WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND attachment_status='ACTIVE' FOR UPDATE"
+        ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+          .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(attachment_id)=active_attachment {
+            sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1")
+                .bind(attachment_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+            sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
+                .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+                .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
+            .bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REVOKED","phone.endpoint.revoked",
+            serde_json::json!({"endpoint_id":endpoint_id}))
+            .await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        sqlx::query("UPDATE phone_endpoint_credentials SET credential_status='REVOKED',revoked_at=COALESCE(revoked_at,NOW()) WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
+            .bind(endpoint_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn presence_handler(
     State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap,
 ) -> Result<Json<PhonePresence>,StatusCode> {
@@ -595,6 +639,7 @@ async fn presence_handler(
                         AND c.ai_phone_id=p.ai_phone_id AND c.tenant_id=p.tenant_id AND c.ai_id=p.ai_id
                         AND c.credential_status='ACTIVE' AND c.endpoint_fence=p.endpoint_fence AND c.expires_at>NOW())
                       ) THEN 'CONNECTED' ELSE 'ATTACHED' END
+          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND e.endpoint_status='REVOKED') THEN 'REVOKED'
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
                 WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                   AND (s.status<>'ACTIVE' OR s.revoked_at IS NOT NULL OR s.expires_at<=NOW())) THEN 'OFFLINE'
@@ -897,6 +942,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/ai-phone/reconnect", post(reconnect_handler))
         .route("/ai-phone/transfer", post(transfer_handler))
         .route("/ai-phone/endpoints/register", post(register_endpoint_handler))
+        .route("/ai-phone/endpoints/{endpoint_id}/revoke", post(revoke_endpoint_handler))
         .route("/ai-phone/{phone_id}/presence", get(presence_handler))
         .route("/ai-phone/{phone_id}/endpoints", get(endpoint_list_handler))
         .route("/ai-phone/{phone_id}/messages", get(message_list_handler).post(message_send_handler))
