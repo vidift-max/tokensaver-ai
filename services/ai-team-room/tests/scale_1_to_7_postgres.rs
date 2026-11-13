@@ -230,7 +230,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
             let response = request(&app, "POST", &format!("/ai-phone/{phone_id}/messages"),
                 &sender.token, Some(serde_json::json!({
                     "idempotency_key":format!("scale-message-{index}"),
-                    "content":{"text":format!("hello AI #{index+1}")}
+                    "content":{"text":format!("hello AI #{}", index+1)}
                 }))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), 32_000).await.unwrap();
