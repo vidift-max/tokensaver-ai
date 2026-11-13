@@ -1160,6 +1160,57 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "tenant A cannot send into tenant B phone");
 
+    // Registry is exercised through the same real TCP HTTP listener.
+    // A room-scoped grant must not become tenant-wide registry authority.
+    grant_permission(&pool, tenant_id, room_id, ai_2_principal, "phone.registry.read").await;
+    let (room_only_status, _) = call(&app, "GET", "/ai-phone/registry?limit=100", &token_2, None).await;
+    assert_eq!(room_only_status, StatusCode::FORBIDDEN,
+        "room-scoped registry permission must not authorize tenant-wide listing");
+
+    sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,NULL,'phone.registry.read')")
+        .bind(Uuid::new_v4()).bind(tenant_id).bind(ai_2_principal)
+        .execute(&pool).await.unwrap();
+
+    let (invalid_registry_status, _) = call(&app, "GET", "/ai-phone/registry?limit=100", "invalid-registry-session", None).await;
+    assert_eq!(invalid_registry_status, StatusCode::UNAUTHORIZED,
+        "invalid session cannot read registry");
+
+    let (registry_status, registry_body) = call(&app, "GET",
+        &format!("/ai-phone/registry?limit=1&tenant_id={cross_tenant_id}"), &token_2, None).await;
+    assert_eq!(registry_status, StatusCode::OK,
+        "authenticated tenant-wide permission can read its own registry despite injected tenant_id");
+    let first_page: Value = serde_json::from_slice(&registry_body).unwrap();
+    let first_items = first_page["items"].as_array().unwrap();
+    assert_eq!(first_items.len(), 1, "registry limit is enforced");
+    let cursor = first_page["next_cursor"].as_str().expect("second tenant phone creates next cursor");
+    assert_eq!(first_items[0]["tenant_id"], tenant_id.to_string(),
+        "client tenant_id injection cannot switch registry tenant");
+    assert!(!first_page.to_string().contains("endpoint_fence"),
+        "registry must not disclose endpoint fences");
+    assert!(!first_page.to_string().contains("endpoint_credential"),
+        "registry must not disclose endpoint credentials");
+    assert!(!first_page.to_string().contains(&cross_tenant_phone.to_string()),
+        "registry must not disclose foreign tenant phone IDs");
+
+    let (second_status, second_body) = call(&app, "GET",
+        &format!("/ai-phone/registry?limit=1&after={cursor}&tenant_id={cross_tenant_id}"), &token_2, None).await;
+    assert_eq!(second_status, StatusCode::OK);
+    let second_page: Value = serde_json::from_slice(&second_body).unwrap();
+    assert_eq!(second_page["items"].as_array().unwrap().len(), 1,
+        "keyset pagination returns the remaining local phone");
+    assert_eq!(second_page["items"][0]["tenant_id"], tenant_id.to_string());
+    assert_ne!(second_page["items"][0]["ai_phone_id"], cross_tenant_phone.to_string());
+
+    let (registry_all_status, registry_all_body) = call(&app, "GET",
+        &format!("/ai-phone/registry?limit=100&tenant_id={cross_tenant_id}"), &token_2, None).await;
+    assert_eq!(registry_all_status, StatusCode::OK);
+    let registry_all: Value = serde_json::from_slice(&registry_all_body).unwrap();
+    let revoked_item = registry_all["items"].as_array().unwrap().iter()
+        .find(|item| item["ai_phone_id"] == phone_2_id.to_string())
+        .expect("revoked Phone #2 remains visible only as a tenant-local registry record");
+    assert_eq!(revoked_item["availability"], "OFFLINE",
+        "revoked endpoint must never appear AVAILABLE");
+
     // Operator keys are independently revocable and cannot be recovered from the AI bearer.
     sqlx::query("UPDATE phone_endpoint_operator_keys SET key_status='REVOKED',revoked_at=NOW() WHERE tenant_id=$1 AND ai_id=$2 AND key_hash=$3")
         .bind(tenant_id).bind(ai_2_id).bind(Sha256::digest(operator_key_2.as_bytes()).to_vec())
