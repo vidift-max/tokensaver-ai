@@ -6,13 +6,14 @@ The service separates three independent authorities:
 
 - **AI authority**: the authenticated AI session, tenant binding, and Team Room permissions. It authorizes AI-owned actions such as durable message submission and task/mission linkage.
 - **Endpoint authority**: a random per-endpoint credential. It authorizes operations that represent the active endpoint instance.
-- **Tenant authority**: every operator key and endpoint credential is scoped to one `tenant_id`, `ai_id`, and `ai_phone_id`.
+- **Tenant authority**: operator keys are scoped to one `tenant_id` and `ai_id`; endpoint credentials are scoped to one `tenant_id`, `ai_id`, `ai_phone_id`, `endpoint_id`, and generation.
 
 A valid AI bearer is not an endpoint credential. A fencing number is not a credential. Sensitive endpoint routes require both the AI bearer and the endpoint credential.
 
 ## Credential format and persistence
 
-- Migration 0013 fences and disconnects any pre-02B active attachment because it has no endpoint credential to prove endpoint identity. The durable phone, mailbox and Team Room state remain; an operator must re-enroll the endpoint and reconnect it with a new credential before it can resume endpoint operations.
+- Migration 0013 adds the privileged tenant-scoped `phone.registry.read` permission for the operational registry.
+- Migration 0014 fences and disconnects any pre-02B active attachment because it has no endpoint credential to prove endpoint identity. The durable phone, mailbox and Team Room state remain; an operator must re-enroll the endpoint and reconnect it with a new credential before it can resume endpoint operations.
 - Endpoint credentials are 32 bytes from the operating-system CSPRNG, encoded as URL-safe Base64 without padding.
 - The endpoint credential is returned once in the endpoint-registration response to the separately authorized operator for secure delivery to that endpoint.
 - PostgreSQL stores only SHA-256 digests in `phone_endpoint_credentials.credential_hash`; raw endpoint credentials are never stored.
@@ -53,7 +54,9 @@ All routes still require `Authorization: Bearer <AI-session-token>`.
 | `POST /ai-phone/{phone_id}/messages/{message_id}/ack` | `X-AI-Phone-Endpoint-Credential` | Mailbox acknowledgement |
 | `POST /ai-phone/{phone_id}/messages` | None beyond AI bearer and permission | AI-authorized durable send |
 | `POST /ai-phone/mission` | None beyond AI bearer and `task.transition` | Team Room task authority |
-| Presence and endpoint-list reads | None beyond AI bearer and `phone.read` | Control-plane metadata only |
+| `GET /ai-phone/{phone_id}/presence` | None beyond AI bearer and `phone.read` | Presence metadata only |
+| `GET /ai-phone/{phone_id}/endpoints` | `X-AI-Phone-Endpoint-Credential` while an endpoint is active | Endpoint metadata; no fence or secret |
+| `GET /ai-phone/registry` | Tenant-wide `phone.registry.read` permission | Tenant-scoped operational registry; tenant is derived from the authenticated session |
 
 Registration returns `{ endpoint, endpoint_credential }`. The secret must be transferred to the target endpoint over the operator's secure channel; do not log it, store it in endpoint metadata, or expose it to the old endpoint process.
 
@@ -74,4 +77,5 @@ Endpoint-sensitive handlers lock the phone, attachment, endpoint, and credential
 
 - AI identity authority remains available for durable outbound messages, Team Room task ownership, and mission linkage subject to their existing permissions and tenant constraints.
 - Endpoint identity authority is mandatory for heartbeat, active endpoint snapshot, mailbox delivery/read, ACK, and lifecycle proof.
-- Presence and endpoint-list routes expose control-plane metadata only; they do not return the endpoint fence or credential secret.
+- Presence is AI-authorized control-plane metadata. Endpoint enumeration requires the active endpoint credential. Neither route returns the endpoint fence or credential secret.
+- The tenant registry is a privileged AI/control-plane read. It returns operational metadata and availability only; it does not accept a caller-supplied tenant ID or expose endpoint fences or credential secrets. An endpoint is `AVAILABLE` only while its credential is active, unexpired, and bound to the phone's current fence.
