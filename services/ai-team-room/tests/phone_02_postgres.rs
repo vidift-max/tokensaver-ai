@@ -753,6 +753,48 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "transferred-away endpoint cannot heartbeat with its old fence"
     );
 
+    // Adversarial revocation: an ACTIVE attachment must stop working as soon as
+    // its endpoint is marked REVOKED, even when the fencing generation is current.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &phone_2_messages_path,
+        &token_1,
+        Some(serde_json::json!({
+            "idempotency_key": "phone-02-revocation-probe",
+            "content": {"text": "must not be acknowledged after endpoint revocation"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let revoked_probe: Value = serde_json::from_slice(&body).unwrap();
+    let revoked_probe_id = Uuid::parse_str(revoked_probe["message_id"].as_str().unwrap()).unwrap();
+    let (status, _) = call(&app, "GET", &phone_2_messages_path, &token_2, None).await;
+    assert_eq!(status, StatusCode::OK, "probe message is delivered before revocation");
+    sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
+        .bind(endpoint_3).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
+        .execute(&pool).await.unwrap();
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/heartbeat",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
+    ).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
+        "REVOKED endpoint must not heartbeat despite an ACTIVE attachment and current fence");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{revoked_probe_id}/ack"),
+        &token_2,
+        None,
+    ).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
+        "REVOKED endpoint must not ACK even a message delivered before revocation");
+
     let (status, _) = call(
         &app,
         "POST",
