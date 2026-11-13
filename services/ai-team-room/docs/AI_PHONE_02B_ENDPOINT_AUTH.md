@@ -65,6 +65,8 @@ Registration returns `{ endpoint, endpoint_credential }`. The secret must be tra
 4. Detach advances the fence and transitions the endpoint to `DETACHED`; the trigger revokes its credential.
 5. `REVOKED` is terminal. The lifecycle trigger revokes credentials; reconnect/transfer cannot reuse that endpoint ID.
 6. Reconnecting a detached endpoint requires a new operator enrollment/credential rotation.
+7. An operator may rotate an attached endpoint's credential in place; the old secret is revoked and the replacement digest is bound to the existing fence. A transfer to a different endpoint advances the fence and binds the new endpoint credential to the new generation.
+8. Operator-key revocation is performed by the trusted control plane by setting `key_status='REVOKED'` and `revoked_at=NOW()`; operator-key validation locks the key row for the duration of endpoint enrollment/revocation.
 
 Endpoint-sensitive handlers lock the phone, attachment, endpoint, and credential rows together. Transfer, detach, heartbeat, mailbox delivery, and ACK therefore serialize on the phone row; an old credential cannot race a generation change.
 
