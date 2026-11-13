@@ -753,6 +753,25 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "transferred-away endpoint cannot heartbeat with its old fence"
     );
 
+    // Security boundary probe: the AI bearer is session-scoped, not endpoint-scoped.
+    // A process retaining that bearer can read the replacement endpoint's current
+    // fence and then operate as the replacement endpoint. This is recorded as a
+    // known limitation, not mistaken for proof of endpoint-specific authentication.
+    let (status, body) = call(&app, "GET", "/ai-phone/me", &token_2, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let current_snapshot: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(current_snapshot["attachment"]["endpoint_id"], endpoint_3.to_string());
+    assert_eq!(current_snapshot["attachment"]["endpoint_fence"], transfer_fence);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/heartbeat",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
+    ).await;
+    assert_eq!(status, StatusCode::OK,
+        "the same AI bearer can operate with the replacement fence; endpoint identity is not cryptographically bound");
+
     // Adversarial revocation: an ACTIVE attachment must stop working as soon as
     // its endpoint is marked REVOKED, even when the fencing generation is current.
     let (status, body) = call(
