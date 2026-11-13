@@ -92,16 +92,17 @@ jobs:
           set -euo pipefail
           {
             echo "TARGET_SHA=${{ inputs.target_sha }}"
-            git rev-parse HEAD
-            sha256sum \
-              services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \
-              services/ai-team-room/src/phone.rs \
-              services/ai-team-room/src/handoffs.rs \
-              services/ai-team-room/tests/phone_postgres.rs \
-              services/ai-team-room/tests/ai_phone_legacy_migration.sh \
-              src/AIPhone.tsx \
-              src/TeamRoom.tsx \
-              src/styles.css
+            actual="$(git rev-parse HEAD)"
+            test "$actual" = "${{ inputs.target_sha }}"
+            echo "HEAD=$actual"
+            echo "FILES_PRESENT_AND_HASHED:"
+            while IFS= read -r -d '' file; do
+              sha256sum "$file"
+            done < <(
+              find services/ai-team-room/migrations services/ai-team-room/src services/ai-team-room/tests src \
+                -type f \( -name '*.sql' -o -name '*.rs' -o -name '*.sh' -o -name '*.tsx' -o -name '*.css' \) \
+                -print0 | sort -z
+            )
           } | tee ai-phone-01-final-manifest.txt
 
       - name: Upload final evidence
