@@ -2,7 +2,6 @@ use ai_team_room_service::{
     auth::AuthenticatedIdentity,
     connect_pool, migrate,
     phone::{attach, detach, get_my_phone, heartbeat, AttachRequest, PhoneError},
-    tasks::{acquire_lease, create_task, CreateTask},
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -385,14 +384,14 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN,"cross-tenant task cannot be linked to tenant-A phone");
 
     // A read-only task grant must not authorize changing the phone's canonical mission pointer.
-    let owned_task = create_task(&pool, &identity_a, CreateTask {
-        mission_id: Uuid::new_v4(),
-        title: "AI-PHONE mission-link authorization".into(),
-        checkpoint: serde_json::json!({"step":"authorization"}),
-    }).await.unwrap();
-    let _owned_lease = acquire_lease(&pool, &identity_a, owned_task.task_id, 60).await.unwrap();
+    let owned_task_id = Uuid::new_v4();
+    let owned_mission_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_issued_at,lease_expires_at,created_by_principal_id) VALUES($1,$2,$3,$4,'AI-PHONE mission-link authorization','OWNED',$5,$6,$7,$8,1,NOW(),NOW()+INTERVAL '60 seconds',$5)")
+        .bind(owned_task_id).bind(tenant).bind(room).bind(owned_mission_id)
+        .bind(principal).bind(participant).bind(session_a).bind(execution_a)
+        .execute(&pool).await.unwrap();
     let denied_link = http_call(&app, "POST", "/ai-phone/mission", Some(&token_a),
-        Some(serde_json::json!({"task_id":owned_task.task_id}))).await;
+        Some(serde_json::json!({"task_id":owned_task_id}))).await;
     assert_eq!(denied_link.status(), axum::http::StatusCode::FORBIDDEN,
         "task.read alone cannot mutate the AI phone mission pointer");
     grant(&pool, tenant, room, principal, "task.transition").await;
@@ -405,8 +404,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(allowed_link.status(), axum::http::StatusCode::NO_CONTENT,
         "task.transition plus task ownership authorizes linking the canonical task");
     let linked_snapshot = get_my_phone(&pool, &identity_a).await.unwrap();
-    assert_eq!(linked_snapshot.phone.current_task_id, Some(owned_task.task_id));
-    assert_eq!(linked_snapshot.mission.as_ref().unwrap()["task_id"], owned_task.task_id.to_string());
+    assert_eq!(linked_snapshot.phone.current_task_id, Some(owned_task_id));
+    assert_eq!(linked_snapshot.mission.as_ref().unwrap()["task_id"], owned_task_id.to_string());
     let invalid_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,99,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(ai_id).bind(foreign_endpoint).bind(tenant).bind(room).bind(principal).bind(participant).bind(session_a).bind(execution_a)
         .execute(&pool).await;
