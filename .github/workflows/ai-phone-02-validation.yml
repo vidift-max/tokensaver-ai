@@ -74,11 +74,21 @@ jobs:
         continue-on-error: true
         run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
 
-      - name: Format only the new AI-PHONE-02 test file
-        run: rustfmt --edition 2021 services/ai-team-room/tests/phone_02_postgres.rs
+      - name: Format AI Phone integration test sources
+        run: |
+          rustfmt --edition 2021 \
+            services/ai-team-room/tests/phone_02_postgres.rs \
+            services/ai-team-room/tests/phone_postgres.rs \
+            services/ai-team-room/tests/registry_postgres.rs \
+            services/ai-team-room/tests/scale_1_to_7_postgres.rs
 
-      - name: Strict formatting check for AI-PHONE-02-specific tests
-        run: rustfmt --edition 2021 --check services/ai-team-room/tests/phone_02_postgres.rs
+      - name: Strict formatting check for AI Phone integration tests
+        run: |
+          rustfmt --edition 2021 --check \
+            services/ai-team-room/tests/phone_02_postgres.rs \
+            services/ai-team-room/tests/phone_postgres.rs \
+            services/ai-team-room/tests/registry_postgres.rs \
+            services/ai-team-room/tests/scale_1_to_7_postgres.rs
 
       - name: Cargo check — AI Team Room service
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
@@ -128,5 +138,11 @@ jobs:
             ai-phone-02-rust-postgres.log
             ai-phone-02-evidence-manifest.txt
             services/ai-team-room/tests/phone_02_postgres.rs
+            services/ai-team-room/tests/phone_postgres.rs
+            services/ai-team-room/tests/registry_postgres.rs
+            services/ai-team-room/tests/scale_1_to_7_postgres.rs
+            services/ai-team-room/migrations/0013_phone_registry.sql
+            services/ai-team-room/migrations/0014_ai_phone_endpoint_credentials.sql
+            services/ai-team-room/docs/AI_PHONE_02B_ENDPOINT_AUTH.md
           if-no-files-found: warn
           retention-days: 30
