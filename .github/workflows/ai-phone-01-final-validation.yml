@@ -1,0 +1,120 @@
+name: AI-PHONE-01 Final Validation
+
+on:
+  push:
+    branches:
+      - mission/ai-phone-01-final-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-01-final-validation
+  cancel-in-progress: false
+
+jobs:
+  final-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_isolation_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_isolation_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_isolation_test
+      IMPLEMENTATION_SHA: 673ef169709dbfea906128205f0fd544df0555a3
+
+    steps:
+      - name: Checkout exact AI-PHONE implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.IMPLEMENTATION_SHA }}
+          fetch-depth: 0
+
+      - name: Verify exact implementation SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$IMPLEMENTATION_SHA"
+          echo "Validated implementation SHA: $actual"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm PostgreSQL 16
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SELECT current_setting('server_version_num');"
+
+      - name: Rust formatting diagnostic
+        continue-on-error: true
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+
+      - name: Cargo check
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+
+      - name: Real legacy migration validation
+        run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
+
+      - name: PostgreSQL integration and adversarial tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ai-phone-01-final-tests.log
+
+      - name: Frontend production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npm run build
+
+      - name: Evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "IMPLEMENTATION_SHA=$IMPLEMENTATION_SHA"
+            git rev-parse HEAD
+            sha256sum \
+              services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \
+              services/ai-team-room/migrations/0013_team_room_tenant_scope_constraints.sql \
+              services/ai-team-room/src/phone.rs \
+              services/ai-team-room/src/handoffs.rs \
+              services/ai-team-room/tests/phone_postgres.rs \
+              services/ai-team-room/tests/ai_phone_legacy_migration.sh \
+              src/AIPhone.tsx \
+              src/TeamRoom.tsx \
+              src/styles.css
+          } | tee ai-phone-01-final-manifest.txt
+
+      - name: Upload final evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-01-final-validation-${{ github.run_id }}
+          path: |
+            ai-phone-01-final-tests.log
+            ai-phone-01-final-manifest.txt
+          if-no-files-found: warn
+          retention-days: 14
