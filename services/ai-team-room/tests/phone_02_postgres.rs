@@ -964,8 +964,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         Some(&revoked_endpoint_credential),None,Some(serde_json::json!({
             "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-revoked"}
         }))).await;
-    assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "revoked endpoint credential cannot be reattached to Phone #2");
+    assert_eq!(status,StatusCode::CONFLICT,
+        "terminally revoked endpoint ID cannot be attached again");
 
     let cross_tenant_id = Uuid::new_v4();
     let cross_tenant_room = Uuid::new_v4();
