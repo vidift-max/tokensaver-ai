@@ -385,12 +385,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let foreign_message:Value=serde_json::from_slice(&bytes).unwrap();
     let foreign_message_id=foreign_message["message_id"].as_str().unwrap().to_string();
-    let response=http_call(&app,"GET",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_c),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own inbox");
+    let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{foreign_phone}/messages"),&token_c,&foreign_endpoint_credential,None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own inbox with its endpoint credential");
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages/{foreign_message_id}/ack"),Some(&token_a),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"tenant A cannot ACK tenant B message");
+    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant A cannot address tenant B message");
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_c),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"tenant B cannot ACK tenant A message");
+    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant B cannot address tenant A message");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":foreign_principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant A cannot provision tenant B identity");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":principal}))).await;
