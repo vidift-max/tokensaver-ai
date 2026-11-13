@@ -105,7 +105,7 @@ async fn seed_actor(pool: &PgPool, tenant: Uuid, room: Uuid, index: usize) -> Ac
     for permission in [
         "phone.provision", "phone.read", "phone.attach", "phone.detach",
         "phone.heartbeat", "phone.message.read", "phone.message.send",
-        "phone.message.ack", "phone.endpoint.manage", "room.read", "room.write",
+        "phone.message.ack", "phone.endpoint.manage", "phone.transfer", "room.read", "room.write",
     ] {
         grant(pool, tenant, room, principal_id, permission).await;
     }
