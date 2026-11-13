@@ -494,14 +494,9 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         first_message_state, "PENDING",
         "messages persist while Phone #2 is offline"
     );
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
-        &token_2,
-        None,
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,
+        Some(&endpoint_2_credential),None,None).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
@@ -560,23 +555,13 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         StatusCode::NO_CONTENT,
         "AI #2 can ACK a later delivered sequence before an earlier one"
     );
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
-        &token_2,
-        None,
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,
+        Some(&endpoint_2_credential),None,None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "AI #2 ACKs the earlier delivered message");
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
-        &token_2,
-        None,
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,
+        Some(&endpoint_2_credential),None,None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "duplicate ACK is idempotent");
 
     // Team Room remains the task authority: Phone #2 can link only a task owned by AI #2.
@@ -672,85 +657,71 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "detached endpoint credential is revoked and cannot heartbeat"
     );
 
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/ai-phone/reconnect",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_2,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-endpoint"}
-        })),
-    )
-    .await;
+    let (status, body) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_2,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-endpoint"}
+        }))).await;
+    assert_eq!(status,StatusCode::CREATED,"operator rotates endpoint credential after detach");
+    let registration:Value=serde_json::from_slice(&body).unwrap();
+    endpoint_2_credential=registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let (status, body) = call_with_headers(&app,"POST","/ai-phone/reconnect",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({
+            "endpoint_id":endpoint_2,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-endpoint"}
+        }))).await;
     assert_eq!(status, StatusCode::OK, "Phone #2 reconnects using its registered endpoint");
     let reconnect: Value = serde_json::from_slice(&body).unwrap();
     let reconnect_fence = reconnect["endpoint_fence"].as_i64().unwrap();
     assert!(reconnect_fence > initial_fence, "reconnect advances the endpoint fence");
 
     let endpoint_3 = Uuid::new_v4();
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/endpoints/register",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_3,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-transfer-target"}
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/ai-phone/transfer",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_3,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-transfer-target"}
-        })),
-    )
-    .await;
+    let (status, body) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_3,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-transfer-target"}
+        }))).await;
+    assert_eq!(status,StatusCode::CREATED);
+    let endpoint_3_registration:Value=serde_json::from_slice(&body).unwrap();
+    let endpoint_3_credential=endpoint_3_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let (status, body) = call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,
+        Some(&endpoint_3_credential),None,Some(serde_json::json!({
+            "endpoint_id":endpoint_3,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-transfer-target"}
+        }))).await;
     assert_eq!(status, StatusCode::OK, "Phone #2 endpoint transfer succeeds");
     let transfer: Value = serde_json::from_slice(&body).unwrap();
     let transfer_fence = transfer["endpoint_fence"].as_i64().unwrap();
     assert!(transfer_fence > reconnect_fence, "transfer advances fencing token");
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/heartbeat",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": reconnect_fence})),
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":reconnect_fence}))).await;
     assert_eq!(
         status,
         StatusCode::PRECONDITION_FAILED,
         "transferred-away endpoint cannot heartbeat with its old fence"
     );
 
-    // Security boundary probe: the AI bearer is session-scoped, not endpoint-scoped.
-    // A process retaining that bearer can read the replacement endpoint's current
-    // fence and then operate as the replacement endpoint. This is recorded as a
-    // known limitation, not mistaken for proof of endpoint-specific authentication.
-    let (status, body) = call(&app, "GET", "/ai-phone/me", &token_2, None).await;
-    assert_eq!(status, StatusCode::OK);
-    let current_snapshot: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(current_snapshot["attachment"]["endpoint_id"], endpoint_3.to_string());
-    assert_eq!(current_snapshot["attachment"]["endpoint_fence"], transfer_fence);
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/heartbeat",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
-    ).await;
-    assert_eq!(status, StatusCode::OK,
-        "the same AI bearer can operate with the replacement fence; endpoint identity is not cryptographically bound");
+    // Attack A: a process retaining only the AI bearer cannot recover the active generation.
+    let (status, _) = call(&app,"GET","/ai-phone/me",&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "AI bearer alone cannot read the active endpoint generation");
+    let (status, _) = call(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "AI bearer plus a guessed/observed fence cannot heartbeat without endpoint credential");
+    // Attack B: the transferred-away endpoint's own credential is terminally revoked.
+    let (status, _) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&endpoint_2_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old endpoint credential cannot recover the new generation");
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old endpoint credential cannot heartbeat as the new generation");
+    // Attack C: endpoint A's credential is not accepted for endpoint B.
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"credential A cannot authenticate endpoint B");
+    let (status, body) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK,"only endpoint B's new credential can recover its own generation");
+    let current_snapshot:Value=serde_json::from_slice(&body).unwrap();
+    assert_eq!(current_snapshot["attachment"]["endpoint_id"],endpoint_3.to_string());
+    assert_eq!(current_snapshot["attachment"]["endpoint_fence"],transfer_fence);
 
     // Adversarial revocation: an ACTIVE attachment must stop working as soon as
     // its endpoint is marked REVOKED, even when the fencing generation is current.
