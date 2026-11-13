@@ -399,6 +399,34 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
         assert_eq!(result.expect("reconnect task"), StatusCode::OK);
     }
 
+    // The same AI bearer is retained across the transfer, but each old endpoint
+    // credential must be unable to discover or operate the replacement generation.
+    for actor in &actors {
+        let phone_id = phone_by_principal[&actor.principal_id];
+        let old_snapshot = request_endpoint(&app, "GET", "/ai-phone/me", &actor.token,
+            &actor.endpoint_credential, None).await;
+        assert_eq!(old_snapshot.status(), StatusCode::UNAUTHORIZED,
+            "old endpoint credential cannot recover the replacement fence for AI {}", actor.principal_id);
+        let old_endpoint_list = request_endpoint(&app, "GET", &format!("/ai-phone/{phone_id}/endpoints"),
+            &actor.token, &actor.endpoint_credential, None).await;
+        assert_eq!(old_endpoint_list.status(), StatusCode::UNAUTHORIZED,
+            "old endpoint credential cannot enumerate replacement endpoints");
+        let new_snapshot = request_endpoint(&app, "GET", "/ai-phone/me", &actor.token,
+            &actor.reconnect_endpoint_credential, None).await;
+        assert_eq!(new_snapshot.status(), StatusCode::OK,
+            "new endpoint credential can inspect only its current phone generation");
+    }
+    let active_generation_credentials: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT c.credential_hash) FROM phone_endpoint_credentials c JOIN ai_phones p ON p.ai_phone_id=c.ai_phone_id AND p.tenant_id=c.tenant_id AND p.ai_id=c.ai_id JOIN phone_attachments a ON a.endpoint_id=c.endpoint_id AND a.ai_phone_id=c.ai_phone_id AND a.tenant_id=c.tenant_id AND a.ai_id=c.ai_id WHERE c.tenant_id=$1 AND c.credential_status='ACTIVE' AND c.endpoint_fence=p.endpoint_fence AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence"
+    ).bind(tenant).fetch_one(&pool).await.unwrap();
+    assert_eq!(active_generation_credentials, 7,
+        "all seven phones have one distinct active credential bound to their current generation");
+    let revoked_old_credentials: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM phone_endpoint_credentials WHERE tenant_id=$1 AND credential_status='REVOKED'"
+    ).bind(tenant).fetch_one(&pool).await.unwrap();
+    assert_eq!(revoked_old_credentials, 7,
+        "all seven prior endpoint credentials were revoked during detach");
+
     // Old fencing tokens cannot heartbeat after detach/reconnect.
     let mut stale = tokio::task::JoinSet::new();
     for actor in actors.iter().cloned() {
