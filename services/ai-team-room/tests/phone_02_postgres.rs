@@ -545,6 +545,30 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let initial_attachment: Value = serde_json::from_slice(&body).unwrap();
     let initial_fence = initial_attachment["endpoint_fence"].as_i64().unwrap();
 
+    // Active endpoint credential rotation preserves the generation but revokes the old secret.
+    let endpoint_2_pre_rotation_credential=endpoint_2_credential.clone();
+    let (status,body)=call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_2,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-endpoint"}
+        }))).await;
+    assert_eq!(status,StatusCode::CREATED);
+    let rotated_registration:Value=serde_json::from_slice(&body).unwrap();
+    endpoint_2_credential=rotated_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let rotated_fence:Option<i64>=sqlx::query_scalar("SELECT endpoint_fence FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_hash=$2 AND credential_status='ACTIVE'")
+        .bind(endpoint_2).bind(Sha256::digest(endpoint_2_credential.as_bytes()).to_vec())
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(rotated_fence,Some(initial_fence),"active rotation binds new credential to the current generation");
+    let old_credential_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_hash=$2")
+        .bind(endpoint_2).bind(Sha256::digest(endpoint_2_pre_rotation_credential.as_bytes()).to_vec())
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(old_credential_status,"REVOKED");
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_pre_rotation_credential),None,Some(serde_json::json!({"endpoint_fence":initial_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"pre-rotation credential cannot heartbeat after rotation");
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":initial_fence}))).await;
+    assert_eq!(status,StatusCode::OK,"rotated endpoint credential remains valid for the same fence");
+
     let (status, body) = call_with_headers(
         &app,"GET",&format!("/ai-phone/{phone_2_id}/messages"),&token_2,
         Some(&endpoint_2_credential),None,None
