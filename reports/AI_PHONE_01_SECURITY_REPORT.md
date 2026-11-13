@@ -123,3 +123,114 @@ The final report must fill in the exact branch HEAD, PostgreSQL 16 workflow run,
 3. Expand adversarial and concurrency tests for all acceptance-matrix rows, preserving Team Room as task/lease/checkpoint/handoff authority.
 4. Run frontend build, browser E2E, accessibility, formatting, and exact-SHA CI; generate SHA-256 manifest.
 5. Do not merge or claim `PHONE_MVP_READY_FOR_REVIEW` until all acceptance criteria have evidence.
+
+
+## 8. AI-PHONE-01 closure validation — 2026-11-13
+
+**Validated implementation SHA:** `3f5f715fd8790537e79871560f1de3c053897ba3`  
+**Previous functional code SHA:** `349ee06f1bd6223158c11d406ffa9404930105ba`  
+**Checkpoint SHA:** `ecc846dab33d0fe7f3cac35a1dd2e9e16ac7b8db`  
+**Workflow:** `43336099326` — PostgreSQL 16 security job, conclusion `success`.  
+**PostgreSQL:** `16.16`.
+
+### 8.1 Real pre-0012 legacy migration execution
+
+The new CI script `services/ai-team-room/tests/ai_phone_legacy_migration.sh` creates disposable databases, applies the actual migrations 0001–0011, seeds legacy records, and executes the unmodified migration file `0012_ai_phone_tenant_isolation.sql` inside a single transaction.
+
+**Ambiguous/shared legacy case — fail closed:**
+
+- Fixture: 2 tenants, one global AI identity, one shared legacy AI_PHONE_ID, 2 endpoints, 2 attachments, 2 messages, and 1 Team Room mission/task link.
+- Before migration: `1:2:2:2:1` (phones:endpoints:attachments:messages:mission-links).
+- PostgreSQL error at migration line 64:
+
+```text
+ERROR: AI-PHONE-01 migration blocked: an existing AI_PHONE_ID is shared across tenants; an operator must approve an explicit tenant-to-phone identity mapping before migration
+```
+
+- The migration exited non-zero as expected. The script verified the same row counts after rollback (`1:2:2:2:1`) and verified that the `ai_phones.tenant_id` DDL did not survive the rollback.
+- Result: **FAIL-CLOSED / ROLLBACK / DATA PRESERVED**.
+
+**Compatible legacy case — successful migration:**
+
+- Fixture: one tenant binding for the AI identity, one phone, one endpoint, one attachment, one message, and one mission/task link.
+- Migration 0012 completed successfully.
+- Before and after counts remained `1:1:1:1:1`.
+- The script verified the phone, endpoint, attachment, message, and mission link were all backfilled to the same authorized tenant.
+- Result: **MIGRATION SUCCESS / DATA PRESERVED / TENANT BACKFILL VERIFIED**.
+
+No production database was accessed or modified.
+
+### 8.2 P0 adversarial and concurrency evidence
+
+The PostgreSQL integration test ran with a configured disposable `DATABASE_URL`; the former success-shaped early return was replaced with a hard failure when the database URL is absent. The synthetic SQL block that imitated the migration guard was removed.
+
+The passing PostgreSQL suite covers:
+
+- The same global `AI_ID` bound in two tenants resolves to two distinct `AI_PHONE_ID` values.
+- Cross-tenant phone send, presence, endpoint-list, and inbox reads are concealed/rejected.
+- Cross-tenant ACKs are rejected.
+- Cross-tenant provisioning and mission/task linking are rejected.
+- Composite foreign keys reject cross-tenant attachment, endpoint, message, and mission/task relationships.
+- A caller cannot claim another tenant's endpoint UUID.
+- Concurrent provisioning returns exactly one `CREATED` and one `OK`, with the same resulting phone ID.
+- Concurrent attach yields one winner and one conflict.
+- Same idempotency key and same payload return the original message; same key with a different payload returns conflict.
+- Duplicate ACK is idempotent.
+- Revoked endpoint re-registration/reattach is rejected.
+- Expired sessions and stale endpoint fences cannot mutate the current attachment.
+- Session/endpoint rotation preserves the stable phone identity.
+- Offline messages remain durable and can be delivered/ACKed after reconnect.
+
+**Exact workflow test totals:** 6 + 9 + 3 + 4 + 1 = **23 passed, 0 failed**. The phone integration test `phone_identity_survives_session_rotation_and_endpoint_change` passed on this SHA.
+
+### 8.3 Build and quality
+
+- `cargo check --manifest-path services/ai-team-room/Cargo.toml`: **PASS**.
+- `cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output`: **PASS — 23 tests**.
+- `npm install` and `npm run build` (TypeScript + Vite production build): **PASS**.
+- `cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check`: **FAIL — formatting differences** across the service, including `auth.rs`, `lib.rs`, `phone.rs`, `communication.rs`, `handoffs.rs`, `main.rs`, `tasks.rs`, and existing PostgreSQL test files. This diagnostic is explicitly non-blocking in the workflow; no broad formatter rewrite was applied because it would change files outside the P0 scope.
+- Browser automation was not available in this execution environment: **BROWSER_E2E_NOT_AVAILABLE**. The production build is not represented as browser E2E evidence.
+- Accessibility and device/browser responsive E2E remain unverified.
+
+### 8.4 SHA-256 manifest and artifacts
+
+The exact-SHA workflow generated `ai-phone-01-sha256-manifest.txt` and uploaded it with the test log.
+
+Artifact:
+- Name: `ai-phone-tenant-isolation-fix-43336099326`
+- Artifact ID: `13997322222`
+- Workflow run: `https://github.com/vidift-max/tokensaver-ai/actions/runs/43336099326`
+
+SHA-256 values recorded by that run:
+
+```text
+9281af43659653b11738d5138fc4c7f0aebadd9bfde255048cd6ab22ec810526  services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql
+a419ff1e801b46727566fc344741e413fd95296ee6972446b4f098f68a919051  services/ai-team-room/src/phone.rs
+87a5520ce6cd6ec007a2c458d1fba70422c67fb3a017ee9e137abfc71a422fd6  services/ai-team-room/src/handoffs.rs
+0be97fe74ba38770ee4c2d3a3c6442f2989c37936a0c51bf7e2bbeeeec4e4230  services/ai-team-room/tests/phone_postgres.rs
+577c2be749b1ca575b06da6576f2d6ce9c6001ca313fbdee489ea43ec8032e04  services/ai-team-room/tests/ai_phone_legacy_migration.sh
+03e58be2b3d6e44b4615178bf7264aa2b96a751743eb9e80ff0c4c4d56eddf49  src/AIPhone.tsx
+1b17f1d16c351cb1b5c7493daa8b3237dff7647e319ef18828419021d5e97714  src/TeamRoom.tsx
+ae3ba6f74a74f40c8807a7cc83340b73819020fd5bcdbf23bfc1756a667d63b7  src/styles.css
+332ff407d0bd60a80e2364d12d720cf7c4e4005f9d15b0f629f7b50b10455c8a  reports/AI_PHONE_01_SECURITY_REPORT.md
+```
+
+### 8.5 Upgrade policy
+
+An installation with one legacy global phone mapped to more than one tenant is **not auto-repaired**. Migration 0012 blocks and rolls back. The operator must approve an explicit tenant-to-phone identity mapping and a reviewed endpoint/attachment history reconciliation before retrying. Messages, attachments, and Team Room task references must be preserved and assigned only through that authorized mapping. No tenant receives access to the ambiguous phone during reconciliation.
+
+Compatible single-tenant legacy records can be migrated by 0012, with tenant ownership backfilled and verified.
+
+### 8.6 Integrity and scope
+
+- Changes after checkpoint SHA `ecc846d` are limited to the AI-PHONE validation workflow, the new legacy migration test script, and the phone PostgreSQL integration test.
+- No reset, rebase, force push, or destructive history rewrite was performed.
+- Branch `v2-saas-alpha` remained at `d1f2bd764361b14af0604104db8e670ee6f4f361`.
+- PR #7 and PR #8 remained open and unmerged.
+- No merge was performed and no production deployment was attempted.
+
+### 8.7 Final verdict
+
+**`PHONE_MVP_PARTIAL`**
+
+The tenant-isolation remediation, real migration compatibility cases, provisioning, durable messaging, endpoint fencing, backend PostgreSQL suite, and frontend production build have passing evidence on the validated implementation SHA. The result is not elevated to `PHONE_MVP_READY_FOR_REVIEW` because `cargo fmt --check` remains failing, browser E2E/accessibility/device validation is unavailable, and independent security review is not complete. This is not a production-ready declaration.
