@@ -754,8 +754,11 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,None).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "AI bearer alone cannot ACK a mailbox message");
-    let (status,body)=call(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&token_2,None).await;
-    assert_eq!(status,StatusCode::OK,"AI authority may inspect endpoint metadata");
+    let (status,_) = call(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"AI bearer alone cannot enumerate endpoint metadata");
+    let (status,body)=call_with_headers(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK,"the active endpoint credential authorizes endpoint metadata inspection");
     let endpoint_metadata:Value=serde_json::from_slice(&body).unwrap();
     assert!(!endpoint_metadata.to_string().contains("endpoint_fence"));
     assert!(!endpoint_metadata.to_string().contains("endpoint_credential"));
