@@ -144,5 +144,9 @@ jobs:
             services/ai-team-room/migrations/0013_phone_registry.sql
             services/ai-team-room/migrations/0014_ai_phone_endpoint_credentials.sql
             services/ai-team-room/docs/AI_PHONE_02B_ENDPOINT_AUTH.md
+            services/ai-team-room/src/phone.rs
+            services/ai-team-room/src/handoffs.rs
+            services/ai-team-room/src/communication.rs
+            services/ai-team-room/tests/ai_phone_legacy_migration.sh
           if-no-files-found: warn
           retention-days: 30
