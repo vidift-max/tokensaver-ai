@@ -57,14 +57,7 @@ jobs:
       - name: SHA-256 evidence manifest
         if: always()
         run: |
-          sha256sum \\
-            services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \\
-            services/ai-team-room/src/phone.rs \\
-            services/ai-team-room/src/handoffs.rs \\
-            services/ai-team-room/tests/phone_postgres.rs \\
-            services/ai-team-room/tests/ai_phone_legacy_migration.sh \\
-            src/AIPhone.tsx src/TeamRoom.tsx src/styles.css \\
-            reports/AI_PHONE_01_SECURITY_REPORT.md > ai-phone-01-sha256-manifest.txt
+          sha256sum services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql services/ai-team-room/src/phone.rs services/ai-team-room/src/handoffs.rs services/ai-team-room/tests/phone_postgres.rs services/ai-team-room/tests/ai_phone_legacy_migration.sh src/AIPhone.tsx src/TeamRoom.tsx src/styles.css reports/AI_PHONE_01_SECURITY_REPORT.md
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
