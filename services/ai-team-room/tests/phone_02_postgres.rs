@@ -338,6 +338,69 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status, StatusCode::NOT_FOUND, "AI #1 cannot read Phone #2 mailbox");
 
     let endpoint_2 = Uuid::new_v4();
+    let endpoint_1 = Uuid::new_v4();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/endpoints/register",
+        &token_1,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_1,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-01-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/endpoints/register",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_2,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/attach",
+        &token_1,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_2,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "AI #1 cannot attach AI-PHONE-02 endpoint to Phone #1"
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/attach",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_1,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-01-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "AI #2 cannot attach AI-PHONE-01 endpoint to Phone #2"
+    );
+
     let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
     let same_payload = serde_json::json!({
         "idempotency_key": "phone-02-concurrent-idempotency",
@@ -502,12 +565,25 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status, _) = call(
         &app,
         "POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{second_message_id}/ack"),
+        &token_2,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "AI #2 can ACK a later delivered sequence before an earlier one"
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
         &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
         &token_2,
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "AI #2 ACKs its delivered message");
+    assert_eq!(status, StatusCode::NO_CONTENT, "AI #2 ACKs the earlier delivered message");
     let (status, _) = call(
         &app,
         "POST",
