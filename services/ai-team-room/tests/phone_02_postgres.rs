@@ -739,8 +739,9 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status, StatusCode::CREATED);
     let revoked_probe: Value = serde_json::from_slice(&body).unwrap();
     let revoked_probe_id = Uuid::parse_str(revoked_probe["message_id"].as_str().unwrap()).unwrap();
-    let (status, _) = call(&app, "GET", &phone_2_messages_path, &token_2, None).await;
-    assert_eq!(status, StatusCode::OK, "probe message is delivered before revocation");
+    let (status, _) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK,"probe message is delivered before revocation");
     sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
         .bind(endpoint_3).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
         .execute(&pool).await.unwrap();
@@ -762,48 +763,35 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "endpoint_type": "TEST",
         "metadata": {"label": "AI-PHONE-02-transfer-target"}
     });
-    let (status, _) = call(&app, "POST", "/ai-phone/reconnect", &token_2,
-        Some(revoked_attach_body.clone())).await;
-    assert_eq!(status, StatusCode::CONFLICT,
-        "idempotent reconnect must not report success for a revoked endpoint");
-    let (status, _) = call(&app, "POST", "/ai-phone/transfer", &token_2,
-        Some(revoked_attach_body)).await;
-    assert_eq!(status, StatusCode::CONFLICT,
-        "transfer must not reactivate or accept an already revoked endpoint");
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/reconnect",&token_2,
+        Some(&endpoint_3_credential),None,Some(revoked_attach_body.clone())).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "revoked endpoint credential cannot reconnect");
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,
+        Some(&endpoint_3_credential),None,Some(revoked_attach_body)).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "revoked endpoint credential cannot transfer or reactivate");
 
-    let (status, _) = call(&app, "GET", &phone_2_messages_path, &token_2, None).await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
-        "a revoked endpoint cannot receive mailbox messages");
+    let (status, _) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "revoked endpoint credential cannot receive mailbox messages");
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/heartbeat",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
-    ).await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
-        "REVOKED endpoint must not heartbeat despite an ACTIVE attachment and current fence");
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_3_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "REVOKED endpoint credential must not heartbeat despite current fence");
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{revoked_probe_id}/ack"),
-        &token_2,
-        None,
-    ).await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
-        "REVOKED endpoint must not ACK even a message delivered before revocation");
+    let (status, _) = call_with_headers(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{revoked_probe_id}/ack"),&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "REVOKED endpoint credential must not ACK even a previously delivered message");
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/detach",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/detach",&token_2,
+        Some(&endpoint_3_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "revoked endpoint cannot detach or downgrade its terminal state");
     let endpoint_status: String = sqlx::query_scalar(
         "SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4"
     ).bind(endpoint_3).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
@@ -811,34 +799,21 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(endpoint_status, "REVOKED",
         "detach must not downgrade a terminal endpoint revocation to DETACHED");
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/endpoints/register",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_3,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-transfer-target"}
-        })),
-    ).await;
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_3,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-transfer-target"}
+        }))).await;
     assert_eq!(status, StatusCode::CONFLICT,
         "a revoked endpoint identifier cannot be re-registered");
 
     let revoked_endpoint = Uuid::new_v4();
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/endpoints/register",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": revoked_endpoint,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-revoked"}
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-revoked"}
+        }))).await;
+    assert_eq!(status,StatusCode::CREATED);
+    let revoked_registration:Value=serde_json::from_slice(&body).unwrap();
+    let revoked_endpoint_credential=revoked_registration["endpoint_credential"].as_str().unwrap().to_owned();
     sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
         .bind(revoked_endpoint)
         .bind(phone_2_id)
@@ -847,23 +822,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .execute(&pool)
         .await
         .unwrap();
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/attach",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": revoked_endpoint,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-revoked"}
-        })),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "revoked endpoint cannot be reattached to Phone #2"
-    );
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/attach",&token_2,
+        Some(&revoked_endpoint_credential),None,Some(serde_json::json!({
+            "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-revoked"}
+        }))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "revoked endpoint credential cannot be reattached to Phone #2");
 
     let cross_tenant_id = Uuid::new_v4();
     let cross_tenant_room = Uuid::new_v4();
