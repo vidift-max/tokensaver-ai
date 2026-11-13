@@ -428,6 +428,7 @@ async fn presence_handler(
         SELECT CASE
           WHEN NOT EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id) THEN 'REGISTERED'
           WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND e.endpoint_status='REGISTERED') THEN 'RECONNECTING'
+          WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE' AND e.endpoint_status='REVOKED') THEN 'REVOKED'
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
                 JOIN workload_executions w ON w.execution_id=a.execution_id AND w.session_id=a.session_id
                 WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
@@ -436,7 +437,6 @@ async fn presence_handler(
               CASE WHEN EXISTS(SELECT 1 FROM phone_endpoints e JOIN phone_attachments a ON a.endpoint_id=e.endpoint_id
                     WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                       AND e.endpoint_status='ATTACHED' AND e.last_seen_at>NOW()-INTERVAL '90 seconds') THEN 'CONNECTED' ELSE 'ATTACHED' END
-          WHEN EXISTS(SELECT 1 FROM phone_endpoints e WHERE e.ai_phone_id=p.ai_phone_id AND e.tenant_id=p.tenant_id AND e.ai_id=p.ai_id AND e.endpoint_status='REVOKED') THEN 'REVOKED'
           WHEN EXISTS(SELECT 1 FROM phone_attachments a JOIN sessions s ON s.session_id=a.session_id
                 WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.attachment_status='ACTIVE'
                   AND (s.status<>'ACTIVE' OR s.revoked_at IS NOT NULL OR s.expires_at<=NOW())) THEN 'OFFLINE'
