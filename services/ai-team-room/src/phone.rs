@@ -534,14 +534,27 @@ async fn register_endpoint_handler(
     let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE")
         .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
         .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut credential_fence:Option<i64>=None;
     if let Some(endpoint)=existing {
-        if endpoint.endpoint_status=="REVOKED" || endpoint.endpoint_status=="ATTACHED" {
-            return Err(StatusCode::CONFLICT);
+        if endpoint.endpoint_status=="REVOKED" { return Err(StatusCode::CONFLICT); }
+        if endpoint.endpoint_status=="ATTACHED" {
+            // Active endpoint rotation is operator-only and binds the replacement secret
+            // to the current generation without changing the fence.
+            credential_fence=sqlx::query_scalar(
+                "SELECT a.endpoint_fence FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id WHERE a.endpoint_id=$1 AND a.ai_phone_id=$2 AND a.tenant_id=$3 AND a.ai_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence FOR UPDATE OF p,a"
+            ).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+              .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+            if credential_fence.is_none() { return Err(StatusCode::CONFLICT); }
+            sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,metadata=$2 WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
+                .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id)
+                .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+                .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        } else {
+            sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
+                .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id)
+                .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+                .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
         }
-        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
-            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id)
-            .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
         let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
             .bind(request.endpoint_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -557,9 +570,9 @@ async fn register_endpoint_handler(
     sqlx::query("UPDATE phone_endpoint_credentials SET credential_status='REVOKED',revoked_at=NOW() WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
         .bind(request.endpoint_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let endpoint_credential=generate_endpoint_secret();
-    sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
+    sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,endpoint_fence,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',$7,NOW()+INTERVAL '90 days')")
         .bind(Uuid::new_v4()).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id)
-        .bind(phone.ai_id).bind(credential_hash(&endpoint_credential))
+        .bind(phone.ai_id).bind(credential_hash(&endpoint_credential)).bind(credential_fence)
         .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REGISTERED","phone.endpoint.registered",
         serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_type":request.endpoint_type}))
