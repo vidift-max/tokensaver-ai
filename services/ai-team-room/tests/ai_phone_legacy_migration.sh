@@ -151,7 +151,19 @@ run_compatible_legacy_case() {
 
   # AI-PHONE-02B must fence legacy attachments that have no endpoint credential.
   psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0013"
+  local registry_permission
+  registry_permission="$(psql "$url" -Atc "SELECT COUNT(*) FROM permission_catalog WHERE permission='phone.registry.read' AND privileged=TRUE")"
+  [[ "$registry_permission" == "1" ]] || {
+    echo "FAIL: migration 0013 did not create the privileged tenant registry permission ($registry_permission)" >&2
+    exit 1
+  }
   psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0014"
+  local endpoint_credential_table
+  endpoint_credential_table="$(psql "$url" -Atc "SELECT to_regclass('public.phone_endpoint_credentials') IS NOT NULL")"
+  [[ "$endpoint_credential_table" == "t" ]] || {
+    echo "FAIL: migration 0014 did not create endpoint credential persistence" >&2
+    exit 1
+  }
   local endpoint_backfill
   endpoint_backfill="$(psql "$url" -Atc "
     SELECT p.phone_status||':'||p.endpoint_fence||':'||e.endpoint_status||':'||a.attachment_status
