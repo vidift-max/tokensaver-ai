@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct Actor {
@@ -127,23 +128,26 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     for actor in actors.iter().cloned() {
         let app = app.clone();
         provisions.spawn(async move {
+            let principal_id = actor.principal_id;
             let response = request(&app, "POST", "/ai-phone/provision", &actor.token,
-                Some(serde_json::json!({"principal_id":actor.principal_id}))).await;
+                Some(serde_json::json!({"principal_id":principal_id}))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), 32_000).await.unwrap();
-            (status, serde_json::from_slice::<Value>(&body).unwrap())
+            (principal_id, status, serde_json::from_slice::<Value>(&body).unwrap())
         });
     }
-    let mut phones = Vec::new();
+    let mut phone_by_principal = HashMap::new();
     while let Some(result) = provisions.join_next().await {
-        let (status, body) = result.expect("provision task");
+        let (principal_id, status, body) = result.expect("provision task");
         assert_eq!(status, StatusCode::CREATED, "each AI must receive its own phone");
-        phones.push(Uuid::parse_str(body["ai_phone_id"].as_str().expect("phone id")).unwrap());
+        let phone_id = Uuid::parse_str(body["ai_phone_id"].as_str().expect("phone id")).unwrap();
+        assert!(phone_by_principal.insert(principal_id, phone_id).is_none(),
+            "one canonical phone per AI principal");
     }
     let provisioning_elapsed_ms = started.elapsed().as_millis();
-    phones.sort();
-    phones.dedup();
-    assert_eq!(phones.len(), 7, "exactly seven unique AI_PHONE_ID values");
+    let phones = actors.iter().map(|actor| phone_by_principal[&actor.principal_id]).collect::<Vec<_>>();
+    let unique_phones = phones.iter().copied().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique_phones.len(), 7, "exactly seven unique AI_PHONE_ID values");
     let phone_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_phones WHERE tenant_id=$1")
         .bind(tenant).fetch_one(&pool).await.unwrap();
     assert_eq!(phone_count, 7);
@@ -154,6 +158,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     for (index, actor) in actors.iter().cloned().enumerate() {
         let app = app.clone();
         attachments.spawn(async move {
+            let principal_id = actor.principal_id;
             let response = request(&app, "POST", "/ai-phone/attach", &actor.token,
                 Some(serde_json::json!({
                     "endpoint_id":Uuid::new_v4(),"endpoint_type":"TEST",
@@ -161,24 +166,25 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
                 }))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), 32_000).await.unwrap();
-            (status, serde_json::from_slice::<Value>(&body).unwrap())
+            (principal_id, status, serde_json::from_slice::<Value>(&body).unwrap())
         });
     }
-    let mut attachment_rows = Vec::new();
+    let mut attachment_by_principal = HashMap::new();
     while let Some(result) = attachments.join_next().await {
-        let (status, body) = result.expect("attach task");
+        let (principal_id, status, body) = result.expect("attach task");
         assert_eq!(status, StatusCode::CREATED);
-        attachment_rows.push(body);
+        assert!(attachment_by_principal.insert(principal_id, body).is_none());
     }
-    assert_eq!(attachment_rows.len(), 7);
-    let endpoint_ids = attachment_rows.iter().map(|row|
+    assert_eq!(attachment_by_principal.len(), 7);
+    let endpoint_ids = attachment_by_principal.values().map(|row|
         Uuid::parse_str(row["endpoint_id"].as_str().unwrap()).unwrap()).collect::<std::collections::HashSet<_>>();
     assert_eq!(endpoint_ids.len(), 7, "seven globally unique endpoint IDs");
 
     // Heartbeats run concurrently across all seven distinct phone rows.
     let mut heartbeats = tokio::task::JoinSet::new();
-    for (actor, attachment) in actors.iter().cloned().zip(attachment_rows.iter().cloned()) {
+    for actor in actors.iter().cloned() {
         let app = app.clone();
+        let attachment = attachment_by_principal[&actor.principal_id].clone();
         heartbeats.spawn(async move {
             request(&app, "POST", "/ai-phone/heartbeat", &actor.token,
                 Some(serde_json::json!({"endpoint_fence":attachment["endpoint_fence"]}))).await.status()
@@ -220,23 +226,23 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
                 }))).await;
             let status = response.status();
             let body = axum::body::to_bytes(response.into_body(), 32_000).await.unwrap();
-            (status, serde_json::from_slice::<Value>(&body).unwrap())
+            (phone_id, status, serde_json::from_slice::<Value>(&body).unwrap())
         });
     }
-    let mut delivered = Vec::new();
+    let mut messages_by_phone = HashMap::new();
     while let Some(result) = sends.join_next().await {
-        let (status, body) = result.expect("message send task");
+        let (phone_id, status, body) = result.expect("message send task");
         assert_eq!(status, StatusCode::CREATED);
-        delivered.push(body);
+        assert!(messages_by_phone.insert(phone_id, body).is_none());
     }
-    assert_eq!(delivered.len(), 6);
+    assert_eq!(messages_by_phone.len(), 6);
 
     // Each recipient independently reads its own mailbox and ACKs its message.
     let mut mailbox_tasks = tokio::task::JoinSet::new();
-    for (index, actor) in actors.iter().cloned().enumerate().skip(1) {
+    for actor in actors.iter().cloned().skip(1) {
         let app = app.clone();
-        let phone_id = phones.iter().copied().find(|id| registry_phone_ids.contains(id)).unwrap();
-        let message_id = delivered[index-1]["message_id"].as_str().unwrap().to_string();
+        let phone_id = phone_by_principal[&actor.principal_id];
+        let message_id = messages_by_phone[&phone_id]["message_id"].as_str().unwrap().to_string();
         mailbox_tasks.spawn(async move {
             let inbox = request(&app, "GET", &format!("/ai-phone/{phone_id}/messages"),
                 &actor.token, None).await;
@@ -251,12 +257,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     assert_eq!(cross_read.status(), StatusCode::NOT_FOUND);
 
     // Concurrent retries against one recipient converge to the same durable message.
-    let target_phone = {
-        let response = request(&app, "GET", "/ai-phone/me", &actors[1].token, None).await;
-        let body = axum::body::to_bytes(response.into_body(), 32_000).await.unwrap();
-        let value: Value = serde_json::from_slice(&body).unwrap();
-        Uuid::parse_str(value["phone"]["ai_phone_id"].as_str().unwrap()).unwrap()
-    };
+    let target_phone = phone_by_principal[&actors[1].principal_id];
     let duplicate_body = serde_json::json!({"idempotency_key":"scale-duplicate-key","content":{"text":"duplicate-safe"}});
     let (left, right) = tokio::join!(
         request(&app, "POST", &format!("/ai-phone/{target_phone}/messages"), &actors[0].token, Some(duplicate_body.clone())),
@@ -281,8 +282,9 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
 
     // Detach all seven phones concurrently, then reconnect all with fresh endpoints.
     let mut detaches = tokio::task::JoinSet::new();
-    for (actor, attachment) in actors.iter().cloned().zip(attachment_rows.iter().cloned()) {
+    for actor in actors.iter().cloned() {
         let app = app.clone();
+        let attachment = attachment_by_principal[&actor.principal_id].clone();
         detaches.spawn(async move {
             request(&app, "POST", "/ai-phone/detach", &actor.token,
                 Some(serde_json::json!({"endpoint_fence":attachment["endpoint_fence"]}))).await.status()
@@ -308,8 +310,9 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
 
     // Old fencing tokens cannot heartbeat after detach/reconnect.
     let mut stale = tokio::task::JoinSet::new();
-    for (actor, attachment) in actors.iter().cloned().zip(attachment_rows.iter().cloned()) {
+    for actor in actors.iter().cloned() {
         let app = app.clone();
+        let attachment = attachment_by_principal[&actor.principal_id].clone();
         stale.spawn(async move {
             request(&app, "POST", "/ai-phone/heartbeat", &actor.token,
                 Some(serde_json::json!({"endpoint_fence":attachment["endpoint_fence"]}))).await.status()
