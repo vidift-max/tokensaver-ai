@@ -28,6 +28,7 @@ struct RegistryActor {
     identity: AuthenticatedIdentity,
     token: String,
     phone_id: Uuid,
+    ai_id: Uuid,
 }
 
 #[tokio::test]
@@ -96,6 +97,7 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
             },
             token,
             phone_id,
+            ai_id,
         });
     }
 
@@ -202,8 +204,12 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id IN ($1,$2)")
         .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM ai_identities WHERE ai_id IN (SELECT ai_id FROM ai_identity_principals WHERE tenant_id IN ($1,$2))")
-        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    for actor in &actors {
+        sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(actor.ai_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(actor.ai_id).execute(&pool).await.unwrap();
+    }
+    sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1").bind(foreign_ai).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(foreign_ai).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id IN ($1,$2)")
         .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
 }
