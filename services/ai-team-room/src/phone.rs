@@ -588,18 +588,18 @@ async fn revoke_endpoint_handler(
     ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
       .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let endpoint_status=endpoint_status.ok_or(StatusCode::NOT_FOUND)?;
+    let active_attachment:Option<Uuid>=sqlx::query_scalar(
+        "SELECT attachment_id FROM phone_attachments WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND attachment_status='ACTIVE' FOR UPDATE"
+    ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+      .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(attachment_id)=active_attachment {
+        sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1")
+            .bind(attachment_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
+            .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+            .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     if endpoint_status!="REVOKED" {
-        let active_attachment:Option<Uuid>=sqlx::query_scalar(
-            "SELECT attachment_id FROM phone_attachments WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND attachment_status='ACTIVE' FOR UPDATE"
-        ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-          .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-        if let Some(attachment_id)=active_attachment {
-            sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1")
-                .bind(attachment_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-            sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
-                .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-                .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
         sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
             .bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
