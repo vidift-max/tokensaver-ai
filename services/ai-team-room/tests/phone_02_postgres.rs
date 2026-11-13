@@ -787,6 +787,20 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(presence["presence_state"], "REVOKED",
         "presence must expose an active attachment's terminal revoked state");
 
+    let revoked_attach_body = serde_json::json!({
+        "endpoint_id": endpoint_3,
+        "endpoint_type": "TEST",
+        "metadata": {"label": "AI-PHONE-02-transfer-target"}
+    });
+    let (status, _) = call(&app, "POST", "/ai-phone/reconnect", &token_2,
+        Some(revoked_attach_body.clone())).await;
+    assert_eq!(status, StatusCode::CONFLICT,
+        "idempotent reconnect must not report success for a revoked endpoint");
+    let (status, _) = call(&app, "POST", "/ai-phone/transfer", &token_2,
+        Some(revoked_attach_body)).await;
+    assert_eq!(status, StatusCode::CONFLICT,
+        "transfer must not reactivate or accept an already revoked endpoint");
+
     let (status, _) = call(&app, "GET", &phone_2_messages_path, &token_2, None).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED,
         "a revoked endpoint cannot receive mailbox messages");
