@@ -400,7 +400,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(foreign_link_with_transition.status(), axum::http::StatusCode::FORBIDDEN,
         "task.transition does not authorize linking a foreign tenant task");
     let allowed_link = http_call(&app, "POST", "/ai-phone/mission", Some(&token_a),
-        Some(serde_json::json!({"task_id":owned_task.task_id}))).await;
+        Some(serde_json::json!({"task_id":owned_task_id}))).await;
     assert_eq!(allowed_link.status(), axum::http::StatusCode::NO_CONTENT,
         "task.transition plus task ownership authorizes linking the canonical task");
     let linked_snapshot = get_my_phone(&pool, &identity_a).await.unwrap();
