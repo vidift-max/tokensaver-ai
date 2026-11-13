@@ -438,7 +438,17 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
         });
     }
     while let Some(result) = stale.join_next().await {
-        assert_eq!(result.expect("stale heartbeat task"), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(result.expect("stale heartbeat task"), StatusCode::UNAUTHORIZED,
+            "detached endpoint credential is revoked before fence evaluation");
+    }
+    // Even a currently valid replacement credential cannot operate against the old fence.
+    for actor in &actors {
+        let old_fence = attachment_by_principal[&actor.principal_id]["endpoint_fence"].as_i64().unwrap();
+        let stale_generation = request_endpoint(&app, "POST", "/ai-phone/heartbeat", &actor.token,
+            &actor.reconnect_endpoint_credential,
+            Some(serde_json::json!({"endpoint_fence":old_fence}))).await;
+        assert_eq!(stale_generation.status(), StatusCode::PRECONDITION_FAILED,
+            "new endpoint credential cannot operate against a stale generation");
     }
 
     // Three required cross-AI attacks: mailbox access is owner-only.
