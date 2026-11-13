@@ -147,10 +147,11 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
     for (index, actor) in actors.iter().enumerate() {
         let pool = pool.clone();
         let identity = actor.identity.clone();
+        let endpoint_id = actor.endpoint_id;
         let endpoint_credential = actor.endpoint_credential.clone();
         tasks.spawn(async move {
             attach(&pool, &identity, AttachRequest {
-                endpoint_id: Uuid::new_v4(), endpoint_type: "TEST".into(),
+                endpoint_id, endpoint_type: "TEST".into(),
                 metadata: serde_json::json!({"fixture":"registry","index":index}),
             }, &endpoint_credential, false).await.expect("attach fixture phone")
         });
