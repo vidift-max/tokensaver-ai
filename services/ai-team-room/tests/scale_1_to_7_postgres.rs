@@ -223,6 +223,14 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
             &axum::body::to_bytes(replacement.into_body(),32_000).await.unwrap()).unwrap();
         actor.reconnect_endpoint_credential=replacement_body["endpoint_credential"].as_str().unwrap().to_owned();
     }
+    // Operator keys are AI-scoped even inside the same tenant.
+    let stolen_operator=request_operator(&app,"POST","/ai-phone/endpoints/register",
+        &actors[0].token,&actors[1].operator_key,Some(serde_json::json!({
+            "endpoint_id":Uuid::new_v4(),"endpoint_type":"TEST","metadata":{}
+        }))).await;
+    assert_eq!(stolen_operator.status(),StatusCode::FORBIDDEN,
+        "AI #1 cannot enroll an endpoint with AI #2's operator key");
+
     // Neither the AI bearer alone nor the operator key can impersonate the endpoint.
     for actor in &actors {
         let body=Some(serde_json::json!({
