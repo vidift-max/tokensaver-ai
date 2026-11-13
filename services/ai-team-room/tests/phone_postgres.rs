@@ -672,6 +672,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("DELETE FROM team_tasks WHERE task_id=$1").bind(foreign_task).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(second_phone).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM phone_endpoint_credentials WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(second_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoints WHERE endpoint_id=$1").bind(second_endpoint).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1").bind(second_phone).execute(&pool).await.unwrap();
