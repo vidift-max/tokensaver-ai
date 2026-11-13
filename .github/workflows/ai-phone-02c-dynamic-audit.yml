@@ -87,12 +87,27 @@ jobs:
         working-directory: target
         run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
 
-      - name: New real-TCP HTTP adversarial Phone audit
+      - name: Repeat real-TCP transfer, detach and revoke interleavings 20 times
         working-directory: target
         shell: bash
         run: |
-          set -euo pipefail
-          cargo test --manifest-path services/ai-team-room/Cargo.toml --test ai_phone_02c_network -- --show-output 2>&1 | tee ../ai-phone-02c-http.log
+          set -uo pipefail
+          : > ../ai-phone-02d-repetitions.jsonl
+          : > ../ai-phone-02c-http.log
+          failures=0
+          for repetition in $(seq 1 20); do
+            started_at="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            set +e
+            cargo test --manifest-path services/ai-team-room/Cargo.toml --test ai_phone_02c_network -- --show-output >> ../ai-phone-02c-http.log 2>&1
+            rc=$?
+            set -e
+            completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            if [ "$rc" -eq 0 ]; then outcome=PASS; else outcome=FAIL; failures=$((failures+1)); fi
+            printf '{"repetition":%s,"started_at":"%s","completed_at":"%s","exit_code":%s,"result":"%s"}\\n' "$repetition" "$started_at" "$completed_at" "$rc" "$outcome" | tee -a ../ai-phone-02d-repetitions.jsonl
+          done
+          echo "TOTAL_REPETITIONS=20" | tee -a ../ai-phone-02d-repetitions.jsonl
+          echo "FAILED_REPETITIONS=$failures" | tee -a ../ai-phone-02d-repetitions.jsonl
+          test "$failures" -eq 0
 
       - name: Full exact-SHA PostgreSQL, Registry, scale, Team Room and WebSocket suite
         working-directory: target
