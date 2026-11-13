@@ -373,6 +373,18 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         Some(serde_json::json!({"endpoint_id":endpoint_1,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-01-endpoint"}}))).await;
     assert_eq!(status,StatusCode::FORBIDDEN,
         "AI bearer alone cannot enroll an endpoint without the independent operator key");
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_1,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_1,"endpoint_type":"TEST","metadata":{"label":"wrong-operator-key"}
+        }))).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,
+        "operator key scoped to AI #2 cannot enroll an endpoint for AI #1");
+    let operator_hash:Vec<u8>=sqlx::query_scalar("SELECT key_hash FROM phone_endpoint_operator_keys WHERE tenant_id=$1 AND ai_id=$2 AND key_status='ACTIVE'")
+        .bind(tenant_id).bind(ai_2_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(operator_hash,Sha256::digest(operator_key_2.as_bytes()).to_vec());
+    assert_eq!(operator_hash.len(),32);
+    assert_ne!(operator_hash,operator_key_2.as_bytes(),
+        "operator key plaintext must never be stored in PostgreSQL");
     let (status, body) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_1,
         None,Some(&operator_key_1),
         Some(serde_json::json!({"endpoint_id":endpoint_1,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-01-endpoint"}}))).await;
