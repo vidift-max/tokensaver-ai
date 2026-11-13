@@ -817,6 +817,7 @@ mod postgres_tests {
             "b_lease":"ACQUIRED","b_checkpoint":"ACCEPTED","b_complete":"ACCEPTED","final_status":completed.status
         }));
         sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM phone_endpoint_credentials WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM phone_endpoints WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(phone_a.phone.ai_phone_id).execute(&pool).await.unwrap();
