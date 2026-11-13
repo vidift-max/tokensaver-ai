@@ -334,11 +334,11 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
         "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
 
-    let current = sqlx::query_as::<_, (Uuid, Uuid, i64)>(
-        "SELECT attachment_id,session_id,endpoint_fence FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 AND attachment_status='ACTIVE' FOR UPDATE"
+    let current = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+        "SELECT attachment_id,session_id,execution_id FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 AND attachment_status='ACTIVE' FOR UPDATE"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_optional(&mut *tx).await?;
     let had_current = current.is_some();
-    if let Some((current_attachment, current_session, _)) = current {
+    if let Some((current_attachment, current_session, current_execution)) = current {
         if current_session == identity.session_id {
             let existing = sqlx::query_as::<_, AttachmentRecord>(
                 "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3"
@@ -352,17 +352,21 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
                 tx.commit().await?;
                 return Ok(existing);
             }
-            if !allow_transfer { return Err(PhoneError::Conflict); }
+            return Err(PhoneError::Conflict);
         } else {
             let old_session_live: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id=$1 AND status='ACTIVE' AND revoked_at IS NULL AND expires_at>NOW())"
-            ).bind(current_session).fetch_one(&mut *tx).await?;
+                "SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id WHERE s.session_id=$1 AND w.execution_id=$2 AND s.tenant_id=$3 AND s.principal_id=$4 AND w.tenant_id=$3 AND w.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW())"
+            ).bind(current_session).bind(current_execution).bind(identity.tenant_id).bind(identity.principal_id).fetch_one(&mut *tx).await?;
             if old_session_live && !allow_transfer { return Err(PhoneError::Conflict); }
         }
         sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3")
             .bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=(SELECT endpoint_id FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3) AND tenant_id=$2 AND ai_id=$3 AND endpoint_status<>'REVOKED'")
             .bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1 AND tenant_id=$2 AND principal_id=$3 AND status='ACTIVE' AND revoked_at IS NULL")
+            .bind(current_session).bind(identity.tenant_id).bind(identity.principal_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE workload_executions SET status='REVOKED',revoked_at=NOW() WHERE execution_id=$1 AND session_id=$2 AND tenant_id=$3 AND principal_id=$4 AND status='ACTIVE' AND revoked_at IS NULL")
+            .bind(current_execution).bind(current_session).bind(identity.tenant_id).bind(identity.principal_id).execute(&mut *tx).await?;
     }
 
     // New endpoint must present its pre-enrolled credential; AI bearer possession alone is insufficient.
@@ -392,7 +396,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     record_phone_event(&mut tx, identity, phone.ai_phone_id,
         if had_current { "PHONE_TRANSFERRED" } else { "PHONE_CONNECTED" },
         if had_current { "phone.endpoint.transferred" } else { "phone.endpoint.attached" },
-        serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_fence":next_fence,"session_id":identity.session_id})
+        serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_fence":next_fence,"session_id":identity.session_id,"previous_session_id":current.map(|(_,session_id,_)|session_id),"previous_execution_id":current.map(|(_,_,execution_id)|execution_id)})
     ).await?;
     tx.commit().await?;
     Ok(sqlx::query_as::<_, AttachmentRecord>(

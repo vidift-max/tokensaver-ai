@@ -10,6 +10,30 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+async fn add_replacement_session(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    room_id: Uuid,
+    principal_id: Uuid,
+    participant_id: Uuid,
+    old_session_id: Uuid,
+) -> (Uuid, Uuid, String) {
+    let session_id = Uuid::new_v4();
+    let execution_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,status,issued_at,expires_at,rotated_from_session_id) VALUES($1,$2,$3,$4,'ACTIVE',NOW(),NOW()+INTERVAL '30 minutes',$5)")
+        .bind(session_id).bind(tenant_id).bind(room_id).bind(principal_id).bind(old_session_id)
+        .execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_executions(execution_id,tenant_id,room_id,participant_id,principal_id,session_id,worker_subject,status,heartbeat_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,'phone-02-runner','ACTIVE',NOW(),NOW()+INTERVAL '30 minutes')")
+        .bind(execution_id).bind(tenant_id).bind(room_id).bind(participant_id).bind(principal_id).bind(session_id)
+        .execute(pool).await.unwrap();
+    let moved = sqlx::query("UPDATE room_memberships SET session_id=$1 WHERE tenant_id=$2 AND room_id=$3 AND principal_id=$4 AND participant_id=$5 AND session_id=$6 AND status='ACTIVE'")
+        .bind(session_id).bind(tenant_id).bind(room_id).bind(principal_id).bind(participant_id).bind(old_session_id)
+        .execute(pool).await.unwrap();
+    assert_eq!(moved.rows_affected(),1,"session rotation moves the active Team Room membership");
+    let token = bearer_for(pool,session_id).await;
+    (session_id,execution_id,token)
+}
+
 async fn add_ai(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -726,6 +750,11 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::CREATED);
     let endpoint_3_registration:Value=serde_json::from_slice(&body).unwrap();
     let endpoint_3_credential=endpoint_3_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let old_token_2=token_2.clone();
+    let (ai_2_session_b,ai_2_execution_b,token_2_b)=add_replacement_session(
+        &pool,tenant_id,room_id,ai_2_principal,ai_2_participant,ai_2_session
+    ).await;
+    let token_2=token_2_b;
     let (status, body) = call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,
         Some(&endpoint_3_credential),None,Some(serde_json::json!({
             "endpoint_id":endpoint_3,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-transfer-target"}
@@ -739,21 +768,27 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "transferred-away endpoint credential is revoked even if old fence is supplied");
 
-    // Attack A: a process retaining only the AI bearer cannot recover the active generation.
-    let (status, _) = call(&app,"GET","/ai-phone/me",&token_2,None).await;
-    assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "AI bearer alone cannot read the active endpoint generation");
-    let (status, _) = call(&app,"POST","/ai-phone/heartbeat",&token_2,
-        Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
-    assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "AI bearer plus a guessed/observed fence cannot heartbeat without endpoint credential");
-    let (status,_) = call(&app,"GET",&phone_2_messages_path,&token_2,None).await;
-    assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "AI bearer alone cannot read/deliver the endpoint mailbox");
-    let (status,_) = call(&app,"POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,None).await;
-    assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "AI bearer alone cannot ACK a mailbox message");
+    let old_session_status:String=sqlx::query_scalar("SELECT status FROM sessions WHERE session_id=$1")
+        .bind(ai_2_session).fetch_one(&pool).await.unwrap();
+    let old_execution_status:String=sqlx::query_scalar("SELECT status FROM workload_executions WHERE execution_id=$1")
+        .bind(ai_2_execution).fetch_one(&pool).await.unwrap();
+    assert_eq!(old_session_status,"REVOKED","transfer revokes the previous session atomically");
+    assert_eq!(old_execution_status,"REVOKED","transfer revokes the previous execution atomically");
+    // Attack A: the previous process retains its old AI bearer and endpoint credential.
+    let (status, _) = call(&app,"GET","/ai-phone/me",&old_token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old session cannot read the active endpoint generation");
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&old_token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":reconnect_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old session and old endpoint credential cannot heartbeat");
+    let (status,_) = call_with_headers(&app,"GET",&phone_2_messages_path,&old_token_2,
+        Some(&endpoint_2_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old session cannot read the endpoint mailbox");
+    let (status,_) = call_with_headers(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&old_token_2,
+        Some(&endpoint_2_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old session cannot ACK a mailbox message");
+    let (status,_) = call(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&old_token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"revoked old session cannot enumerate endpoint identities");
     let endpoint_list_path=format!("/ai-phone/{phone_2_id}/endpoints");
     let (status,_) = call(&app,"GET",&endpoint_list_path,&token_2,None).await;
     assert_eq!(status,StatusCode::FORBIDDEN,
@@ -822,6 +857,11 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     sqlx::query("UPDATE phone_endpoint_credentials SET expires_at=NOW()-INTERVAL '1 second' WHERE endpoint_id=$1 AND credential_hash=$2")
         .bind(endpoint_4).bind(Sha256::digest(endpoint_4_credential.as_bytes()).to_vec())
         .execute(&pool).await.unwrap();
+    let old_token_2b=token_2.clone();
+    let (ai_2_session_c,ai_2_execution_c,token_2_c)=add_replacement_session(
+        &pool,tenant_id,room_id,ai_2_principal,ai_2_participant,ai_2_session_b
+    ).await;
+    let token_2=token_2_c;
     let (status,_) = call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,
         Some(&endpoint_4_credential),None,Some(serde_json::json!({
             "endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}
@@ -868,9 +908,9 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::CREATED);
     let race_message:Value=serde_json::from_slice(&body).unwrap();
     let race_message_id=race_message["message_id"].as_str().unwrap().to_owned();
-    let (status,_) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
+    let (status,_) = call_with_headers(&app,"GET",&phone_2_messages_path,&old_token_2b,
         Some(&endpoint_3_credential),None,None).await;
-    assert_eq!(status,StatusCode::OK,"old generation can deliver before concurrent transfer");
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"the prior session loses mailbox authority when membership rotates");
 
     let transfer_body_5=serde_json::json!({"endpoint_id":endpoint_5,"endpoint_type":"TEST","metadata":{"label":"transfer-race-5"}});
     let transfer_body_6=serde_json::json!({"endpoint_id":endpoint_6,"endpoint_type":"TEST","metadata":{"label":"transfer-race-6"}});
@@ -878,13 +918,15 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (transfer_5,transfer_6,heartbeat_old,ack_old)=tokio::join!(
         call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_5_credential),None,Some(transfer_body_5)),
         call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_6_credential),None,Some(transfer_body_6)),
-        call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&endpoint_3_credential),None,
+        call_with_headers(&app,"POST","/ai-phone/heartbeat",&old_token_2b,Some(&endpoint_3_credential),None,
             Some(serde_json::json!({"endpoint_fence":transfer_fence}))),
-        call_with_headers(&app,"POST",&race_ack_path,&token_2,
+        call_with_headers(&app,"POST",&race_ack_path,&old_token_2b,
             Some(&endpoint_3_credential),None,None)
     );
-    assert_eq!(transfer_5.0,StatusCode::OK,"first concurrent transfer is serialized and succeeds");
-    assert_eq!(transfer_6.0,StatusCode::OK,"second concurrent transfer serializes after the first");
+    let successful_transfers=[transfer_5.0,transfer_6.0].iter().filter(|status| **status==StatusCode::OK).count();
+    assert_eq!(successful_transfers,1,"exactly one transfer may consume a session generation");
+    let rejected_transfer=if transfer_5.0==StatusCode::OK {transfer_6.0} else {transfer_5.0};
+    assert_eq!(rejected_transfer,StatusCode::CONFLICT,"the same session cannot be rebound to a second endpoint");
     assert!(heartbeat_old.0==StatusCode::OK || heartbeat_old.0==StatusCode::UNAUTHORIZED,
         "heartbeat racing transfer either commits before the fence or is rejected after it");
     assert!(ack_old.0==StatusCode::NO_CONTENT || ack_old.0==StatusCode::UNAUTHORIZED,
@@ -899,6 +941,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let active_race_credentials:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_endpoint_credentials WHERE endpoint_id IN ($1,$2) AND credential_status='ACTIVE'")
         .bind(endpoint_5).bind(endpoint_6).fetch_one(&pool).await.unwrap();
     assert_eq!(active_race_credentials,1,"two concurrent transfers leave exactly one active target credential");
+    let session_b_status:String=sqlx::query_scalar("SELECT status FROM sessions WHERE session_id=$1")
+        .bind(ai_2_session_b).fetch_one(&pool).await.unwrap();
+    let execution_b_status:String=sqlx::query_scalar("SELECT status FROM workload_executions WHERE execution_id=$1")
+        .bind(ai_2_execution_b).fetch_one(&pool).await.unwrap();
+    assert_eq!(session_b_status,"REVOKED","transfer revokes the prior session");
+    assert_eq!(execution_b_status,"REVOKED","transfer revokes the prior execution");
     let old_generation_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_hash=$2")
         .bind(endpoint_3).bind(Sha256::digest(endpoint_3_credential.as_bytes()).to_vec()).fetch_one(&pool).await.unwrap();
     assert_eq!(old_generation_status,"REVOKED","credential of the previous generation is revoked atomically");
@@ -920,15 +968,33 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(register_7_status,StatusCode::CREATED);
     let register_7:Value=serde_json::from_slice(&register_7_body).unwrap();
     let endpoint_7_credential=register_7["endpoint_credential"].as_str().unwrap().to_owned();
+    let old_token_2c=token_2.clone();
+    let (ai_2_session_d,ai_2_execution_d,token_2_d)=add_replacement_session(
+        &pool,tenant_id,room_id,ai_2_principal,ai_2_participant,ai_2_session_c
+    ).await;
+    let token_2=token_2_d;
     let (detach_race,transfer_race)=tokio::join!(
-        call_with_headers(&app,"POST","/ai-phone/detach",&token_2,Some(&current_endpoint_credential),None,
+        call_with_headers(&app,"POST","/ai-phone/detach",&old_token_2c,Some(&current_endpoint_credential),None,
             Some(serde_json::json!({"endpoint_fence":current_fence}))),
         call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_7_credential),None,
             Some(serde_json::json!({"endpoint_id":endpoint_7,"endpoint_type":"TEST","metadata":{"label":"detach-transfer-race"}})))
     );
-    assert!(detach_race.0==StatusCode::NO_CONTENT || detach_race.0==StatusCode::UNAUTHORIZED,
-        "detach racing transfer either completes first or is rejected after old credential revocation");
+    assert_eq!(detach_race.0,StatusCode::UNAUTHORIZED,
+        "the previous session loses authority before the replacement endpoint attaches");
     assert_eq!(transfer_race.0,StatusCode::OK,"new endpoint transfer wins regardless of detach ordering");
+    let session_c_status:String=sqlx::query_scalar("SELECT status FROM sessions WHERE session_id=$1")
+        .bind(ai_2_session_c).fetch_one(&pool).await.unwrap();
+    let execution_c_status:String=sqlx::query_scalar("SELECT status FROM workload_executions WHERE execution_id=$1")
+        .bind(ai_2_execution_c).fetch_one(&pool).await.unwrap();
+    let session_d_status:String=sqlx::query_scalar("SELECT status FROM sessions WHERE session_id=$1")
+        .bind(ai_2_session_d).fetch_one(&pool).await.unwrap();
+    let execution_d_status:String=sqlx::query_scalar("SELECT status FROM workload_executions WHERE execution_id=$1")
+        .bind(ai_2_execution_d).fetch_one(&pool).await.unwrap();
+    assert_eq!(session_c_status,"REVOKED","second endpoint transfer revokes the previous session");
+    assert_eq!(execution_c_status,"REVOKED","second endpoint transfer revokes the previous execution");
+    assert_eq!(session_d_status,"ACTIVE","replacement session remains active");
+    assert_eq!(execution_d_status,"ACTIVE","replacement execution remains active");
+
     let (status,body)=call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&endpoint_7_credential),None,None).await;
     assert_eq!(status,StatusCode::OK);

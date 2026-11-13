@@ -62,7 +62,7 @@ Registration returns `{ endpoint, endpoint_credential }`. The secret must be tra
 
 1. Operator enrollment creates a `REGISTERED` endpoint and a hash-only credential.
 2. Attach/reconnect/transfer proves the target endpoint credential and, in one transaction, binds it to the next fence and creates the active attachment.
-3. Transfer changes the old attachment to `FENCED`, changes the old endpoint to `DETACHED`, advances the phone fence, and attaches the new endpoint. The lifecycle trigger revokes the old endpoint credential in the same transaction.
+3. Transfer to a different endpoint requires a distinct active session and execution under the same AI principal; a same-session rebind returns `409 Conflict`. The transaction changes the old attachment to `FENCED`, changes the old endpoint to `DETACHED`, revokes the previous session and workload execution, advances the phone fence, and attaches the new endpoint. The lifecycle trigger revokes the old endpoint credential in the same transaction.
 4. Detach advances the fence and transitions the endpoint to `DETACHED`; the trigger revokes its credential.
 5. `REVOKED` is terminal. The lifecycle trigger revokes credentials; reconnect/transfer cannot reuse that endpoint ID.
 6. Reconnecting a detached endpoint requires a new operator enrollment/credential rotation.
@@ -73,6 +73,7 @@ Endpoint-sensitive handlers lock the phone, attachment, endpoint, and credential
 
 ## Deliberate authority boundary
 
-- AI identity authority remains available for durable outbound messages, Team Room task ownership, and mission linkage subject to their existing permissions and tenant constraints.
-- Endpoint identity authority is mandatory for heartbeat, active endpoint snapshot, mailbox delivery/read, ACK, and lifecycle proof.
+- AI identity remains stable across session rotation, but the previous bearer and execution are revoked on endpoint transfer. Durable outbound messages and Team Room task/mission actions continue only through the replacement session and its current permissions.
+- Endpoint identity authority is mandatory for heartbeat, active endpoint snapshot, mailbox delivery/read, ACK, and lifecycle proof. The previous process cannot continue these operations after transfer because both its endpoint credential and session are revoked.
 - Presence exposes only derived state to an AI session with `phone.read`. Endpoint inventory is operator-only: an AI bearer, even with `phone.read`, cannot enumerate endpoint IDs; the operator key and `phone.endpoint.manage` are both required. The inventory never returns fences or credential secrets.
+- Existing Team Room WebSocket connections still need per-event session revalidation; periodic-only revalidation is not sufficient to close the final post-transfer delivery gap.
