@@ -223,6 +223,19 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
             &axum::body::to_bytes(replacement.into_body(),32_000).await.unwrap()).unwrap();
         actor.reconnect_endpoint_credential=replacement_body["endpoint_credential"].as_str().unwrap().to_owned();
     }
+    // Neither the AI bearer alone nor the operator key can impersonate the endpoint.
+    for actor in &actors {
+        let body=Some(serde_json::json!({
+            "endpoint_id":actor.endpoint_id,"endpoint_type":"TEST","metadata":{}
+        }));
+        let bearer_only=request(&app,"POST","/ai-phone/attach",&actor.token,body.clone()).await;
+        assert_eq!(bearer_only.status(),StatusCode::UNAUTHORIZED,
+            "AI bearer alone cannot attach endpoint for principal {}",actor.principal_id);
+        let operator_reused=request_endpoint(&app,"POST","/ai-phone/attach",&actor.token,
+            &actor.operator_key,body).await;
+        assert_eq!(operator_reused.status(),StatusCode::UNAUTHORIZED,
+            "operator credential cannot be substituted for endpoint credential");
+    }
 
     // Attach all seven unique endpoints concurrently.
     let started = std::time::Instant::now();
