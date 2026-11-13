@@ -664,13 +664,20 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::CREATED,"operator rotates endpoint credential after detach");
     let registration:Value=serde_json::from_slice(&body).unwrap();
     endpoint_2_credential=registration["endpoint_credential"].as_str().unwrap().to_owned();
-    let (status, body) = call_with_headers(&app,"POST","/ai-phone/reconnect",&token_2,
-        Some(&endpoint_2_credential),None,Some(serde_json::json!({
-            "endpoint_id":endpoint_2,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-endpoint"}
-        }))).await;
-    assert_eq!(status, StatusCode::OK, "Phone #2 reconnects using its registered endpoint");
-    let reconnect: Value = serde_json::from_slice(&body).unwrap();
-    let reconnect_fence = reconnect["endpoint_fence"].as_i64().unwrap();
+    let reconnect_body=serde_json::json!({
+        "endpoint_id":endpoint_2,"endpoint_type":"TEST","metadata":{"label":"AI-PHONE-02-endpoint"}
+    });
+    let (reconnect_a,reconnect_b)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/reconnect",&token_2,Some(&endpoint_2_credential),None,Some(reconnect_body.clone())),
+        call_with_headers(&app,"POST","/ai-phone/reconnect",&token_2,Some(&endpoint_2_credential),None,Some(reconnect_body))
+    );
+    assert_eq!(reconnect_a.0,StatusCode::OK,"first concurrent reconnect attaches the endpoint");
+    assert_eq!(reconnect_b.0,StatusCode::OK,"second concurrent reconnect is idempotent");
+    let reconnect_a:Value=serde_json::from_slice(&reconnect_a.1).unwrap();
+    let reconnect_b:Value=serde_json::from_slice(&reconnect_b.1).unwrap();
+    assert_eq!(reconnect_a["attachment_id"],reconnect_b["attachment_id"],
+        "concurrent reconnect requests converge on one attachment");
+    let reconnect_fence=reconnect_b["endpoint_fence"].as_i64().unwrap();
     assert!(reconnect_fence > initial_fence, "reconnect advances the endpoint fence");
 
     let endpoint_3 = Uuid::new_v4();
