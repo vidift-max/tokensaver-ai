@@ -778,6 +778,19 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         Some(&endpoint_4_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "registered-but-unattached endpoint credential cannot impersonate the active endpoint");
+    sqlx::query("UPDATE phone_endpoint_credentials SET expires_at=NOW()-INTERVAL '1 second' WHERE endpoint_id=$1 AND credential_hash=$2")
+        .bind(endpoint_4).bind(Sha256::digest(endpoint_4_credential.as_bytes()).to_vec())
+        .execute(&pool).await.unwrap();
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,
+        Some(&endpoint_4_credential),None,Some(serde_json::json!({
+            "endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}
+        }))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "expired endpoint credential cannot transfer into authority");
+    let unchanged_fence:i64=sqlx::query_scalar("SELECT endpoint_fence FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
+        .bind(phone_2_id).bind(tenant_id).bind(ai_2_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(unchanged_fence,transfer_fence,
+        "failed expired-credential transfer rolls back the old endpoint fencing state");
     let (status,_) = call_with_headers(&app,"POST",&format!("/ai-phone/endpoints/{endpoint_4}/revoke"),&token_2,
         None,Some(&operator_key_2),None).await;
     assert_eq!(status,StatusCode::NO_CONTENT,"operator can revoke an unattached endpoint credential");
