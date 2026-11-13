@@ -1847,3 +1847,48 @@ async fn ai_phone_02c_transactional_cleanup_isolates_shared_identity_fixtures_10
         }));
     }
 }
+
+// Round 1 characterization probe: the current helper accepts a valid tenant with
+// unrelated/nonexistent Phone identifiers and still deletes the tenant. This is
+// intentionally a passing reproduction of the defect, not a safety assertion.
+#[tokio::test]
+async fn ai_phone_02c_cleanup_round1_reproduces_mismatched_scope_tenant_deletion() {
+    let database_url = std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool = connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("apply exact-target migrations");
+
+    let tenant_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,$2)")
+        .bind(tenant_id)
+        .bind("round1-valid-tenant-invalid-phone-scope")
+        .execute(&pool).await.unwrap();
+
+    let scope = PhoneFixtureCleanupScope {
+        tenant_id,
+        identities: vec![PhoneIdentityFixtureScope {
+            // All identifiers are deliberately unrelated to this tenant.
+            ai_id: Uuid::new_v4(),
+            ai_phone_id: Uuid::new_v4(),
+            principal_id: Uuid::new_v4(),
+            operator_key_ids: vec![Uuid::new_v4()],
+        }],
+    };
+
+    let result = cleanup_phone_fixture(&pool, &scope).await;
+    let tenant_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id=$1)"
+    ).bind(tenant_id).fetch_one(&pool).await.unwrap();
+
+    assert!(result.is_ok(), "characterization: current helper unexpectedly rejected mismatched scope: {result:?}");
+    assert!(!tenant_exists, "characterization: current helper did not reproduce tenant deletion");
+
+    append_cleanup_isolation_evidence(serde_json::json!({
+        "scenario":"valid_tenant_with_unrelated_nonexistent_ai_phone_principal_and_operator_key_ids",
+        "result":"REPRODUCED_UNSAFE_TENANT_DELETION",
+        "tenant_id":tenant_id,
+        "cleanup_returned_ok":result.is_ok(),
+        "tenant_exists_after_cleanup":tenant_exists,
+        "target_sha":std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+        "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+    }));
+}
