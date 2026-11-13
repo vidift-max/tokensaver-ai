@@ -203,6 +203,7 @@ fn generate_endpoint_secret() -> String {
 
 async fn require_endpoint_operator(
     pool: &PgPool,
+    tx: &mut sqlx::Transaction<'_,sqlx::Postgres>,
     identity: &AuthenticatedIdentity,
     ai_id: Uuid,
     headers: &HeaderMap,
@@ -210,11 +211,11 @@ async fn require_endpoint_operator(
     require_permission(pool, identity, "phone.endpoint.manage").await
         .map_err(|_| StatusCode::FORBIDDEN)?;
     let secret = operator_secret_from_headers(headers)?;
-    let allowed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM phone_endpoint_operator_keys WHERE tenant_id=$1 AND ai_id=$2 AND key_hash=$3 AND key_status='ACTIVE' AND (expires_at IS NULL OR expires_at>NOW()))"
+    let allowed: Option<Uuid> = sqlx::query_scalar(
+        "SELECT operator_key_id FROM phone_endpoint_operator_keys WHERE tenant_id=$1 AND ai_id=$2 AND key_hash=$3 AND key_status='ACTIVE' AND (expires_at IS NULL OR expires_at>NOW()) FOR SHARE"
     ).bind(identity.tenant_id).bind(ai_id).bind(credential_hash(&secret))
-        .fetch_one(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if allowed { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
+        .fetch_optional(&mut **tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if allowed.is_some() { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
 }
 
 /// Locks the phone, active attachment, endpoint and credential together. A transfer/detach
@@ -528,7 +529,7 @@ async fn register_endpoint_handler(
     let _locked=sqlx::query("SELECT ai_phone_id FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE")
         .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
         .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    require_endpoint_operator(&pool,&identity,phone.ai_id,&headers).await?;
+    require_endpoint_operator(&pool,&mut tx,&identity,phone.ai_id,&headers).await?;
 
     let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE")
         .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
@@ -582,7 +583,7 @@ async fn revoke_endpoint_handler(
     let _locked=sqlx::query("SELECT ai_phone_id FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE")
         .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
         .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    require_endpoint_operator(&pool,&identity,phone.ai_id,&headers).await?;
+    require_endpoint_operator(&pool,&mut tx,&identity,phone.ai_id,&headers).await?;
     let endpoint_status:Option<String>=sqlx::query_scalar(
         "SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE"
     ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
