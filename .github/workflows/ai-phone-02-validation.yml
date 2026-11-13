@@ -1,0 +1,124 @@
+name: AI-PHONE-02 PostgreSQL Validation
+
+on:
+  push:
+    branches:
+      - mission/ai-phone-02
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact commit SHA to validate (defaults to the selected ref)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-02-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  phone-02-postgres:
+    name: Rust + PostgreSQL 16 + frontend + evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_02_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_02_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_02_test
+    steps:
+      - name: Checkout exact target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify target SHA and mission branch
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$TARGET_SHA"
+          test "$GITHUB_REF_NAME" = "mission/ai-phone-02"
+          printf 'TARGET_SHA=%s\nHEAD=%s\nBRANCH=%s\n' "$TARGET_SHA" "$actual" "$GITHUB_REF_NAME" | tee ai-phone-02-run-context.txt
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Confirm PostgreSQL 16 and writable database
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SELECT current_setting('server_version_num'); SELECT current_setting('transaction_read_only');"
+
+      - name: Rust formatting check
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+
+      - name: Cargo check — AI Team Room service
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+
+      - name: Legacy migration compatibility on PostgreSQL 16
+        run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
+
+      - name: Full Rust and PostgreSQL integration suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ai-phone-02-rust-postgres.log
+
+      - name: Frontend production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npm run build
+
+      - name: Build evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "COMMIT_SHA=$(git rev-parse HEAD)"
+            echo "BRANCH=$GITHUB_REF_NAME"
+            echo "WORKFLOW_RUN_ID=$GITHUB_RUN_ID"
+            echo "POSTGRESQL:"
+            psql "$DATABASE_URL" -Atc "SELECT version();" || true
+            echo "SHA256:"
+            while IFS= read -r -d '' file; do sha256sum "$file"; done < <(
+              find services/ai-team-room/migrations services/ai-team-room/src services/ai-team-room/tests src \
+                -type f \( -name '*.sql' -o -name '*.rs' -o -name '*.sh' -o -name '*.tsx' -o -name '*.css' \) \
+                -print0 | sort -z
+            )
+          } | tee ai-phone-02-evidence-manifest.txt
+
+      - name: Upload AI-PHONE-02 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-02-validation-${{ github.run_id }}
+          path: |
+            ai-phone-02-run-context.txt
+            ai-phone-02-rust-postgres.log
+            ai-phone-02-evidence-manifest.txt
+          if-no-files-found: warn
+          retention-days: 30
