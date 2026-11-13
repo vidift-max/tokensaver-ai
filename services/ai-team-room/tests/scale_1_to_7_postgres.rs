@@ -20,6 +20,7 @@ struct Actor {
     execution_id: Uuid,
     ai_id: Uuid,
     token: String,
+    operator_key: String,
     endpoint_id: Uuid,
     endpoint_credential: String,
     reconnect_endpoint_id: Uuid,
@@ -43,6 +44,15 @@ async fn request_endpoint(app: &Router, method: &str, uri: &str, token: &str, cr
         .await.unwrap()
 }
 
+async fn request_operator(app: &Router, method: &str, uri: &str, token: &str, operator_key: &str, body: Option<Value>) -> Response {
+    let mut builder = Request::builder().method(method).uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-ai-phone-operator-key", operator_key);
+    if body.is_some() { builder = builder.header("content-type", "application/json"); }
+    app.clone().oneshot(builder.body(Body::from(body.map(|v| v.to_string()).unwrap_or_default())).unwrap())
+        .await.unwrap()
+}
+
 async fn grant(pool: &PgPool, tenant: Uuid, room: Uuid, principal: Uuid, permission: &str) {
     sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)")
         .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(permission)
@@ -61,10 +71,11 @@ async fn seed_actor(pool: &PgPool, tenant: Uuid, room: Uuid, index: usize) -> Ac
     let session_id = Uuid::new_v4();
     let execution_id = Uuid::new_v4();
     let ai_id = Uuid::new_v4();
+    let operator_key = format!("scale-operator-{index}-{}", Uuid::new_v4());
     let endpoint_id = Uuid::new_v4();
-    let endpoint_credential = format!("scale-endpoint-{index}-{}", Uuid::new_v4());
+    let endpoint_credential = String::new();
     let reconnect_endpoint_id = Uuid::new_v4();
-    let reconnect_endpoint_credential = format!("scale-reconnect-endpoint-{index}-{}", Uuid::new_v4());
+    let reconnect_endpoint_credential = String::new();
     let subject = format!("scale-ai-{index}-{principal_id}");
     let token = format!("scale-session-{session_id}");
     let token_hash = Sha256::digest(token.as_bytes()).to_vec();
@@ -94,12 +105,12 @@ async fn seed_actor(pool: &PgPool, tenant: Uuid, room: Uuid, index: usize) -> Ac
     for permission in [
         "phone.provision", "phone.read", "phone.attach", "phone.detach",
         "phone.heartbeat", "phone.message.read", "phone.message.send",
-        "phone.message.ack", "room.read", "room.write",
+        "phone.message.ack", "phone.endpoint.manage", "room.read", "room.write",
     ] {
         grant(pool, tenant, room, principal_id, permission).await;
     }
     Actor { tenant_id: tenant, room_id: room, principal_id, participant_id,
-        session_id, execution_id, ai_id, token, endpoint_id, endpoint_credential,
+        session_id, execution_id, ai_id, token, operator_key, endpoint_id, endpoint_credential,
         reconnect_endpoint_id, reconnect_endpoint_credential }
 }
 
@@ -184,23 +195,33 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
         .bind(tenant).fetch_one(&pool).await.unwrap();
     assert_eq!(session_count, 7, "exactly seven active disposable sessions");
 
-    // Pre-enroll two endpoint identities per disposable AI. The first is used
-    // for initial attach; the second is used only after detach/reconnect.
-    for actor in &actors {
-        let phone_id = phone_by_principal[&actor.principal_id];
-        for (endpoint_id, secret, label) in [
-            (actor.endpoint_id, &actor.endpoint_credential, "initial"),
-            (actor.reconnect_endpoint_id, &actor.reconnect_endpoint_credential, "reconnect"),
-        ] {
-            sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,'TEST','REGISTERED',$5)")
-                .bind(endpoint_id).bind(phone_id).bind(tenant).bind(actor.ai_id)
-                .bind(serde_json::json!({"fixture":"disposable-scale-1-to-7","label":label}))
-                .execute(&pool).await.unwrap();
-            sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
-                .bind(Uuid::new_v4()).bind(endpoint_id).bind(phone_id).bind(tenant).bind(actor.ai_id)
-                .bind(Sha256::digest(secret.as_bytes()).to_vec())
-                .execute(&pool).await.unwrap();
-        }
+    // Provision out-of-band operator-key hashes, then exercise real endpoint
+    // registration twice per AI: initial generation and replacement generation.
+    for actor in actors.iter_mut() {
+        sqlx::query("INSERT INTO phone_endpoint_operator_keys(operator_key_id,tenant_id,ai_id,key_hash,expires_at) VALUES($1,$2,$3,$4,NOW()+INTERVAL '90 days')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(actor.ai_id)
+            .bind(Sha256::digest(actor.operator_key.as_bytes()).to_vec())
+            .execute(&pool).await.unwrap();
+        let initial = request_operator(&app,"POST","/ai-phone/endpoints/register",&actor.token,
+            &actor.operator_key,Some(serde_json::json!({
+                "endpoint_id":actor.endpoint_id,"endpoint_type":"TEST",
+                "metadata":{"fixture":"disposable-scale-1-to-7","generation":"initial"}
+            }))).await;
+        assert_eq!(initial.status(),StatusCode::CREATED,"operator enrolls initial endpoint");
+        assert_eq!(initial.headers().get(axum::http::header::CACHE_CONTROL).unwrap(),"no-store");
+        let initial_body:Value=serde_json::from_slice(
+            &axum::body::to_bytes(initial.into_body(),32_000).await.unwrap()).unwrap();
+        actor.endpoint_credential=initial_body["endpoint_credential"].as_str().unwrap().to_owned();
+
+        let replacement = request_operator(&app,"POST","/ai-phone/endpoints/register",&actor.token,
+            &actor.operator_key,Some(serde_json::json!({
+                "endpoint_id":actor.reconnect_endpoint_id,"endpoint_type":"TEST",
+                "metadata":{"fixture":"disposable-scale-1-to-7","generation":"replacement"}
+            }))).await;
+        assert_eq!(replacement.status(),StatusCode::CREATED,"operator enrolls replacement endpoint");
+        let replacement_body:Value=serde_json::from_slice(
+            &axum::body::to_bytes(replacement.into_body(),32_000).await.unwrap()).unwrap();
+        actor.reconnect_endpoint_credential=replacement_body["endpoint_credential"].as_str().unwrap().to_owned();
     }
 
     // Attach all seven unique endpoints concurrently.
@@ -358,10 +379,16 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     // Cross-endpoint claim: AI #7 cannot attach AI #1's registered endpoint
     // even when it presents its own valid endpoint credential.
     let endpoint_one = actors[0].endpoint_id;
-    let endpoint_claim = request_endpoint(&app, "POST", "/ai-phone/attach", &actors[6].token,
+    let endpoint_claim = request_operator(&app, "POST", "/ai-phone/endpoints/register", &actors[6].token,
+        &actors[6].operator_key,
+        Some(serde_json::json!({"endpoint_id":endpoint_one,"endpoint_type":"TEST","metadata":{}}))).await;
+    assert_eq!(endpoint_claim.status(), StatusCode::CONFLICT,
+        "another AI cannot register an endpoint ID already owned by AI #1");
+    let cross_attach = request_endpoint(&app, "POST", "/ai-phone/attach", &actors[6].token,
         &actors[6].endpoint_credential,
         Some(serde_json::json!({"endpoint_id":endpoint_one,"endpoint_type":"TEST","metadata":{}}))).await;
-    assert_eq!(endpoint_claim.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(cross_attach.status(), StatusCode::UNAUTHORIZED,
+        "AI #7 cannot use its own endpoint credential to attach AI #1's endpoint");
 
     // Cross-ACK: AI #3 cannot acknowledge a message belonging to AI #7.
     let phone_seven = phone_by_principal[&actors[6].principal_id];
