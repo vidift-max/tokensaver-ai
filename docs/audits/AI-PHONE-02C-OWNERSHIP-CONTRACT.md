@@ -1059,25 +1059,25 @@ This section records the workflow inspection performed for the current mission. 
 
 | Field | Verified result |
 |---|---|
-| Workflow run | \`43477503344\` |
-| Event / ref | \`push\` / \`refs/heads/audit/ai-phone-02c-execution\` |
-| Workflow commit / audit harness checkout | \`b612076d59af0f69f06f1a5b275abec1fb6c688f\` |
-| Immutable implementation checkout | \`ebb8eeecfea087443c5f3eba7021e96cb5302fe7\` |
-| Job | \`132065863583\` — Exact-SHA HTTP + PostgreSQL + WebSocket audit |
+| Workflow run | `43477503344` |
+| Event / ref | `push` / `refs/heads/audit/ai-phone-02c-execution` |
+| Workflow commit / audit harness checkout | `b612076d59af0f69f06f1a5b275abec1fb6c688f` |
+| Immutable implementation checkout | `ebb8eeecfea087443c5f3eba7021e96cb5302fe7` |
+| Job | `132065863583` — Exact-SHA HTTP + PostgreSQL + WebSocket audit |
 | Job conclusion | **FAILURE** |
-| PostgreSQL | 16.16, \`server_version_num=160016\`, database \`ai_phone_02c_audit\` |
-| Artifact | \`ai-phone-02c-dynamic-audit-43477503344.zip\`, artifact ID \`14064122164\` |
-| Artifact SHA-256 | \`990bf2cfc08a2f31298d54a990a592ec3f75b878122d414a350b3b266c675965\` |
+| PostgreSQL | 16.16, `server_version_num=160016`, database `ai_phone_02c_audit` |
+| Artifact | `ai-phone-02c-dynamic-audit-43477503344.zip`, artifact ID `14064122164` |
+| Artifact SHA-256 | `990bf2cfc08a2f31298d54a990a592ec3f75b878122d414a350b3b266c675965` |
 
-The job completed its setup, initialized its PostgreSQL service container, checked out the audit branch commit and the immutable TARGET separately, and passed the exact-SHA and source-blob provenance checks. The run-context file confirms both \`TARGET_SHA\` and \`TARGET_HEAD\` equal the immutable TARGET. The checked source blobs for \`communication.rs\`, \`tasks.rs\`, and \`handoffs.rs\` matched the pinned values.
+The job completed its setup, initialized its PostgreSQL service container, checked out the audit branch commit and the immutable TARGET separately, and passed the exact-SHA and source-blob provenance checks. The run-context file confirms both `TARGET_SHA` and `TARGET_HEAD` equal the immutable TARGET. The checked source blobs for `communication.rs`, `tasks.rs`, and `handoffs.rs` matched the pinned values.
 
 ### 24.1 Steps and results
 
 | Step | Result | Interpretation |
 |---|---|---|
 | Set up runner and PostgreSQL service container | PASS | A job-local PostgreSQL 16 service was started. |
-| Checkout audit harness/workflow | PASS | Checked out \`b612076...\`. |
-| Checkout immutable implementation SHA | PASS | Checked out \`ebb8ee...\` separately. |
+| Checkout audit harness/workflow | PASS | Checked out `b612076...`. |
+| Checkout immutable implementation SHA | PASS | Checked out `ebb8ee...` separately. |
 | Verify exact implementation and harness provenance | PASS | TARGET and pinned source blobs matched. |
 | Install Rust stable / Node 22 | PASS | Toolchain setup only. |
 | Confirm PostgreSQL 16 disposable database | PASS | Version and database probe succeeded; the workflow's connection string targeted its job-local service. |
@@ -1098,20 +1098,20 @@ The job completed its setup, initialized its PostgreSQL service container, check
 | Rust library unit tests | 6 passed, 0 failed |
 | Main binary / PostgreSQL and HTTP integration tests | 10 passed, 0 failed |
 | Admission PostgreSQL tests | 3 passed, 0 failed |
-| \`ai_phone_02c_network\` | 12 passed, 3 failed |
+| `ai_phone_02c_network` | 12 passed, 3 failed |
 | **Total completed** | **31 passed, 3 failed** |
 
 The three failed security assertions were:
 
-- \`ai_phone_02c_round1_case1_valid_tenant_random_ai_only\`
-- \`ai_phone_02c_round1_case4_valid_tenant_nonexistent_operator_key\`
-- \`ai_phone_02c_round1_case5_tenant_a_ids_from_different_fixtures\`
+- `ai_phone_02c_round1_case1_valid_tenant_random_ai_only`
+- `ai_phone_02c_round1_case4_valid_tenant_nonexistent_operator_key`
+- `ai_phone_02c_round1_case5_tenant_a_ids_from_different_fixtures`
 
 The random-Phone-only and incompatible-principal cases passed because foreign-key constraints rejected the attempted cleanup. They do not establish ownership validation. The other 12 tests in the network target passed, including the ten-cycle fixture-isolation test, Phone transfer continuity, and seven-real-WebSocket revocation/preservation test.
 
-Other executed concurrency/scale-related tests included the ten-concurrent-executor lease test, the handoff candidate/state test, the sixteen-simultaneous-admissions test, and seven-WebSocket tests. **The 160-race test and the 20-handoff test were not present in the executed test output and were not run.** The separate \`scale_1_to_7_postgres.rs\` target was present in the source-hash manifest but did not appear as an executed test target in the captured suite log; do not claim that this workflow validated the 1→7 scale target.
+Other executed concurrency/scale-related tests included the ten-concurrent-executor lease test, the handoff candidate/state test, the sixteen-simultaneous-admissions test, and seven-WebSocket tests. **The 160-race test and the 20-handoff test were not present in the executed test output and were not run.** The separate `scale_1_to_7_postgres.rs` target was present in the source-hash manifest but did not appear as an executed test target in the captured suite log; do not claim that this workflow validated the 1→7 scale target.
 
-The workflow did execute destructive fixture teardown code in its disposable CI database. Test sources contain \`DELETE FROM tenants\` and fixture-scoped resource deletions; the PostgreSQL log records tenant-delete attempts, including attempts rejected by foreign keys. This is a test-environment side effect, not evidence of an operational tenant deletion. No production database URL or production database connection was configured by this workflow. The test helper itself, however, does not independently prove that an arbitrary locally supplied \`DATABASE_URL\` is disposable; that remains a teardown blocker (§30).
+The workflow did execute destructive fixture teardown code in its disposable CI database. Test sources contain `DELETE FROM tenants` and fixture-scoped resource deletions; the PostgreSQL log records tenant-delete attempts, including attempts rejected by foreign keys. This is a test-environment side effect, not evidence of an operational tenant deletion. No production database URL or production database connection was configured by this workflow. The test helper itself, however, does not independently prove that an arbitrary locally supplied `DATABASE_URL` is disposable; that remains a teardown blocker (§30).
 
 ### 24.3 Failure interpretation and effects
 
@@ -1127,58 +1127,58 @@ The uploaded ZIP contains the run context, full test log, PostgreSQL catalog, ev
 
 ### 25.1 Separate lifecycle from current operational statuses
 
-The current \`ai_phones.phone_status\` values remain exactly those already recorded in the catalog: \`ATTACHED\`, \`TRANSFER_REQUESTED\`, \`TRANSFERRING\`, \`ATTACHED_NEW_ENDPOINT\`, and \`DISCONNECTED\`. Endpoint, attachment, credential, session, workload and operator-key status domains remain separate. None of the proposed lifecycle values below is asserted to exist in the current schema.
+The current `ai_phones.phone_status` values remain exactly those already recorded in the catalog: `ATTACHED`, `TRANSFER_REQUESTED`, `TRANSFERRING`, `ATTACHED_NEW_ENDPOINT`, and `DISCONNECTED`. Endpoint, attachment, credential, session, workload and operator-key status domains remain separate. None of the proposed lifecycle values below is asserted to exist in the current schema.
 
-Propose a dedicated, one-row-per-Phone lifecycle aggregate, independent of \`ai_phones.phone_status\`:
+Propose a dedicated, one-row-per-Phone lifecycle aggregate, independent of `ai_phones.phone_status`:
 
 | Proposed lifecycle state | Meaning | New Phone-scoped writes |
 |---|---|---|
-| \`ACTIVE\` | Phone may be attached and used under current authorization | Allowed through the lifecycle gate |
-| \`DETACHING\` | A reversible disconnect operation is in progress | Only the idempotent detach operation and safe reads |
-| \`DETACHED\` | No active endpoint attachment; Phone identity and history remain | Attach may be requested with fresh authorization and credentials |
-| \`DEPROVISIONING\` | A separately approved, irreversible deprovision operation has begun | Deny attach, registration, messages, mission-link mutation and normal Phone writes; allow only lifecycle worker operations and reads |
-| \`RETIRED\` | Terminal, non-operational Phone identity retained as an audit/reference anchor | Read-only; no reactivation or normal writes |
+| `ACTIVE` | Phone may be attached and used under current authorization | Allowed through the lifecycle gate |
+| `DETACHING` | A reversible disconnect operation is in progress | Only the idempotent detach operation and safe reads |
+| `DETACHED` | No active endpoint attachment; Phone identity and history remain | Attach may be requested with fresh authorization and credentials |
+| `DEPROVISIONING` | A separately approved, irreversible deprovision operation has begun | Deny attach, registration, messages, mission-link mutation and normal Phone writes; allow only lifecycle worker operations and reads |
+| `RETIRED` | Terminal, non-operational Phone identity retained as an audit/reference anchor | Read-only; no reactivation or normal writes |
 
-Do not add \`RETIRED\` or \`DEPROVISIONING\` to the existing \`phone_status\` check constraint. The lifecycle aggregate is authoritative for lifecycle admission; the existing status fields continue to describe connectivity and endpoint operation.
+Do not add `RETIRED` or `DEPROVISIONING` to the existing `phone_status` check constraint. The lifecycle aggregate is authoritative for lifecycle admission; the existing status fields continue to describe connectivity and endpoint operation.
 
-A separate operation/receipt record should capture \`operation_id\`, immutable request digest, Phone/tenant IDs, requested transition, requester identity, approver identity, creation/completion timestamps, lifecycle version, result, failure code and evidence-manifest hash. An append-only lifecycle event stream should record every accepted/rejected transition and every worker phase. The lifecycle row should also carry a monotonically increasing version/fence epoch and the current operation ID. A retry with the same operation ID and digest returns the recorded outcome; the same ID with a different digest is rejected.
+A separate operation/receipt record should capture `operation_id`, immutable request digest, Phone/tenant IDs, requested transition, requester identity, approver identity, creation/completion timestamps, lifecycle version, result, failure code and evidence-manifest hash. An append-only lifecycle event stream should record every accepted/rejected transition and every worker phase. The lifecycle row should also carry a monotonically increasing version/fence epoch and the current operation ID. A retry with the same operation ID and digest returns the recorded outcome; the same ID with a different digest is rejected.
 
 ### 25.2 Explicit transition graph
 
-\`\`\`text
+```text
 ACTIVE -> DETACHING -> DETACHED
                        |   ^
                        |   | fresh attach + new valid endpoint credential
                        v   |
                  DEPROVISIONING -> RETIRED
-\`\`\`
+```
 
 - **DETACH** is a reversible connectivity operation. It fences the current attachment, advances the Phone fence, marks the endpoint detached, and relies on the existing endpoint lifecycle trigger to revoke credentials for that endpoint. The Phone and its history remain. A later attach is a new authorization event with a fresh endpoint credential; it does not reactivate the old credential.
-- **DEPROVISION** is a separate governance/security operation. It can begin only from \`DETACHED\`, after transfer/handoff/task prerequisites have been resolved and the lifecycle write barrier is active. It disables further Phone operations but preserves Phone, endpoint, message, attachment, credential, mission-link, audit, outbox and parent-anchor records. It does not mean delete.
+- **DEPROVISION** is a separate governance/security operation. It can begin only from `DETACHED`, after transfer/handoff/task prerequisites have been resolved and the lifecycle write barrier is active. It disables further Phone operations but preserves Phone, endpoint, message, attachment, credential, mission-link, audit, outbox and parent-anchor records. It does not mean delete.
 - **RETIRE** is the terminal state reached only after all deprovision checks and evidence are complete. It preserves the Phone row as a referential and audit anchor. No ordinary API, tenant administrator, operator key or retry may transition it back.
 
-Prohibited transitions include \`ACTIVE -> RETIRED\`, \`ACTIVE -> DEPROVISIONING\` without the detach/precondition phase, \`DEPROVISIONING -> ACTIVE\`, \`DEPROVISIONING -> DETACHED\` after any irreversible side effect, and every transition out of \`RETIRED\`. A failed worker attempt is an operation result, not a new lifecycle state: leave the Phone in \`DEPROVISIONING\`, persist the failure and retry the same operation safely. Do not silently roll it back to an operational state.
+Prohibited transitions include `ACTIVE -> RETIRED`, `ACTIVE -> DEPROVISIONING` without the detach/precondition phase, `DEPROVISIONING -> ACTIVE`, `DEPROVISIONING -> DETACHED` after any irreversible side effect, and every transition out of `RETIRED`. A failed worker attempt is an operation result, not a new lifecycle state: leave the Phone in `DEPROVISIONING`, persist the failure and retry the same operation safely. Do not silently roll it back to an operational state.
 
-If a detach transaction fails before commit, its transaction rolls back and the Phone remains \`ACTIVE\`. If the detach commits but a later caller loses its response, retry by operation ID and return the durable receipt. Reattachment after a committed detach always requires a new attach authorization and new credential.
+If a detach transaction fails before commit, its transaction rolls back and the Phone remains `ACTIVE`. If the detach commits but a later caller loses its response, retry by operation ID and return the durable receipt. Reattachment after a committed detach always requires a new attach authorization and new credential.
 
 ### 25.3 Authority and evidence
 
 The following are proposed authority classes, not current permissions or existing roles:
 
-1. **Requester:** tenant administrator or delegated Phone owner may submit a detach/deprovision request. Existing \`phone.detach\` and \`phone.attach\` apply only to their currently implemented operations; they do not authorize retirement.
+1. **Requester:** tenant administrator or delegated Phone owner may submit a detach/deprovision request. Existing `phone.detach` and `phone.attach` apply only to their currently implemented operations; they do not authorize retirement.
 2. **Independent approver:** a distinct platform/security lifecycle approver reviews deprovision/retire. Requester and approver must be different principals. Approval must be fresh, scoped to the exact Phone, tenant, operation digest and expiry.
 3. **Lifecycle executor:** a narrowly privileged service executes only the approved operation. It cannot approve its own request or widen the manifest.
 4. **Break-glass authority:** separately authenticated, time-limited and audited; cannot bypass retained-data or ownership invariants.
 
-No existing \`phone.lifecycle.manage\` permission or lifecycle approver was found. Do not reuse \`phone.endpoint.manage\` or the AI/tenant operator key as lifecycle approval. A later implementation proposal must define and independently review the actual permission names and control-plane identity.
+No existing `phone.lifecycle.manage` permission or lifecycle approver was found. Do not reuse `phone.endpoint.manage` or the AI/tenant operator key as lifecycle approval. A later implementation proposal must define and independently review the actual permission names and control-plane identity.
 
 Evidence must include authenticated requester and approver IDs, tenant/Phone tuple, reason/ticket, request digest, expected lifecycle version, exact endpoint/attachment/task/handoff snapshots, active-credential inventory, transfer quiescence proof, storage-reference inventory, legal-hold result, barrier version, all precondition results, worker receipts, and final snapshot digest. Store no raw credential or operator key.
 
 ### 25.4 Exceptional recovery
 
-Treat \`RETIRED\` as irreversible for the original Phone identity. An exceptional service restoration should create a **successor Phone identity** under a separately approved recovery operation, not change the old row back to \`ACTIVE\`. Preserve the retired record and link the successor to it through an audited lineage relation.
+Treat `RETIRED` as irreversible for the original Phone identity. An exceptional service restoration should create a **successor Phone identity** under a separately approved recovery operation, not change the old row back to `ACTIVE`. Preserve the retired record and link the successor to it through an audited lineage relation.
 
-There is a current schema constraint to resolve before promising same-AI successor provisioning: \`ai_phones\` has unique \`(tenant_id, ai_id)\`. Retaining the retired row therefore prevents inserting a second Phone for the same AI/tenant pair. A successor must use a new AI identity unless a separately reviewed future schema design introduces a Phone generation/identity model. Do not assume that dropping the old anchor or reusing the same ID is acceptable.
+There is a current schema constraint to resolve before promising same-AI successor provisioning: `ai_phones` has unique `(tenant_id, ai_id)`. Retaining the retired row therefore prevents inserting a second Phone for the same AI/tenant pair. A successor must use a new AI identity unless a separately reviewed future schema design introduces a Phone generation/identity model. Do not assume that dropping the old anchor or reusing the same ID is acceptable.
 
 ---
 
@@ -1188,7 +1188,7 @@ There is a current schema constraint to resolve before promising same-AI success
 
 The proposed barrier must not rely solely on advisory locks, application mutexes, request middleware or SERIALIZABLE isolation.
 
-The lifecycle aggregate is also the Phone write gate. Every Phone-scoped write transaction must acquire a shared row lock on the exact lifecycle row **before** locking or modifying dependent rows, verify \`lifecycle_state = ACTIVE\` and the expected version/fence, then perform the write. A transition to \`DETACHING\`, \`DEPROVISIONING\` or \`RETIRED\` takes an exclusive row lock on that same gate, waits for earlier writers to finish, advances the version/fence and commits the new state. Writers queued behind it then re-read the state and reject. This establishes a serialization point: a write is either committed before the transition or rejected after it; it cannot pass a stale pre-check and commit after the transition.
+The lifecycle aggregate is also the Phone write gate. Every Phone-scoped write transaction must acquire a shared row lock on the exact lifecycle row **before** locking or modifying dependent rows, verify `lifecycle_state = ACTIVE` and the expected version/fence, then perform the write. A transition to `DETACHING`, `DEPROVISIONING` or `RETIRED` takes an exclusive row lock on that same gate, waits for earlier writers to finish, advances the version/fence and commits the new state. Writers queued behind it then re-read the state and reject. This establishes a serialization point: a write is either committed before the transition or rejected after it; it cannot pass a stale pre-check and commit after the transition.
 
 To make the lock order enforceable:
 
@@ -1196,7 +1196,7 @@ To make the lock order enforceable:
 - Revoke direct INSERT/UPDATE/DELETE privileges on Phone-scoped tables from runtime application, worker and integration roles. Grant only EXECUTE on reviewed procedures.
 - Use database triggers as defense-in-depth to reject protected table mutations when lifecycle admission is closed or required scope is absent.
 - Keep migration ownership and break-glass roles separate from runtime roles; no runtime service account may be a table owner or superuser.
-- Use fixed \`search_path\`, qualified object names, least privilege and reviewed SECURITY DEFINER functions. No caller-controlled dynamic SQL.
+- Use fixed `search_path`, qualified object names, least privilege and reviewed SECURITY DEFINER functions. No caller-controlled dynamic SQL.
 - Do not use a caller-settable custom GUC as proof that the caller passed the gate. Runtime roles can set arbitrary custom GUC values; it is not a trusted capability.
 - Require every worker, control-plane process, scheduled task and external writer to use the same procedures or an equivalent DB-enforced contract. An unknown writer is a blocker, not an assumed participant.
 
@@ -1204,36 +1204,36 @@ A trigger that discovers and locks the lifecycle row only after the target child
 
 ### 26.2 Resource scope and shared resources
 
-A Phone gate can be applied directly where the row contains an enforced \`ai_phone_id\`: \`ai_phones\`, \`phone_endpoints\`, \`phone_endpoint_credentials\`, \`phone_attachments\`, \`phone_messages\`, and \`phone_mission_links\`.
+A Phone gate can be applied directly where the row contains an enforced `ai_phone_id`: `ai_phones`, `phone_endpoints`, `phone_endpoint_credentials`, `phone_attachments`, `phone_messages`, and `phone_mission_links`.
 
 It cannot safely be inferred from tenant, principal, room, session, workload, task, handoff or opaque aggregate IDs alone. For shared resources, a future implementation must either:
 
 - maintain a normalized, FK-backed resource-to-Phone association and lock all affected Phone gates in deterministic order; or
 - explicitly classify the operation as belonging to the shared Team Room/principal domain, not as a Phone-scoped write, and ensure Phone-specific callers cannot use it to bypass the Phone gate.
 
-The current \`main.rs\` task/handoff routes are principal/session/room based and do not carry a Phone ID. The current \`communication.rs\` Team Room routes likewise operate on room/principal/channel context. If the product requirement is that retiring a Phone also blocks actions initiated by that Phone through these routes, the current request context is insufficient to identify the Phone. This is a hard blocker until a trusted Phone context or explicit resource association is added. Do not globally block a shared room or principal merely because one Phone is retiring.
+The current `main.rs` task/handoff routes are principal/session/room based and do not carry a Phone ID. The current `communication.rs` Team Room routes likewise operate on room/principal/channel context. If the product requirement is that retiring a Phone also blocks actions initiated by that Phone through these routes, the current request context is insufficient to identify the Phone. This is a hard blocker until a trusted Phone context or explicit resource association is added. Do not globally block a shared room or principal merely because one Phone is retiring.
 
 ---
 
 ## 27. Writer inventory and current barrier coverage
 
-The following inventory is based on the immutable TARGET source blobs reviewed for this mission: \`phone.rs\` (\`ea005944...\`), \`auth.rs\` (\`c1ccf50f...\`), \`communication.rs\` (\`4a89ffd...\`), \`tasks.rs\` (\`b6bd7f3...\`), \`handoffs.rs\` (\`f6736c7...\`), and \`main.rs\` (\`25d72f...\`). It identifies observed paths, not every possible external control-plane or database writer.
+The following inventory is based on the immutable TARGET source blobs reviewed for this mission: `phone.rs` (`ea005944...`), `auth.rs` (`c1ccf50f...`), `communication.rs` (`4a89ffd...`), `tasks.rs` (`b6bd7f3...`), `handoffs.rs` (`f6736c7...`), and `main.rs` (`25d72f...`). It identifies observed paths, not every possible external control-plane or database writer.
 
 | Domain / tables | Observed entry points and writes | Existing transaction / protection | Lifecycle bypass or gap |
 |---|---|---|---|
-| Phone identity and binding: \`ai_identities\`, \`ai_identity_principals\`, \`ai_identity_tenants\`, \`ai_phones\` | \`phone.rs\`: identity provisioning and Phone provisioning; Phone event audit/outbox | Provisioning uses transactions and selected row locks; unique/FK constraints protect some identity relationships | No lifecycle row or universal Phone gate. Identity/control-plane provisioning outside this service is not inventoried. Preserve global AI identity and tenant mappings. |
-| Endpoint and credential: \`phone_endpoints\`, \`phone_endpoint_credentials\` | \`phone.rs\`: register, rotate, revoke, attach, detach, heartbeat; credential last-used updates | Some operations lock Phone/attachment/endpoint/credential rows. Endpoint status trigger revokes active endpoint credentials | Existing locks are operation-specific, not a common lifecycle gate. External credential/control-plane provisioning is not fully inventoried. |
-| Attachment and Phone mailbox: \`phone_attachments\`, \`phone_messages\` | \`phone.rs\`: attach/detach, message send, delivery, ACK, list and fence changes | Several paths use Phone/attachment row locks and conditional updates; message identity/content trigger protects immutability | No Phone lifecycle admission barrier on every path; no proof that background delivery or future workers all participate. |
-| Mission/task association: \`phone_mission_links\`, \`ai_phones.current_task_id/current_mission_id\` | \`phone.rs\` mission-link handler; task/handoff modules mutate task state | Phone mission-link operation updates Phone and link rows; tasks/handoffs lock task/handoff rows | Task/handoff routes do not consistently carry Phone identity. Logical links and cross-resource updates need explicit association/gate design. |
-| Operator keys: \`phone_endpoint_operator_keys\` | \`phone.rs\` validates a key for endpoint operator actions; test/control-plane fixture code provisions keys | Hash-only key lookup checks ACTIVE and expiry; schema is tenant+AI scoped | Provisioning is out-of-band in the reviewed migration; no Phone/endpoint owner or consumer registry. Must not be revoked by Phone lifecycle. |
-| Sessions and workload: \`sessions\`, \`workload_identities\`, \`workload_executions\` | \`auth.rs\`: exchange, replay insertion/expiry cleanup, session/execution creation, expiry-on-use, close; \`main.rs\`: workload heartbeat and membership presence | Session exchange and close use transactions/conditional updates; authentication validates active/revoked/expiry state | Session and workload are principal/room runtime resources, not Phone-owned. Phone deprovision must not close/revoke them. No Phone gate should be added to independent session lifecycle. |
-| Room membership and presence: \`room_memberships\`, \`workload_executions\`, \`workload_identities\` | \`main.rs\`: join/leave/presence/heartbeat and logout paths | Authenticated session and room-scope checks; selected conditional updates | Shared principal/room operations; no Phone ID. If Phone-originated operations must be blocked, request context is currently inadequate. |
-| Team Room channels/members/reads/messages: \`team_room_channels\`, \`team_room_channel_members\`, \`team_room_message_reads\`, \`team_room_messages\` | \`communication.rs\`: general/private channel creation, membership, message reads, message insert and outbox | Channel/message writes use transactions; message idempotency unique key; WebSocket ticket consumption is conditional | Shared collaboration data; no Phone gate or Phone ownership. Keep independent unless a specific Phone association is established. |
-| Team Room decisions and attachment references: \`team_room_decisions\`, \`team_room_attachment_refs\` | \`communication.rs\`: decision creation, attachment-ref creation, list; storage reference persisted | Decision and attachment-reference plus outbox writes use DB transactions | \`storage_ref\` is opaque; no provider/version/ownership proof. These are shared room records, not Phone-owned objects. |
-| Tasks and lease history: \`team_tasks\`, \`task_lease_events\` | \`tasks.rs\`: create, acquire, renew, checkpoint, complete, recover, release | Task row \`FOR UPDATE\`; transactional task/event/outbox writes; fencing trigger | Task can be shared/linked. Existing task lock is not a Phone gate. A Phone-related task must resolve its Phone associations and gate them; otherwise treat it as shared. |
-| Handoffs: \`task_handoffs\`, \`task_lease_events\` | \`handoffs.rs\`: create, recovery selection, accept, reject, cancel; \`tasks.rs\` updates pending/accepted handoffs | Transactions lock task and/or handoff rows; state-transition trigger; audit/outbox writes | No universal Phone gate; active transfer/handoff must block retirement when it is demonstrably tied to the Phone. Other principal handoffs remain independent. |
-| Audit and outbox: \`audit_events\`, \`security_audit_events\`, \`outbox_events\` | Writers in \`phone.rs\`, \`auth.rs\`, \`main.rs\`, \`communication.rs\`, \`tasks.rs\`, \`handoffs.rs\` | Many business write/outbox pairs share a transaction; audit rows are append-oriented | Outbox aggregate IDs and several audit resource IDs are logical/soft references. No complete outbox consumer inventory or global Phone association was demonstrated. Preserve history. |
-| Logical references | \`ai_phones.current_task_id/current_mission_id\`, \`phone_mission_links.task_id\`, \`task_handoffs\`, Team Room attachment \`message_id/task_id/storage_ref\`, audit resource IDs, outbox aggregate IDs | Some are FK-backed; others are soft references or opaque text | A tenant/room/principal match is not proof of Phone ownership. Preserve unknown references and require explicit association closure. |
+| Phone identity and binding: `ai_identities`, `ai_identity_principals`, `ai_identity_tenants`, `ai_phones` | `phone.rs`: identity provisioning and Phone provisioning; Phone event audit/outbox | Provisioning uses transactions and selected row locks; unique/FK constraints protect some identity relationships | No lifecycle row or universal Phone gate. Identity/control-plane provisioning outside this service is not inventoried. Preserve global AI identity and tenant mappings. |
+| Endpoint and credential: `phone_endpoints`, `phone_endpoint_credentials` | `phone.rs`: register, rotate, revoke, attach, detach, heartbeat; credential last-used updates | Some operations lock Phone/attachment/endpoint/credential rows. Endpoint status trigger revokes active endpoint credentials | Existing locks are operation-specific, not a common lifecycle gate. External credential/control-plane provisioning is not fully inventoried. |
+| Attachment and Phone mailbox: `phone_attachments`, `phone_messages` | `phone.rs`: attach/detach, message send, delivery, ACK, list and fence changes | Several paths use Phone/attachment row locks and conditional updates; message identity/content trigger protects immutability | No Phone lifecycle admission barrier on every path; no proof that background delivery or future workers all participate. |
+| Mission/task association: `phone_mission_links`, `ai_phones.current_task_id/current_mission_id` | `phone.rs` mission-link handler; task/handoff modules mutate task state | Phone mission-link operation updates Phone and link rows; tasks/handoffs lock task/handoff rows | Task/handoff routes do not consistently carry Phone identity. Logical links and cross-resource updates need explicit association/gate design. |
+| Operator keys: `phone_endpoint_operator_keys` | `phone.rs` validates a key for endpoint operator actions; test/control-plane fixture code provisions keys | Hash-only key lookup checks ACTIVE and expiry; schema is tenant+AI scoped | Provisioning is out-of-band in the reviewed migration; no Phone/endpoint owner or consumer registry. Must not be revoked by Phone lifecycle. |
+| Sessions and workload: `sessions`, `workload_identities`, `workload_executions` | `auth.rs`: exchange, replay insertion/expiry cleanup, session/execution creation, expiry-on-use, close; `main.rs`: workload heartbeat and membership presence | Session exchange and close use transactions/conditional updates; authentication validates active/revoked/expiry state | Session and workload are principal/room runtime resources, not Phone-owned. Phone deprovision must not close/revoke them. No Phone gate should be added to independent session lifecycle. |
+| Room membership and presence: `room_memberships`, `workload_executions`, `workload_identities` | `main.rs`: join/leave/presence/heartbeat and logout paths | Authenticated session and room-scope checks; selected conditional updates | Shared principal/room operations; no Phone ID. If Phone-originated operations must be blocked, request context is currently inadequate. |
+| Team Room channels/members/reads/messages: `team_room_channels`, `team_room_channel_members`, `team_room_message_reads`, `team_room_messages` | `communication.rs`: general/private channel creation, membership, message reads, message insert and outbox | Channel/message writes use transactions; message idempotency unique key; WebSocket ticket consumption is conditional | Shared collaboration data; no Phone gate or Phone ownership. Keep independent unless a specific Phone association is established. |
+| Team Room decisions and attachment references: `team_room_decisions`, `team_room_attachment_refs` | `communication.rs`: decision creation, attachment-ref creation, list; storage reference persisted | Decision and attachment-reference plus outbox writes use DB transactions | `storage_ref` is opaque; no provider/version/ownership proof. These are shared room records, not Phone-owned objects. |
+| Tasks and lease history: `team_tasks`, `task_lease_events` | `tasks.rs`: create, acquire, renew, checkpoint, complete, recover, release | Task row `FOR UPDATE`; transactional task/event/outbox writes; fencing trigger | Task can be shared/linked. Existing task lock is not a Phone gate. A Phone-related task must resolve its Phone associations and gate them; otherwise treat it as shared. |
+| Handoffs: `task_handoffs`, `task_lease_events` | `handoffs.rs`: create, recovery selection, accept, reject, cancel; `tasks.rs` updates pending/accepted handoffs | Transactions lock task and/or handoff rows; state-transition trigger; audit/outbox writes | No universal Phone gate; active transfer/handoff must block retirement when it is demonstrably tied to the Phone. Other principal handoffs remain independent. |
+| Audit and outbox: `audit_events`, `security_audit_events`, `outbox_events` | Writers in `phone.rs`, `auth.rs`, `main.rs`, `communication.rs`, `tasks.rs`, `handoffs.rs` | Many business write/outbox pairs share a transaction; audit rows are append-oriented | Outbox aggregate IDs and several audit resource IDs are logical/soft references. No complete outbox consumer inventory or global Phone association was demonstrated. Preserve history. |
+| Logical references | `ai_phones.current_task_id/current_mission_id`, `phone_mission_links.task_id`, `task_handoffs`, Team Room attachment `message_id/task_id/storage_ref`, audit resource IDs, outbox aggregate IDs | Some are FK-backed; others are soft references or opaque text | A tenant/room/principal match is not proof of Phone ownership. Preserve unknown references and require explicit association closure. |
 | Background, control-plane and external writers | No complete source inventory was established for deployment jobs, external control plane, outbox consumers, storage provider, admin SQL or future workers | Unknown | **BLOCKER:** cannot claim universal writer coverage until each identity, process, DB role, table and transaction path is inventoried and made to participate. |
 
 ### 27.1 Required writer admission matrix before implementation
@@ -1246,7 +1246,7 @@ The current service's row locks are useful local concurrency controls, not evide
 
 ## 28. Operator-key lifecycle policy
 
-The current key record is tenant+AI scoped, stores a hash, has ACTIVE/REVOKED state and expiry, and has no \`phone_id\`, \`endpoint_id\`, consumer principal or owner identity. The reviewed migration describes raw key provisioning as out-of-band by a trusted control plane. The reviewed service checks key status and expiry when authorizing endpoint operator actions. This proves the lookup behavior, not the full inventory of key consumers.
+The current key record is tenant+AI scoped, stores a hash, has ACTIVE/REVOKED state and expiry, and has no `phone_id`, `endpoint_id`, consumer principal or owner identity. The reviewed migration describes raw key provisioning as out-of-band by a trusted control plane. The reviewed service checks key status and expiry when authorizing endpoint operator actions. This proves the lookup behavior, not the full inventory of key consumers.
 
 Policy:
 
@@ -1267,7 +1267,7 @@ No complete consumer registry or external provisioning/revocation workflow was e
 
 ## 29. External storage ownership and retention contract
 
-The reviewed service persists Team Room attachment metadata including opaque \`storage_ref\`, \`sha256\`, byte length, content type, file name and uploader/message/task references. The reviewed repository paths do not establish the storage provider, account/bucket, immutable object version, object ownership, object-lock/legal-hold status, or a complete external reference graph. A SHA-256 field is useful integrity evidence; it does not prove ownership or deletion authority.
+The reviewed service persists Team Room attachment metadata including opaque `storage_ref`, `sha256`, byte length, content type, file name and uploader/message/task references. The reviewed repository paths do not establish the storage provider, account/bucket, immutable object version, object ownership, object-lock/legal-hold status, or a complete external reference graph. A SHA-256 field is useful integrity evidence; it does not prove ownership or deletion authority.
 
 Proposed object registry (future schema, not current):
 
@@ -1281,7 +1281,7 @@ Proposed object registry (future schema, not current):
 - every database reference ID and its type;
 - ownership/authorization evidence and audit event IDs.
 
-An object is not exclusively Phone-owned merely because one Phone can see an attachment reference. Deduplicated or multiply referenced objects remain shared. \`team_room_attachment_refs\` is a room-level reference record and must not be deleted as a Phone side effect.
+An object is not exclusively Phone-owned merely because one Phone can see an attachment reference. Deduplicated or multiply referenced objects remain shared. `team_room_attachment_refs` is a room-level reference record and must not be deleted as a Phone side effect.
 
 ### 29.1 Safe object protocol
 
@@ -1291,11 +1291,11 @@ An object is not exclusively Phone-owned merely because one Phone can see an att
 
 **Retain:** preserve by default. Retention expiration is not deletion authorization. Legal hold, contractual retention, incident preservation, audit obligations or unresolved ownership override ordinary TTL.
 
-**Delete request:** require an independent storage owner and policy approver, a complete reference-closure snapshot, zero live references, no legal hold, expired retention, exact object version, and a durable deletion operation ID. Atomically mark the registry \`DELETE_PENDING\` and write an outbox intent. New references must be rejected once deletion is pending.
+**Delete request:** require an independent storage owner and policy approver, a complete reference-closure snapshot, zero live references, no legal hold, expired retention, exact object version, and a durable deletion operation ID. Atomically mark the registry `DELETE_PENDING` and write an outbox intent. New references must be rejected once deletion is pending.
 
 **External delete:** a worker issues a conditional delete for the exact immutable provider version, using the operation ID for idempotency. It records provider request/result IDs and the returned version/tombstone evidence. On timeout or ambiguous response, do not assume deletion succeeded or failed; query the exact object version and reconcile.
 
-**Partial failure:** database rollback cannot undo a successful external deletion. Therefore external deletion occurs only after a committed deletion intent and complete precondition snapshot. If the provider deletes successfully but the final DB update fails, keep the row \`DELETE_PENDING\`, prevent new references, and let a reconciler verify the provider tombstone and finalize the receipt. If the provider cannot support immutable version addressing or conditional deletion, automatic deletion remains disabled.
+**Partial failure:** database rollback cannot undo a successful external deletion. Therefore external deletion occurs only after a committed deletion intent and complete precondition snapshot. If the provider deletes successfully but the final DB update fails, keep the row `DELETE_PENDING`, prevent new references, and let a reconciler verify the provider tombstone and finalize the receipt. If the provider cannot support immutable version addressing or conditional deletion, automatic deletion remains disabled.
 
 **Recovery:** upload or delete failures remain durable pending operations with retryable receipts. Never restore a deleted object by silently changing its state; any restore must use provider versioning/backup and a separate authorized restore record.
 
@@ -1315,7 +1315,7 @@ The schema and reviewed source show that sessions bind tenant, room and principa
 | Phone attachment | Exact Phone + endpoint + session + execution + participant/principal/room | Fence/detach the exact attachment and retain its history/anchors. |
 | Task lease / handoff | Shared Team Room task with principal/session/execution owners and durable handoff history | If the task is proven to be the Phone's active mission, require a separate safe release/handoff before retirement. Do not delete task/history or revoke the underlying session. |
 
-Phone deprovisioning must fence the exact Phone attachment and reject future Phone-scoped operations. It must not call \`close_session\`, mark a session REVOKED/CLOSED, revoke a workload identity, or mark a workload execution REVOKED/CLOSED solely because an attachment row references it.
+Phone deprovisioning must fence the exact Phone attachment and reject future Phone-scoped operations. It must not call `close_session`, mark a session REVOKED/CLOSED, revoke a workload identity, or mark a workload execution REVOKED/CLOSED solely because an attachment row references it.
 
 An in-flight workload is a precondition blocker, not an invitation to kill it. If a Phone-specific worker process must stop, that must be a separate control-plane operation with proven exclusive worker ownership and its own receipt. A shared principal or session may continue using Team Room through other authorized paths.
 
@@ -1333,14 +1333,14 @@ The inspected workflow did use a job-local PostgreSQL service container and remo
 
 ### 31.2 Required runner-owned environment
 
-The test harness must create and own its database environment. It must not accept an arbitrary externally supplied \`DATABASE_URL\` as the authority to run destructive teardown.
+The test harness must create and own its database environment. It must not accept an arbitrary externally supplied `DATABASE_URL` as the authority to run destructive teardown.
 
 Required controls:
 
 1. A test orchestrator creates a fresh isolated PostgreSQL cluster/container per execution or worker, with a random run nonce, random credentials, private network/socket and a dedicated non-production database role.
 2. The orchestrator records the container/runtime identity and PostgreSQL cluster system identifier immediately after startup. The test process receives a short-lived signed/unguessable lease proving this exact cluster belongs to this run.
 3. Before migrations or tests, the harness verifies the live connection against the orchestrator's lease: cluster system identifier, database OID, expected role OID/attributes, non-superuser/non-owner status, read-write state, isolated runtime identity and run nonce. A database name or environment variable alone is never accepted as proof.
-4. The harness constructs the connection string itself. If an external \`DATABASE_URL\` is present, fail closed unless the explicit test orchestrator has replaced it with its own lease-bound connection. No fallback to a developer or deployment URL.
+4. The harness constructs the connection string itself. If an external `DATABASE_URL` is present, fail closed unless the explicit test orchestrator has replaced it with its own lease-bound connection. No fallback to a developer or deployment URL.
 5. Each worker receives a separate database or isolated schema/role with no shared fixture identifiers. A worker cannot delete another worker's data.
 6. The runtime test role has only the privileges required by the test; it cannot connect to production, cannot assume migration-owner or superuser roles, and cannot perform cluster-wide operations.
 7. At completion, discard the whole ephemeral cluster/container/volume. Prefer environment disposal over SQL deletion of tenants/global identities. If row-level teardown is needed inside a test, use a transaction rollback or a manifest-scoped test-only procedure restricted to the harness-owned database.
@@ -1425,7 +1425,7 @@ A reviewer independent of the implementation author must inspect the schema, pri
 | Test teardown points at a writable operational database | Tenant/global identity/history deletion | Existing test helpers accept a database pool and contain direct tenant/resource DELETE statements | Critical | Runner-owned ephemeral cluster lease, non-owner runtime role, no external URL fallback, negative test proves operational-like target is rejected before writes. |
 | Rollback after a partially completed multi-step operation | State and external side effects disagree | DB rollback cannot undo provider deletion or already delivered outbox messages | High | Phase receipts and compensating/reconciliation operations; never pretend an external side effect rolled back; retries preserve same operation ID. |
 | A shared task/handoff writer does not know the originating Phone | Work continues after Phone retirement or shared Team Room is incorrectly blocked | Current task/handoff routes use principal/session/room and lack Phone ID | Critical | Explicit trusted Phone context or normalized resource association; otherwise declare the operation shared and outside Phone cleanup, and block any requirement to attribute it to a Phone. |
-| Successor Phone reuses same AI/tenant tuple | Unique constraint blocks creation or implementer deletes old anchor to make room | \`ai_phones\` unique \`(tenant_id, ai_id)\` plus retained Phone anchor | High | New AI identity or separately reviewed generation model; never delete old Phone to bypass uniqueness. |
+| Successor Phone reuses same AI/tenant tuple | Unique constraint blocks creation or implementer deletes old anchor to make room | `ai_phones` unique `(tenant_id, ai_id)` plus retained Phone anchor | High | New AI identity or separately reviewed generation model; never delete old Phone to bypass uniqueness. |
 
 The adversarial review is a design review, not a test result. No mitigation above has been implemented or verified in production code.
 
