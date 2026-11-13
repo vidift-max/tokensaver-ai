@@ -384,6 +384,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::CREATED);
     let endpoint_2_registration:Value=serde_json::from_slice(&body).unwrap();
     let mut endpoint_2_credential=endpoint_2_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let stored_hash:Vec<u8>=sqlx::query_scalar("SELECT credential_hash FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND tenant_id=$2 AND ai_id=$3 AND credential_status='ACTIVE'")
+        .bind(endpoint_2).bind(tenant_id).bind(ai_2_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(stored_hash,Sha256::digest(endpoint_2_credential.as_bytes()).to_vec());
+    assert_eq!(stored_hash.len(),32);
+    assert_ne!(stored_hash,endpoint_2_credential.as_bytes(),
+        "endpoint credential plaintext must never be stored in PostgreSQL");
 
     let (status, _) = call_with_headers(&app,"POST","/ai-phone/attach",&token_1,
         Some(&endpoint_2_credential),None,
@@ -703,10 +709,20 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
         Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,"old endpoint credential cannot heartbeat as the new generation");
-    // Attack C: endpoint A's credential is not accepted for endpoint B.
+    // Attack C: a still-active credential belonging to endpoint A cannot authenticate endpoint B.
     let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
-        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+        Some(&endpoint_1_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,"credential A cannot authenticate endpoint B");
+    let endpoint_4=Uuid::new_v4();
+    let (status,body)=call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({"endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}}))).await;
+    assert_eq!(status,StatusCode::CREATED);
+    let endpoint_4_registration:Value=serde_json::from_slice(&body).unwrap();
+    let endpoint_4_credential=endpoint_4_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_4_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "credential of another registered endpoint cannot authenticate the active endpoint");
     let (status, body) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&endpoint_3_credential),None,None).await;
     assert_eq!(status,StatusCode::OK,"only endpoint B's new credential can recover its own generation");
@@ -885,6 +901,20 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .execute(&pool)
         .await
         .unwrap();
+    let cross_tenant_endpoint=Uuid::new_v4();
+    let cross_tenant_endpoint_secret=format!("foreign-endpoint-secret-{}",Uuid::new_v4());
+    sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,'TEST','REGISTERED','{}'::jsonb)")
+        .bind(cross_tenant_endpoint).bind(cross_tenant_phone).bind(cross_tenant_id).bind(cross_tenant_ai)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
+        .bind(Uuid::new_v4()).bind(cross_tenant_endpoint).bind(cross_tenant_phone).bind(cross_tenant_id)
+        .bind(cross_tenant_ai).bind(Sha256::digest(cross_tenant_endpoint_secret.as_bytes()).to_vec())
+        .execute(&pool).await.unwrap();
+    // Attack D: a valid credential hash scoped to tenant B is rejected under tenant A's bearer.
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_1,
+        Some(&cross_tenant_endpoint_secret),None,Some(serde_json::json!({"endpoint_fence":1}))).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "tenant A bearer cannot use tenant B endpoint credential");
 
     let (status, _) = call(
         &app,
