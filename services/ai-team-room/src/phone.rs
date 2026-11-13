@@ -1033,6 +1033,16 @@ async fn registry_handler(
                     AND registered.ai_id=p.ai_id
                     AND registered.endpoint_status='REGISTERED'
                 ) THEN 'RECONNECTING' ELSE 'OFFLINE' END
+              WHEN NOT EXISTS (
+                SELECT 1 FROM phone_endpoint_credentials c
+                WHERE c.endpoint_id=active.endpoint_id
+                  AND c.ai_phone_id=p.ai_phone_id
+                  AND c.tenant_id=p.tenant_id
+                  AND c.ai_id=p.ai_id
+                  AND c.credential_status='ACTIVE'
+                  AND c.endpoint_fence=p.endpoint_fence
+                  AND c.expires_at>NOW()
+              ) THEN 'OFFLINE'
               WHEN s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
                 AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()
                 AND e.endpoint_status='ATTACHED'
