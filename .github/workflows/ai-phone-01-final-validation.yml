@@ -95,7 +95,6 @@ jobs:
             git rev-parse HEAD
             sha256sum \
               services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \
-              services/ai-team-room/migrations/0013_team_room_tenant_scope_constraints.sql \
               services/ai-team-room/src/phone.rs \
               services/ai-team-room/src/handoffs.rs \
               services/ai-team-room/tests/phone_postgres.rs \
