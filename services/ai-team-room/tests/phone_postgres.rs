@@ -586,8 +586,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let mut concurrent_statuses = vec![send_left.status(), send_right.status()];
     concurrent_statuses.sort();
     assert_eq!(concurrent_statuses, vec![
-        axum::http::StatusCode::CREATED,
         axum::http::StatusCode::OK,
+        axum::http::StatusCode::CREATED,
     ], "concurrent identical sends return one create and one idempotent replay");
     let left_bytes = axum::body::to_bytes(send_left.into_body(), 100_000).await.unwrap();
     let right_bytes = axum::body::to_bytes(send_right.into_body(), 100_000).await.unwrap();
