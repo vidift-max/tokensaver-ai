@@ -268,6 +268,15 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
 
     let token_1 = bearer_for(&pool, ai_1_session).await;
     let token_2 = bearer_for(&pool, ai_2_session).await;
+    // Test-only operator keys model separately provisioned control-plane secrets.
+    let operator_key_1 = format!("operator-key-phone-01-{}", Uuid::new_v4());
+    let operator_key_2 = format!("operator-key-phone-02-{}", Uuid::new_v4());
+    sqlx::query("INSERT INTO phone_endpoint_operator_keys(operator_key_id,tenant_id,ai_id,key_hash) VALUES($1,$2,$3,$4),($5,$2,$6,$7)")
+        .bind(Uuid::new_v4()).bind(tenant_id).bind(ai_1_id)
+        .bind(Sha256::digest(operator_key_1.as_bytes()).to_vec())
+        .bind(Uuid::new_v4()).bind(ai_2_id)
+        .bind(Sha256::digest(operator_key_2.as_bytes()).to_vec())
+        .execute(&pool).await.unwrap();
     let app = ai_team_room_service::phone::router(pool.clone());
 
     let (status, body) = call(
