@@ -56,6 +56,29 @@ CREATE TRIGGER phone_endpoint_credentials_lifecycle_revoke
 AFTER UPDATE OF endpoint_status ON phone_endpoints
 FOR EACH ROW EXECUTE FUNCTION revoke_phone_endpoint_credentials_on_lifecycle();
 
+-- Existing pre-02B attachments have no endpoint credential and must not remain
+-- operational under an AI bearer alone. Fence them and require operator re-enrollment.
+WITH active_phones AS (
+    SELECT DISTINCT ai_phone_id,tenant_id,ai_id
+      FROM phone_attachments
+     WHERE attachment_status='ACTIVE'
+)
+UPDATE ai_phones p
+   SET endpoint_fence=p.endpoint_fence+1,
+       phone_status='DISCONNECTED',
+       version=version+1,
+       updated_at=NOW()
+  FROM active_phones a
+ WHERE p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id;
+
+UPDATE phone_attachments
+   SET attachment_status='FENCED',detached_at=NOW()
+ WHERE attachment_status='ACTIVE';
+
+UPDATE phone_endpoints
+   SET endpoint_status='DETACHED',detached_at=NOW()
+ WHERE endpoint_status='ATTACHED';
+
 INSERT INTO permission_catalog(permission,description,privileged) VALUES
  ('phone.endpoint.manage','Register and rotate endpoint identities using an independently provisioned operator key',TRUE)
 ON CONFLICT (permission) DO NOTHING;
