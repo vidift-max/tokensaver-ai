@@ -437,13 +437,14 @@ async fn heartbeat_handler(
     State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<HeartbeatRequest>,
 ) -> Result<Json<DateTime<Utc>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    heartbeat(&pool, &identity, request.endpoint_fence).await.map(Json)
+    let endpoint_credential=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+    heartbeat(&pool, &identity, &endpoint_credential, request.endpoint_fence).await.map(Json)
         .map_err(|error| match error {
             PhoneError::NotFound => StatusCode::NOT_FOUND,
             PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT,
             PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
             PhoneError::Invalid => StatusCode::BAD_REQUEST,
             PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })
@@ -452,6 +453,19 @@ async fn heartbeat_handler(
 async fn get_phone_handler(State(pool): State<PgPool>, headers: HeaderMap)
     -> Result<Json<PhoneSnapshot>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // /me exposes the active endpoint generation only to its endpoint credential holder.
+    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx,&identity).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
+    let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
+    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.attachment_status='ACTIVE')")
+        .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if active {
+        let secret=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+        require_current_endpoint_credential(&mut tx,&identity,&phone,&secret).await
+            .map_err(|_|StatusCode::UNAUTHORIZED)?;
+    }
+    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     get_my_phone(&pool, &identity).await.map(Json).map_err(|e| match e {
         PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR
@@ -461,11 +475,12 @@ async fn get_phone_handler(State(pool): State<PgPool>, headers: HeaderMap)
 async fn attach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>)
     -> Result<(StatusCode, Json<AttachmentRecord>), StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    attach(&pool, &identity, request, false).await.map(|v| (StatusCode::CREATED, Json(v)))
+    let endpoint_credential=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+    attach(&pool, &identity, request, &endpoint_credential, false).await.map(|v| (StatusCode::CREATED, Json(v)))
         .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Invalid => StatusCode::BAD_REQUEST,
-            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
+            PhoneError::Invalid => StatusCode::BAD_REQUEST, PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
 #[derive(Deserialize)]
@@ -473,9 +488,10 @@ struct DetachRequest { endpoint_fence: i64 }
 async fn detach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<DetachRequest>)
     -> Result<StatusCode, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    detach(&pool, &identity, request.endpoint_fence).await.map(|_| StatusCode::NO_CONTENT)
+    let endpoint_credential=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+    detach(&pool, &identity, &endpoint_credential, request.endpoint_fence).await.map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
-            PhoneError::Fenced => StatusCode::PRECONDITION_FAILED, PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+            PhoneError::Fenced => StatusCode::PRECONDITION_FAILED, PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
@@ -710,21 +726,23 @@ async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Js
 async fn reconnect_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>)
     -> Result<(StatusCode, Json<AttachmentRecord>), StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    attach(&pool, &identity, request, false).await.map(|v| (StatusCode::OK, Json(v)))
+    let endpoint_credential=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+    attach(&pool, &identity, request, &endpoint_credential, false).await.map(|v| (StatusCode::OK, Json(v)))
         .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Invalid => StatusCode::BAD_REQUEST,
-            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
+            PhoneError::Invalid => StatusCode::BAD_REQUEST, PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
 async fn transfer_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>)
     -> Result<(StatusCode, Json<AttachmentRecord>), StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    attach(&pool, &identity, request, true).await.map(|v| (StatusCode::OK, Json(v)))
+    let endpoint_credential=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
+    attach(&pool, &identity, request, &endpoint_credential, true).await.map(|v| (StatusCode::OK, Json(v)))
         .map_err(|e| match e { PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Invalid => StatusCode::BAD_REQUEST,
-            PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
+            PhoneError::Invalid => StatusCode::BAD_REQUEST, PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR })
 }
 
 
