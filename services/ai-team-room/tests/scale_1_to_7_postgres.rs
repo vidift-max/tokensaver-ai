@@ -280,6 +280,22 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     }
     assert_eq!(acked, 6);
 
+    // Cross-endpoint claim: AI #7 cannot register AI #1's globally claimed endpoint.
+    let endpoint_one = Uuid::parse_str(
+        attachment_by_principal[&actors[0].principal_id]["endpoint_id"].as_str().unwrap()
+    ).unwrap();
+    let endpoint_claim = request(&app, "POST", "/ai-phone/endpoints/register", &actors[6].token,
+        Some(serde_json::json!({"endpoint_id":endpoint_one,"endpoint_type":"TEST","metadata":{}}))).await;
+    assert_eq!(endpoint_claim.status(), StatusCode::CONFLICT);
+
+    // Cross-ACK: AI #3 cannot acknowledge a message belonging to AI #7.
+    let phone_seven = phone_by_principal[&actors[6].principal_id];
+    let message_seven = messages_by_phone[&phone_seven]["message_id"].as_str().unwrap();
+    let cross_ack = request(&app, "POST",
+        &format!("/ai-phone/{phone_seven}/messages/{message_seven}/ack"),
+        &actors[2].token, None).await;
+    assert_eq!(cross_ack.status(), StatusCode::PRECONDITION_FAILED);
+
     // Detach all seven phones concurrently, then reconnect all with fresh endpoints.
     let mut detaches = tokio::task::JoinSet::new();
     for actor in actors.iter().cloned() {
