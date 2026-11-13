@@ -42,6 +42,7 @@ All routes still require `Authorization: Bearer <AI-session-token>`.
 | Route | Additional credential | Authority |
 |---|---|---|
 | `POST /ai-phone/endpoints/register` | `X-AI-Phone-Operator-Key` | Operator enrollment/rotation |
+| `POST /ai-phone/endpoints/{endpoint_id}/revoke` | `X-AI-Phone-Operator-Key` | Operator terminal revocation |
 | `POST /ai-phone/attach` | `X-AI-Phone-Endpoint-Credential` | Target endpoint proof |
 | `POST /ai-phone/reconnect` | `X-AI-Phone-Endpoint-Credential` | Target endpoint proof |
 | `POST /ai-phone/transfer` | `X-AI-Phone-Endpoint-Credential` | Target endpoint proof |
