@@ -17,6 +17,11 @@ const HANDOFFS_SOURCE_BLOB_SHA: &str = "f6736c77ef66d8c85c1c1ddb261d96649638761e
 mod handoffs;
 #[path = "../src/tasks.rs"]
 mod tasks;
+// handoffs.rs test support refers to the binary crate's phone module. Re-export
+// the exact public Phone API from the TARGET_SHA library without copying it.
+mod phone {
+    pub use ai_team_room_service::phone::*;
+}
 #[path = "../src/communication.rs"]
 mod communication;
 
