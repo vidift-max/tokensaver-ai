@@ -1,5 +1,5 @@
 use crate::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
-use axum::{extract::{Path, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
