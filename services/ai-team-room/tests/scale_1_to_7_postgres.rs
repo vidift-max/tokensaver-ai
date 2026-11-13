@@ -36,6 +36,12 @@ async fn grant(pool: &PgPool, tenant: Uuid, room: Uuid, principal: Uuid, permiss
         .execute(pool).await.unwrap();
 }
 
+async fn grant_tenant_wide(pool: &PgPool, tenant: Uuid, principal: Uuid, permission: &str) {
+    sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,NULL,$4)")
+        .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(permission)
+        .execute(pool).await.unwrap();
+}
+
 async fn seed_actor(pool: &PgPool, tenant: Uuid, room: Uuid, index: usize) -> Actor {
     let principal_id = Uuid::new_v4();
     let participant_id = Uuid::new_v4();
@@ -204,7 +210,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
 
     // The registry returns exactly the seven tenant phones with operational
     // endpoint/session/execution and heartbeat data.
-    grant(&pool, tenant, room, actors[0].principal_id, "phone.registry.read").await;
+    grant_tenant_wide(&pool, tenant, actors[0].principal_id, "phone.registry.read").await;
     let registry = request(&app, "GET", "/ai-phone/registry?limit=100", &actors[0].token, None).await;
     assert_eq!(registry.status(), StatusCode::OK);
     let registry: Value = serde_json::from_slice(&axum::body::to_bytes(registry.into_body(), 100_000).await.unwrap()).unwrap();
