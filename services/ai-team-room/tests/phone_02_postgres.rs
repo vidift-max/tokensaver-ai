@@ -338,33 +338,6 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status, StatusCode::NOT_FOUND, "AI #1 cannot read Phone #2 mailbox");
 
     let endpoint_2 = Uuid::new_v4();
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/endpoints/register",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_2,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-endpoint"}
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/attach",
-        &token_2,
-        Some(serde_json::json!({
-            "endpoint_id": endpoint_2,
-            "endpoint_type": "TEST",
-            "metadata": {"label": "AI-PHONE-02-endpoint"}
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "Phone #2 attaches its own endpoint");
-
     let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
     let same_payload = serde_json::json!({
         "idempotency_key": "phone-02-concurrent-idempotency",
@@ -449,6 +422,53 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .unwrap();
     assert_eq!(sequences.len(), 2);
     assert!(sequences[0] < sequences[1], "mailbox sequence is monotonic");
+
+    let first_message_state: String = sqlx::query_scalar(
+        "SELECT message_state FROM phone_messages WHERE message_id=$1 AND ai_phone_id=$2 AND tenant_id=$3",
+    )
+    .bind(first_message_id)
+    .bind(phone_2_id)
+    .bind(tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        first_message_state, "PENDING",
+        "messages persist while Phone #2 is offline"
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
+        &token_2,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "Phone #2 cannot ACK an offline message before delivery"
+    );
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/ai-phone/attach",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_2,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "Phone #2 attaches its own endpoint after offline messages queue"
+    );
+    let initial_attachment: Value = serde_json::from_slice(&body).unwrap();
+    let initial_fence = initial_attachment["endpoint_fence"].as_i64().unwrap();
 
     let (status, body) = call(
         &app,
