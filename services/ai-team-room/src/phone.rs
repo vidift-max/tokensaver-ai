@@ -756,6 +756,13 @@ async fn registry_handler(
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     require_permission(&pool, &identity, "phone.registry.read").await
         .map_err(|_| StatusCode::FORBIDDEN)?;
+    // The registry spans every room in one tenant, so a room-scoped grant is
+    // insufficient. Require an explicit tenant-wide grant (room_id IS NULL).
+    let tenant_wide_grant: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM principal_permissions WHERE tenant_id=$1 AND principal_id=$2 AND permission='phone.registry.read' AND room_id IS NULL AND revoked_at IS NULL)"
+    ).bind(identity.tenant_id).bind(identity.principal_id)
+        .fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !tenant_wide_grant { return Err(StatusCode::FORBIDDEN); }
 
     // There is deliberately no tenant_id request field. Tenant scope comes only
     // from the authenticated session, even if a caller appends tenant_id to the URL.
