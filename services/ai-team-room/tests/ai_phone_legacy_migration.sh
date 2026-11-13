@@ -13,7 +13,7 @@ create_legacy_db() {
   local url="${DATABASE_URL%/*}/$db"
   createdb --maintenance-db="$DATABASE_URL" "$db"
   for migration in "$MIGRATIONS"/[0-9][0-9][0-9][0-9]_*.sql; do
-    [[ "$(basename "$migration")" < "0012_"* ]] || continue
+    [[ "$(basename "$migration")" == 0012_* ]] && continue
     psql "$url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
   done
   printf '%s\n' "$url"
@@ -105,7 +105,7 @@ run_shared_legacy_case() {
   [[ "$before" == "1:2:2:2:1" ]] || { echo "Unexpected shared legacy fixture counts: $before" >&2; exit 1; }
 
   set +e
-  output="$(psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0012" 2>&1)"
+  output="$(psql --single-transaction "$url" -v ON_ERROR_STOP=1 -f "$MIGRATION_0012" 2>&1)"
   status=$?
   set -e
   if [[ "$status" -eq 0 ]]; then
