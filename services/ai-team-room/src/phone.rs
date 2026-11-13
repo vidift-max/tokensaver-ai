@@ -512,7 +512,7 @@ async fn detach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(req
 
 async fn register_endpoint_handler(
     State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>,
-) -> Result<(StatusCode, Json<EndpointRegistration>), StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
     let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
     require_permission(&pool,&identity,"phone.attach").await.map_err(|_|StatusCode::FORBIDDEN)?;
     if !valid_endpoint_type(&request.endpoint_type) || !request.metadata.is_object()
@@ -581,7 +581,12 @@ async fn register_endpoint_handler(
     let endpoint=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND tenant_id=$2 AND ai_id=$3")
         .bind(request.endpoint_id).bind(identity.tenant_id).bind(phone.ai_id)
         .fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((StatusCode::CREATED,Json(EndpointRegistration{endpoint,endpoint_credential})))
+    let mut response=axum::response::IntoResponse::into_response((
+        StatusCode::CREATED,Json(EndpointRegistration{endpoint,endpoint_credential})
+    ));
+    response.headers_mut().insert(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(axum::http::header::PRAGMA,axum::http::HeaderValue::from_static("no-cache"));
+    Ok(response)
 }
 
 async fn revoke_endpoint_handler(
