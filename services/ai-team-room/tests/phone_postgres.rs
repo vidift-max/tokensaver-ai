@@ -396,6 +396,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(denied_link.status(), axum::http::StatusCode::FORBIDDEN,
         "task.read alone cannot mutate the AI phone mission pointer");
     grant(&pool, tenant, room, principal, "task.transition").await;
+    let foreign_link_with_transition = http_call(&app, "POST", "/ai-phone/mission", Some(&token_a),
+        Some(serde_json::json!({"task_id":foreign_task}))).await;
+    assert_eq!(foreign_link_with_transition.status(), axum::http::StatusCode::FORBIDDEN,
+        "task.transition does not authorize linking a foreign tenant task");
     let allowed_link = http_call(&app, "POST", "/ai-phone/mission", Some(&token_a),
         Some(serde_json::json!({"task_id":owned_task.task_id}))).await;
     assert_eq!(allowed_link.status(), axum::http::StatusCode::NO_CONTENT,
