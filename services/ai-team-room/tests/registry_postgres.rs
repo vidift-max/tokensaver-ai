@@ -70,6 +70,9 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,$4)")
             .bind(participant).bind(tenant).bind(principal).bind(format!("Registry AI {index}"))
             .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'registry-test',$4,'ACTIVE')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(format!("registry-subject-{principal}"))
+            .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO sessions(session_id,tenant_id,room_id,principal_id,issued_at,expires_at,status,token_hash) VALUES($1,$2,$3,$4,NOW(),NOW()+INTERVAL '20 minutes','ACTIVE',$5)")
             .bind(session).bind(tenant).bind(room).bind(principal).bind(token_hash)
             .execute(&pool).await.unwrap();
