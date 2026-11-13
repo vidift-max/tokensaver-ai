@@ -116,6 +116,64 @@ jobs:
           set -euo pipefail
           cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ../ai-phone-02c-full-suite.log
 
+      - name: PostgreSQL 16 catalog audit (always, including failed security tests)
+        if: always()
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '{"catalog":"server"}'
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "SELECT jsonb_build_object('server_version',current_setting('server_version'),'server_version_num',current_setting('server_version_num'),'database',current_database())"
+            echo '{"catalog":"constraints"}'
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT jsonb_build_object(
+                'table',format('%I.%I',ns.nspname,cl.relname),
+                'constraint',co.conname,
+                'type',CASE co.contype WHEN 'p' THEN 'PRIMARY KEY' WHEN 'f' THEN 'FOREIGN KEY' WHEN 'u' THEN 'UNIQUE' WHEN 'c' THEN 'CHECK' WHEN 'x' THEN 'EXCLUSION' ELSE co.contype::text END,
+                'definition',pg_get_constraintdef(co.oid,true),
+                'on_delete',CASE co.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' ELSE NULL END,
+                'set_null_columns',CASE WHEN co.confdeltype='n' AND co.confdelsetcols IS NOT NULL THEN
+                  (SELECT jsonb_agg(att.attname ORDER BY att.attnum) FROM unnest(co.confdelsetcols) x(attnum) JOIN pg_attribute att ON att.attrelid=co.conrelid AND att.attnum=x.attnum)
+                  ELSE NULL END
+              )
+              FROM pg_constraint co
+              JOIN pg_class cl ON cl.oid=co.conrelid
+              JOIN pg_namespace ns ON ns.oid=cl.relnamespace
+              WHERE ns.nspname='public' AND co.contype IN ('p','f','u','c','x')
+              ORDER BY cl.relname,co.conname"
+            echo '{"catalog":"tables_and_columns"}'
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT jsonb_build_object(
+                'table',format('%I.%I',ns.nspname,cl.relname),
+                'column',att.attname,
+                'type',format_type(att.atttypid,att.atttypmod),
+                'not_null',att.attnotnull,
+                'default',pg_get_expr(def.adbin,def.adrelid),
+                'outbound_fk_count',(SELECT count(*) FROM pg_constraint f WHERE f.conrelid=cl.oid AND f.contype='f'),
+                'inbound_fk_count',(SELECT count(*) FROM pg_constraint f WHERE f.confrelid=cl.oid AND f.contype='f')
+              )
+              FROM pg_class cl
+              JOIN pg_namespace ns ON ns.oid=cl.relnamespace
+              JOIN pg_attribute att ON att.attrelid=cl.oid AND att.attnum>0 AND NOT att.attisdropped
+              LEFT JOIN pg_attrdef def ON def.adrelid=cl.oid AND def.adnum=att.attnum
+              WHERE ns.nspname='public' AND cl.relkind IN ('r','p')
+              ORDER BY cl.relname,att.attnum"
+            echo '{"catalog":"triggers"}'
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atc "
+              SELECT jsonb_build_object(
+                'table',format('%I.%I',ns.nspname,cl.relname),
+                'trigger',tg.tgname,
+                'definition',pg_get_triggerdef(tg.oid,true),
+                'function',pg_get_functiondef(tg.tgfoid)
+              )
+              FROM pg_trigger tg
+              JOIN pg_class cl ON cl.oid=tg.tgrelid
+              JOIN pg_namespace ns ON ns.oid=cl.relnamespace
+              WHERE ns.nspname='public' AND NOT tg.tgisinternal
+              ORDER BY cl.relname,tg.tgname"
+          } | tee ../ai-phone-02c-postgres-catalog.jsonl
+
       - name: Frontend production build from exact implementation tree
         working-directory: target
         shell: bash
@@ -151,6 +209,7 @@ jobs:
           path: |
             ai-phone-02c-run-context.txt
             ai-phone-02c-full-suite.log
+            ai-phone-02c-postgres-catalog.jsonl
             ai-phone-02c-frontend.log
             ai-phone-02c-evidence-manifest.txt
             audit-evidence/*.jsonl
