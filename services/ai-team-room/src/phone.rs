@@ -295,7 +295,7 @@ pub async fn get_my_phone(pool: &PgPool, identity: &AuthenticatedIdentity) -> Re
     Ok(PhoneSnapshot { phone, attachment, mission })
 }
 
-pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: AttachRequest, allow_transfer: bool)
+pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: AttachRequest, endpoint_credential: &str, allow_transfer: bool)
     -> Result<AttachmentRecord, PhoneError> {
     require_permission(pool, identity, if allow_transfer { "phone.transfer" } else { "phone.attach" })
         .await.map_err(|_| PhoneError::Forbidden)?;
@@ -320,11 +320,11 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
                 "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3"
             ).bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
             if existing.endpoint_id == request.endpoint_id {
-                let endpoint_attached: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status='ATTACHED')"
-                ).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-                    .fetch_one(&mut *tx).await?;
-                if !endpoint_attached { return Err(PhoneError::Conflict); }
+                let (_, current_endpoint, current_fence) =
+                    require_current_endpoint_credential(&mut tx, identity, &phone, endpoint_credential).await?;
+                if current_endpoint != request.endpoint_id || current_fence != existing.endpoint_fence {
+                    return Err(PhoneError::EndpointUnauthorized);
+                }
                 tx.commit().await?;
                 return Ok(existing);
             }
@@ -341,24 +341,17 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
             .bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     }
 
+    // New endpoint must present its pre-enrolled credential; AI bearer possession alone is insufficient.
+    let credential_id = require_registered_endpoint_credential(
+        &mut tx, identity, &phone, request.endpoint_id, endpoint_credential
+    ).await?;
     let endpoint_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status<>'REVOKED')"
+        "SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status IN ('REGISTERED','DETACHED'))"
     ).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
-    if !endpoint_exists {
-        let endpoint_id_claimed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
-            .bind(request.endpoint_id).fetch_one(&mut *tx).await?;
-        if endpoint_id_claimed { return Err(PhoneError::Conflict); }
-    }
-    if endpoint_exists {
-        sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='ATTACHED',metadata=$2,last_seen_at=NOW(),detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
-            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-            .execute(&mut *tx).await?;
-    } else {
-        let inserted=sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,last_seen_at) VALUES($1,$2,$3,$4,$5,'ATTACHED',$6,NOW()) ON CONFLICT(endpoint_id) DO NOTHING")
-            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(&request.endpoint_type).bind(&request.metadata)
-            .execute(&mut *tx).await?;
-        if inserted.rows_affected()==0 { return Err(PhoneError::Conflict); }
-    }
+    if !endpoint_exists { return Err(PhoneError::Conflict); }
+    sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='ATTACHED',metadata=$2,last_seen_at=NOW(),detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
+        .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .execute(&mut *tx).await?;
     let next_fence = phone.endpoint_fence + 1;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=$1,phone_status=$2,version=version+1,last_seen_at=NOW(),updated_at=NOW() WHERE ai_phone_id=$3 AND tenant_id=$4 AND ai_id=$5")
         .bind(next_fence).bind(if had_current { "ATTACHED_NEW_ENDPOINT" } else { "ATTACHED" }).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
@@ -369,6 +362,9 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     ).bind(attachment_id).bind(phone.ai_phone_id).bind(phone.ai_id).bind(request.endpoint_id).bind(identity.tenant_id)
       .bind(identity.room_id).bind(identity.principal_id).bind(identity.participant_id).bind(identity.session_id)
       .bind(identity.execution_id).bind(next_fence).execute(&mut *tx).await?;
+    let bound = sqlx::query("UPDATE phone_endpoint_credentials SET endpoint_fence=$1,last_used_at=NOW() WHERE credential_id=$2 AND credential_status='ACTIVE' AND endpoint_fence IS NULL")
+        .bind(next_fence).bind(credential_id).execute(&mut *tx).await?;
+    if bound.rows_affected()!=1 { return Err(PhoneError::EndpointUnauthorized); }
     record_phone_event(&mut tx, identity, phone.ai_phone_id,
         if had_current { "PHONE_TRANSFERRED" } else { "PHONE_CONNECTED" },
         if had_current { "phone.endpoint.transferred" } else { "phone.endpoint.attached" },
