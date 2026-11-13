@@ -197,8 +197,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (ai_1_principal, _, ai_1_session, _, _, _) =
         add_ai(&pool, tenant_id, room_id, "AI-PHONE-01-TEST").await;
     let (ai_2_principal, _, ai_2_session, _, _, _) =
-        add_ai(&pool, tenant_id, room_id, "AI-PHONE-02-TEST");
-    let ai_2_principal = ai_2_principal.await;
+        add_ai(&pool, tenant_id, room_id, "AI-PHONE-02-TEST").await;
     grant_permissions(&pool, tenant_id, room_id, ai_1_principal).await;
     grant_permissions(&pool, tenant_id, room_id, ai_2_principal).await;
 
