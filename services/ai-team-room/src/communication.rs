@@ -440,6 +440,7 @@ mod postgres_tests {
     use serde_json::json;
     use tower::ServiceExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use futures_util::StreamExt;
 
     struct Actor { principal:Uuid, participant:Uuid, session:Uuid, token:String }
 
