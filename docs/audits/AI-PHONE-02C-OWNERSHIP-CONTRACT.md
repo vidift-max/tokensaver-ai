@@ -683,3 +683,369 @@ Before implementation can be authorized, the reviewer must explicitly accept:
 Until that approval is explicit, do not implement the algorithm, modify production code or migrations, execute cleanup operationally, run the 160 races or 20 handoffs, run integration, or merge.
 
 **Final status: BLOCKED.** The current evidence demonstrates the vulnerability and the specification now identifies the principal schema/contract gaps, but ownership closure, retention semantics, writer-wide concurrency guarantees and complete isolation tests remain unproven.
+
+
+---
+
+# AI-PHONE-02C Lifecycle, Retention and Authorization Addendum
+
+Policy revision based on immutable TARGET ebb8eeecfea087443c5f3eba7021e96cb5302fe7.
+Schema evidence: PostgreSQL 16.16 catalog artifact from workflow 43473339618.
+Reviewed source files are read at the immutable TARGET, not at the moving default branch.
+Status: **POLICY SPECIFIED — IMPLEMENTATION NOT AUTHORIZED — ACCEPTANCE TESTS NOT RUN**.
+
+## 14. Evidence basis and schema compatibility (Round 1)
+
+### 14.1 Directly verified schema facts
+
+The catalog artifact was parsed directly. It contains 35 public tables (34 application tables plus _sqlx_migrations), 85 foreign keys, 33 CASCADE actions, 29 RESTRICT actions, 18 NO ACTION actions, five SET NULL actions and seven non-internal triggers. The trigger list contains no DELETE trigger.
+
+The status CHECK constraints establish the following persisted values:
+
+| Resource | Persisted status values in TARGET | Important consequence |
+|---|---|---|
+| ai_phones.phone_status | ATTACHED, TRANSFER_REQUESTED, TRANSFERRING, ATTACHED_NEW_ENDPOINT, DISCONNECTED | There is no ACTIVE, DETACHING, DETACHED, DEPROVISIONING, RETIRED or REVOKED Phone status. |
+| phone_endpoints.endpoint_status | REGISTERED, ATTACHED, DETACHED, REVOKED | REVOKED is terminal in the current endpoint registration handler; DETACHED can be registered again. |
+| phone_attachments.attachment_status | ACTIVE, DETACHED, FENCED | Attachment history can remain after endpoint detach/revoke. |
+| phone_endpoint_credentials.credential_status | ACTIVE, REVOKED | Expiration is separately checked by expires_at; an expired row can still say ACTIVE. |
+| phone_endpoint_operator_keys.key_status | ACTIVE, REVOKED | expires_at is nullable; scope is tenant + AI, not endpoint or Phone. |
+| sessions.status | CREATED, ACTIVE, EXPIRED, REVOKED, CLOSED | Sessions are principal/room context, not Phone-specific credentials. |
+| workload_executions.status | ACTIVE, EXPIRED, REVOKED, CLOSED | Execution lifecycle is separate from Phone lifecycle. |
+| workload_identities.status | ACTIVE, DISABLED, REVOKED, EXPIRED | Workload identity is principal/tenant scope, not Phone scope. |
+
+The catalog also confirms:
+- ai_phones has a unique (tenant_id, ai_id) constraint and a RESTRICT binding to ai_identity_tenants.
+- phone_endpoints has RESTRICT parent relations to ai_phones.
+- phone_endpoint_credentials has RESTRICT parent relations to both phone_endpoints and ai_phones.
+- phone_attachments has RESTRICT relations to ai_phones, phone_endpoints, ai_identity_principals, principals, participants, sessions and workload_executions.
+- phone_messages has RESTRICT relations to ai_phones, recipient AI identity and sender principal.
+- phone_mission_links has RESTRICT relations to ai_phones and team_tasks.
+- phone_endpoint_operator_keys has only the composite AI/tenant FK to ai_identity_tenants; it has no phone_id or endpoint_id.
+- team_room_attachment_refs stores storage_ref as text; the catalog does not identify an object-storage provider, object ownership protocol or deletion API.
+
+### 14.2 Directly verified source behavior
+
+Source provenance at TARGET:
+- services/ai-team-room/src/phone.rs blob ea0059441656e38a5f638d0939fbf9cfa3a85a86
+- services/ai-team-room/src/auth.rs blob c1ccf50f5c9567ad20c786d861339a8d6f0cef10
+- services/ai-team-room/src/handoffs.rs blob f6736c77ef66d8c85c1c1ddb261d96649638761e
+- services/ai-team-room/src/communication.rs blob 4a89ffd34fe78a8b68fd7ed2c83ed43f18b6eb65
+- services/ai-team-room/src/tasks.rs blob b6bd7f33d7a1bcad943060c09b38ec9dcf612819
+- services/ai-team-room/migrations/0014_ai_phone_endpoint_credentials.sql blob 7f43f13b7f8b1448d58e3d54dc9ec2ed97f32467
+
+Confirmed behavior:
+1. Endpoint status transition to DETACHED or REVOKED triggers revocation of ACTIVE credentials for that endpoint.
+2. The endpoint revoke handler fences an active attachment, advances the Phone endpoint fence, marks the endpoint REVOKED and records a Phone event. If already REVOKED, it still revokes any anomalous remaining ACTIVE credentials.
+3. Endpoint registration/rotation revokes existing ACTIVE credentials for that endpoint and inserts a new hash-only credential. New endpoint credentials have a 90-day expiry.
+4. The endpoint operator authorization query requires key_status ACTIVE and expires_at NULL or later than NOW(). The key is looked up by tenant_id, ai_id and key_hash only.
+5. The endpoint operator key migration explicitly says raw keys are provisioned out-of-band by a trusted control plane and are never persisted.
+6. Phone detach fences/detaches the active attachment, marks endpoint DETACHED and Phone DISCONNECTED, and advances the fencing generation. The endpoint lifecycle trigger revokes that endpoint's active credentials.
+7. Session authentication checks ACTIVE, revoked_at and expires_at. Expired session/workload rows are updated when the token is presented. close_session closes one authenticated session and its execution, not a Phone-specific session.
+8. Phone message content and identity fields are immutable under the phone_message_transition_guard trigger.
+9. communication.rs stores team_room_attachment_refs.storage_ref but does not establish that the referenced object is owned by a Phone or that the service can safely delete it.
+10. Phone and endpoint paths use row locks in some lifecycle operations. This source review did not find a universal Phone advisory-lock protocol across auth, Team Room, task, handoff, outbox, attachment-ref and out-of-band control-plane writers.
+
+### 14.3 Corrections and limits
+
+The previous contract's statement that a safe deprovisioning flow is possible “in principle” must be read as a design possibility, not as a proven property of TARGET. TARGET does not have a persistent retired state or a universal write barrier. Consequently, current code cannot guarantee that a Phone remains retired after the existing endpoint detach/revoke operations.
+
+No schema or source changes are made by this addendum. No external storage contents were inspected. The existence, provider, lifecycle and sharing of objects referenced by storage_ref remain unproven.
+
+## 15. Formal Phone lifecycle policy (Round 2)
+
+### 15.1 State model: current values versus proposed lifecycle
+
+The lifecycle names requested by this mission are not all compatible with the existing phone_status CHECK constraint. The following distinction is mandatory:
+
+| Lifecycle concept | Current TARGET representation | Policy |
+|---|---|---|
+| ACTIVE | No literal Phone status. Operational availability is derived from Phone, endpoint, attachment, credential, session and execution state. | Treat ACTIVE as a conceptual lifecycle state only. Do not write ACTIVE to phone_status. |
+| DETACHING | No persisted Phone state. | Future lifecycle state; must be introduced through a migration or durable lifecycle record before it is used. |
+| DETACHED | Phone can be DISCONNECTED; endpoint and attachment rows can be DETACHED. | Endpoint-level detach is reversible and is not Phone retirement. |
+| DEPROVISIONING | No persisted Phone state. | Future lifecycle state and write-admission barrier. |
+| RETIRED | No persisted Phone state. | Future terminal Phone lifecycle state; cannot be safely represented by DISCONNECTED alone. |
+| REVOKED | Exists for endpoint, endpoint credential, operator key, session and workload execution as applicable; not for ai_phones. | Resource-level revocation only. Do not invent a Phone-level REVOKED status in the existing column. |
+
+Proposed future schema: add a separate durable Phone lifecycle field or lifecycle table with an explicit CHECK/enum and monotonically increasing lifecycle_version. Keep phone_status for the existing connection/transfer state machine. A separate lifecycle event/receipt stream should retain who requested, who approved, operation ID, timestamps, reason, prior/new state and manifest digest. This is a design proposal, not an existing capability.
+
+### 15.2 Allowed transitions
+
+| From → To | Meaning | Authorization and preconditions | Required effects |
+|---|---|---|---|
+| ACTIVE → DETACHING → DETACHED | Disconnect current endpoint/session attachment but retain Phone identity for later reconnection. | Authenticated Phone owner/session under existing detach path; future admin override must have a dedicated permission. | Fence active attachment, advance endpoint fence, detach endpoint; endpoint trigger revokes its active credentials; preserve Phone, endpoint, attachment, messages and history. |
+| DETACHED → ACTIVE | Reconnect the same Phone using an eligible non-revoked endpoint or a newly registered endpoint. | Fresh authenticated session and separately authorized endpoint operator key for registration/rotation; all current binding checks must pass. | New attachment/fence and fresh endpoint credential; never reactivate a REVOKED endpoint or old credential. |
+| ACTIVE or DETACHED → DEPROVISIONING | Begin permanent retirement and stop all new Phone operations. | Tenant administrator requests; a distinct privileged lifecycle authority approves; future dedicated permission and durable operation record required. Existing phone.endpoint.manage is not sufficient evidence of lifecycle authority. | Atomically close admission first; fence attachments; revoke all endpoint credentials by endpoint lifecycle transition; preserve parent/history rows. |
+| DEPROVISIONING → RETIRED | Complete retirement after postconditions. | All endpoints and active attachments are non-operational; no in-flight transfer; writer barrier is active; unresolved ownership does not permit further destructive action. | Persist terminal lifecycle marker and audit receipt; retain Phone and all RESTRICT anchors. |
+| DEPROVISIONING → DEPROVISIONING | Retry after timeout, process crash or lost response. | Same operation ID and same request/manifest digest. | Idempotently resume/return recorded outcome; no duplicate event or widened scope. |
+| RETIRED → any active state | Not allowed. | No self-service reactivation. | Create a new Phone identity or require a separately reviewed restore design; do not clear the retired marker. |
+
+Endpoint REVOKED is terminal under the current register handler, which returns conflict for an already revoked endpoint. Endpoint DETACHED is not terminal: the registration handler can set it back to REGISTERED and issue a new credential. Therefore a Phone-wide RETIRED state must block endpoint registration, attach, heartbeat, send, receive, ACK and all other Phone operations; revoking the current endpoint alone is insufficient.
+
+### 15.3 Authority model
+
+Current code proves:
+- endpoint registration and endpoint revocation require phone.endpoint.manage plus a valid AI/tenant-scoped operator key;
+- session-authenticated Phone operations require a valid tenant/room/principal/session/execution binding;
+- the schema has no dedicated phone.lifecycle.manage permission or Phone lifecycle approver.
+
+Proposed policy:
+- Detach: authenticated Phone owner or authorized tenant operator; no destructive data deletion.
+- Permanent retirement request: tenant administrator or explicitly delegated Phone owner.
+- Permanent retirement approval: a distinct privileged lifecycle authority, separate from the requester for high-impact or regulated deployments.
+- Operator-key issue/revoke: trusted control plane only, with its own audited authorization and key-rotation process.
+- Session/workload revocation: principal/security lifecycle authority only, not automatic Phone cleanup.
+- Physical fixture deletion: test harness authority only, only against a verified disposable database and signed fixture manifest; never an operational Phone API.
+
+No new permission is presumed to exist. A future implementation must add and test explicit lifecycle authorization rather than reusing phone.endpoint.manage.
+
+## 16. Retention and parent-anchor policy (Round 3)
+
+### 16.1 Non-negotiable retention default
+
+Until a formally approved retention schedule defines a lawful retention period, legal hold behavior, archive verification and purge authority, all historical rows below are PRESERVE. No age-based purge or cleanup-driven deletion is authorized by this mission.
+
+A retained RESTRICT child requires its parent anchor to survive. Do not delete the parent, disable the FK, null immutable fields, or delete the child merely to make a Phone row deletable.
+
+### 16.2 Phone graph retention matrix
+
+| Resource / relation | Current FK or reference behavior | Lifecycle action | Retention and parent-anchor rule |
+|---|---|---|---|
+| ai_phones | Parent to endpoints, credentials, attachments, messages and mission links; RESTRICT children; AI/tenant mapping RESTRICT | Keep row; mark separate lifecycle marker RETIRED only after future write barrier | Preserve as durable identity anchor. No physical deletion while retained children exist. |
+| phone_endpoints | RESTRICT child of Phone; parent of credentials and attachments | Set endpoint_status REVOKED for retirement; DETACHED only for reversible disconnect | Preserve endpoint row as audit/credential anchor. Never delete to bypass credential/attachment RESTRICT. |
+| phone_endpoint_credentials | RESTRICT to endpoint and Phone; stores hash, status, fence, expiry and revoked_at | Revoke active credential; expiry denies use but is not a revocation event | Preserve row and hash-only audit metadata. Do not store or attempt to recover raw secret. |
+| phone_attachments | RESTRICT to Phone, endpoint, principal, participant, room/session and workload execution | Set FENCED on security revocation/retirement; DETACHED for ordinary detach | Preserve attachment row. Its retained FKs also preserve the referenced session, participant, principal and execution anchors. |
+| phone_messages | RESTRICT to Phone, recipient AI identity and sender principal; immutable content/identity trigger | Stop delivery/acceptance after retirement through lifecycle gate; preserve content and terminal state | Preserve message and all parent anchors. Never delete messages to unlock Phone deletion. |
+| phone_mission_links | RESTRICT to Phone and team_tasks; task_id/room/tenant composite relation | Preserve link as historical association; resolve active task through normal task/handoff lifecycle before retirement | Preserve Phone and task anchors. Do not cancel/delete a shared task as a side effect. |
+| AI identity and AI/tenant/principal mappings | RESTRICT and shared/global identity graph | No Phone-triggered deletion or revocation | Preserve global AI and identity mappings. Tenant/AI mappings are not Phone cleanup resources. |
+| sessions and workload_executions | Shared principal/room/session/execution context; attachment RESTRICT; other resources also reference them | Do not revoke merely because one Phone retires. Revoke only through separate principal/session security policy. | Preserve rows required by retained attachments, handoffs and audit history. |
+| audit_events and security_audit_events | Audit rows; some tenant cascade, some soft references/no FK | Preserve; append lifecycle events rather than erase prior events | Tenant must remain. Preserve security history even where it outlives a tenant or Phone. |
+| outbox_events | Tenant FK CASCADE; aggregate_type/aggregate_id are soft references; INSERT NOTIFY trigger | Preserve pending, delivered and historical events; publish/ack through normal consumer lifecycle | Never clear outbox by deleting tenant. Keep tenant anchor. |
+| team_tasks and task_lease_events | Task is room/tenant scoped; lease events cascade from task | Resolve active task ownership/handoff independently; no Phone cleanup deletion | Preserve task and lease/fencing history. Never delete task to remove a Phone mission link. |
+| task_handoffs | Tenant/room/task CASCADE; session/execution fields SET NULL | Complete/cancel/expire through handoff state machine only when authorized | Preserve handoff record and context; do not delete tenant, room or task to remove it. |
+| Team Room channels/messages/decisions/reads/members/WS tickets | Room/tenant/principal/session relationships; some cascades, some soft refs | Preserve; expire/consume tickets through their own protocol | These are collaboration records, not Phone-owned resources. |
+| team_room_attachment_refs | Room/channel FK graph; message_id and task_id are logical references in the catalog; storage_ref is opaque text | Preserve reference and object; no automatic object deletion | Retain room/channel and referenced message/task as required. Actual object ownership and storage provider are unproven. |
+| auth_token_replays and permission_catalog | Global replay/security and global authorization vocabulary | No Phone cleanup action | Preserve; global expiry maintenance remains separate. |
+| _sqlx_migrations | Deployment metadata | No Phone cleanup action | Preserve database migration history. |
+
+### 16.3 RESTRICT anchor closure
+
+At minimum, preserving Phone messages requires preserving the Phone, recipient AI identity and sender principal. Preserving endpoint credentials requires preserving both endpoint and Phone. Preserving Phone attachments requires preserving Phone, endpoint, AI/principal mapping, principal, participant, room/session and workload execution. Preserving mission links requires preserving Phone and task.
+
+This closure is why physical Phone deletion is not a valid default. If retention policy later allows archiving, that must be a separately reviewed archive/decoupling design with verified restore, integrity, legal hold and reference migration. No such archive mechanism is proven in TARGET.
+
+## 17. Operator keys and endpoint credentials (Round 4)
+
+### 17.1 Operator key
+
+The operator key row is scoped by tenant_id + ai_id, indexed by that scope and status, and checked by key_hash. It has no phone_id, endpoint_id, owner principal, issuer identity or exclusive Phone provenance. Migration 0014 states that keys are provisioned out-of-band by a trusted control plane.
+
+Policy:
+- A Phone retirement MUST NOT automatically revoke an operator key.
+- Revocation must be initiated by the trusted control plane after identifying every operator, endpoint and enrollment workflow using that key.
+- Rotation creates a new random secret, stores only its hash, distributes it through a secure one-time channel, verifies new use, then revokes the old key. Do not assume the raw key can be recovered from the database.
+- Expiration denies authorization when expires_at is reached; the row may remain ACTIVE until explicitly marked REVOKED. Expiry and revocation must be reported separately.
+- A key whose actual consumer set or control-plane owner is unknown is OWNERSHIP_UNPROVEN and must be preserved.
+- Future explicit Phone binding would require a schema-enforced association and a migration proving exclusivity. Adding a phone_id column alone is insufficient if multiple operator principals or enrollment workflows share the key.
+
+The current unique (tenant_id, ai_id) Phone constraint means at most one ai_phones row exists for that AI/tenant pair in this schema. It does not convert the operator key into an endpoint-specific credential or prove its exclusive control-plane ownership.
+
+### 17.2 Endpoint credential
+
+An endpoint credential is structurally bound to one endpoint, Phone, tenant and AI by composite RESTRICT FKs. It is eligible for Phone lifecycle revocation, but not physical deletion by default.
+
+- Normal detach: endpoint becomes DETACHED; the lifecycle trigger revokes active credentials for that endpoint.
+- Endpoint revoke: endpoint becomes REVOKED; the same trigger revokes active credentials.
+- Rotation: old ACTIVE credentials for the endpoint are revoked and a new hash-only credential is issued.
+- Expiration: runtime authorization rejects expired credentials; an explicit revocation timestamp is not implied unless the row is transitioned to REVOKED.
+- Phone retirement: every endpoint under the exact Phone tuple must become non-operational; use endpoint lifecycle transitions so the trigger revokes credentials. Verify zero ACTIVE and unexpired credentials after the transaction.
+- A failure to enumerate or lock any endpoint/credential causes rollback or a non-terminal DEPROVISIONING result. Never skip an endpoint.
+
+## 18. Attachments, messages, sessions and external storage (Round 5)
+
+### 18.1 Phone attachments and messages
+
+phone_attachments is an association/fencing record, not evidence of a stored file. It records endpoint, Phone, tenant, AI, principal, participant, room, session, execution and fence. It is retained and changed to DETACHED or FENCED; it is not deleted during retirement.
+
+phone_messages stores JSON content and durable delivery state. The schema and trigger show immutable message identity/content and constrained state transitions. No message archive, purge, encryption-key destruction or retention schedule was proven. Preserve all message rows and Phone/AI/principal parent anchors.
+
+### 18.2 Sessions and workloads
+
+A Phone attachment references a session and workload execution, but these are shared authentication/runtime context for a principal and room. A session can be used by Team Room and other authorized operations. Revoking it because one Phone retires can log out or disrupt unrelated work.
+
+Therefore:
+- Phone retirement fences its attachment and rejects Phone operations through a Phone lifecycle admission gate.
+- It does not close or revoke the principal's session, workload identity or execution by default.
+- If the principal or execution is compromised or separately offboarded, revoke it through the authentication/security lifecycle, recording the broader impact.
+- Expiration is evaluated independently from explicit revocation.
+
+### 18.3 Team Room and external objects
+
+communication.rs writes team_room_attachment_refs with a storage_ref string and optional message_id/task_id, plus filename, content type, size and optional hash. A test uses an object:// URI, but that is test data, not proof of a production storage provider.
+
+Unproven:
+- whether storage_ref points to S3, GCS, Azure, local storage or another provider;
+- whether the object exists;
+- whether object versioning, retention lock, legal hold or shared references exist;
+- whether a different tenant/resource references the same object;
+- who is authorized to delete it;
+- whether a storage deletion API is integrated.
+
+Policy:
+1. Never delete an external object during Phone cleanup based only on storage_ref, filename, message_id, task_id or tenant_id.
+2. Preserve the database reference and object unless a separate storage inventory proves immutable object identity, exclusive ownership, complete reference closure, no legal hold and authorized deletion.
+3. If archive is proposed, copy and verify bytes, hash, metadata, ACLs and restore path before changing references; retain the original until archive verification and retention approval.
+4. If ownership or reference closure is uncertain, retain the object and record an unresolved storage item.
+5. Avoid orphan creation by requiring a storage tombstone/reference registry and a two-phase delete protocol in any future storage architecture.
+
+Team Room messages, decisions, channels, handoffs, tasks, outbox, audit and lease history are shared collaboration or governance records. They are not automatically Phone-owned because their IDs appear in a Phone mission pointer or an event aggregate field.
+
+## 19. Universal concurrency and write-admission protocol (Round 6)
+
+### 19.1 What is proven today
+
+The TARGET contains row-locking around several Phone endpoint/attachment lifecycle operations. Endpoint registration and revoke lock the Phone row; credential validation locks Phone, attachment, endpoint and credential rows. Session exchange locks an existing session during rotation. Task and handoff code has its own row-lock/fencing logic.
+
+These are local protections, not a universal Phone lifecycle lock. No source evidence demonstrates that every writer in phone.rs, auth.rs, communication.rs, tasks.rs, handoffs.rs, outbox producers, storage workers and the out-of-band operator-key control plane acquires one common Phone lock. Soft references have no FK to the Phone row, so a Phone row lock alone cannot block their insertion.
+
+### 19.2 Required future barrier
+
+Advisory locks may be supplemental coordination only. They cannot be treated as protection for non-participating writers.
+
+Before implementation can be approved, the architecture must provide a database-enforced lifecycle gate:
+- one durable lifecycle row/version for each Phone;
+- every Phone-scoped writer must resolve the exact Phone and lock the lifecycle row before creating or mutating a dependent;
+- a database trigger or a single privileged write API must reject writes unless lifecycle state is ACTIVE or an explicitly allowed transition;
+- retirement changes the lifecycle row to DEPROVISIONING under a conflicting row lock, waits for prior admitted writes, then prevents later writes;
+- direct table writes by application roles must be revoked or guarded so no writer can bypass the gate;
+- soft-reference writers must either carry a resolvable Phone identity and participate in the gate, gain an FK/association table, or remain outside the Phone cleanup graph and be preserved;
+- external workers and control-plane writers must acknowledge the same retirement version/fencing token before acting;
+- all writes after RETIRED must fail closed, including endpoint re-registration, attach, heartbeat, send, receive, ACK and background delivery.
+
+A candidate lock order is: Phone lifecycle gate; tenant/AI/identity scope anchors; Phone row; endpoints sorted by endpoint_id; credentials sorted by credential_id; attachments sorted by attachment_id; then explicitly owned dependent rows. All writers must use the same order. The exact order must be checked against FK lock acquisition and deadlock traces before implementation.
+
+### 19.3 Race handling
+
+| Race or failure | Required behavior |
+|---|---|
+| New endpoint or credential registration | Gate lock serializes it; if DEPROVISIONING has begun, reject. |
+| New message or message delivery/ACK | Gate lock/DB guard rejects after retirement barrier; existing messages remain. |
+| New attachment or heartbeat | Reject after gate closes; old fence becomes invalid. |
+| Transfer requested/in progress | Retirement waits for a terminal transfer outcome or aborts as RETRYABLE_BLOCKED; never changes tenant/AI ownership implicitly. |
+| Principal/session/workload revocation | Separate security lifecycle; revalidate before transition; do not revoke unrelated sessions as a Phone side effect. |
+| Operator key rotation/revocation | Trusted control plane must coordinate key version and active consumers; Phone retirement does not revoke key. |
+| New soft reference | If it cannot be resolved to the Phone gate, it is not safe to delete its target; preserve and block physical deletion. |
+| Writer not participating | Retirement cannot claim complete isolation; keep Phone non-deleted and return BLOCKED. |
+| Deadlock (40P01) | Roll back; bounded retry only after confirming common lock order; repeated deadlock fails closed. |
+| Serialization failure (40001) | Roll back and retry same operation ID and same digest only, with bounded attempts. |
+| Lock/statement timeout | Roll back; report RETRYABLE_BLOCKED; no partial retirement or broader cleanup. |
+| Lost response after commit | Resolve by durable operation receipt; never repeat side effects blindly. |
+
+SERIALIZABLE isolation does not repair a missing lifecycle protocol. It is an additional defense after every writer is covered by the same enforced gate, not a substitute for it.
+
+## 20. Test teardown review — handoffs.rs (Round 7)
+
+At TARGET, handoffs.rs contains PostgreSQL test fixtures under cfg(test). The fixture() function creates a random tenant and room and opens the DATABASE_URL connection. The first handoff test ends with DELETE FROM tenants for that generated tenant. The same file's continuity test explicitly deletes Phone attachments, endpoint credentials, endpoints, messages, mission links, ai_phones, AI/tenant mappings, AI/principal mappings, the generated global AI identity and finally the generated tenant.
+
+This is test teardown, not an operational Phone lifecycle API. It was created to clean test-created rows after committed integration scenarios. The test source itself does not enforce that DATABASE_URL is disposable. The AI identity deletion is only safe if that identity was created exclusively by that test and no other test/process references it.
+
+The AI-PHONE-02C workflow does provision a disposable PostgreSQL 16 service database named ai_phone_02c_audit for its job. That makes the workflow database disposable; it does not make the same test safe when run manually against an arbitrary DATABASE_URL.
+
+Policy for replacing test teardown:
+1. Prefer one disposable database or isolated schema/database per integration test or test worker; discard the whole database after the suite.
+2. Add an explicit test-environment guard that refuses destructive fixture teardown unless the database is positively identified as disposable and has a dedicated test marker. A database name alone is not a sufficient security boundary.
+3. Where database disposal is impossible, use a fixture registry and exact row-level cleanup for only rows created by that test; never delete tenant, global AI, shared principal or shared identity rows.
+4. Keep audit/outbox assertions and snapshots until all assertions finish; discard the disposable database after evidence is captured.
+5. Keep operational deprovision, test fixture cleanup and physical fixture deletion as three separate APIs/specifications and authorization domains.
+
+Do not run the existing teardown helper as operational cleanup. No source code was changed and no test helper was executed in this mission.
+
+## 21. Executable acceptance plan and invariants (Round 8)
+
+These are future acceptance tests, not executed tests. They must run only after an implementation is explicitly authorized, against disposable PostgreSQL 16 databases and two complete fixtures A and B. Each fixture must contain real Phone endpoints, active and revoked credentials, attachments, messages, mission link, sessions, workload execution, Team Room rows, tasks, lease events, handoffs, outbox and audit rows. Include one AI identity shared across more than one tenant where schema rules permit, and multiple operator actors/endpoints in one AI/tenant scope.
+
+Before and after every test, snapshot all 35 public tables. For each table capture exact primary keys, row counts, canonical row hashes and all relevant parent tuples. Also snapshot the global identity graph, tenant rows, all audit/security/outbox rows, operator-key hashes/status/expiry, and the external-storage reference registry. The snapshot must include zero-row results and distinguish missing rows from empty result sets.
+
+| Test | Action | Required invariant |
+|---|---|---|
+| A retires | Retire fixture A | Tenant A, global AI identity, identity mappings, audit, security audit, outbox and all B rows remain unchanged. A Phone and RESTRICT anchors remain; only A's endpoint/attachment/credential operational states change. |
+| B retires | Retire fixture B | Symmetric preservation of A. |
+| Message retention | Retire A with PENDING, DELIVERED, ACK and FAILED messages | Every message ID, content digest, sender/recipient tuple and status history remains; no message is deleted. |
+| Parent retention | Retire A with credentials, attachments and messages present | Phone, endpoint, AI, principal, participant, session and execution anchors remain wherever retained FK children require them. |
+| Credential revocation | Retire A with multiple endpoints | All and only A's endpoint credentials become REVOKED; no ACTIVE usable A credential remains; B and other keys are unchanged. |
+| Operator-key preservation | Retire A | Operator-key rows and statuses remain unchanged unless a separate control-plane key-revocation test is explicitly run. |
+| Global identity | Retire A | ai_identities rows and cross-tenant mappings remain unchanged. |
+| Tenant preservation | Retire A and B | All tenant rows remain; no tenant delete is issued or counted as success. |
+| Audit/outbox | Retire A | Prior audit/security/outbox row IDs and hashes remain; lifecycle audit event is appended; no event is silently removed. |
+| Attachment integrity | Retire A | phone_attachments are FENCED/DETACHED; Team Room attachment refs and external objects remain; every storage_ref is accounted for. |
+| Sessions/workloads | Retire A | Phone attachment cannot use old fence; shared principal session/workload remains valid for unrelated resources unless independently revoked. |
+| Team Room/handoffs/tasks | Retire A | Channels, messages, decisions, tasks, handoffs and lease history remain byte-for-byte unchanged unless separately transitioned by authorized task policy. |
+| Rollback injection | Fail after each mutation boundary | Entire transaction rolls back; no credential revocation, endpoint status, lifecycle state or audit receipt is partially committed. |
+| Idempotency | Repeat same operation ID + digest | Same durable result, no duplicate events or changed snapshots; same ID with different digest is rejected. |
+| Partial fixture | Omit one endpoint/credential/soft-reference manifest item | Operation rejects before mutation or rolls back; no “best effort” retirement. |
+| Concurrent attach/register | Race lifecycle retirement with new endpoint/attach | Exactly one serial order; if retirement wins, new operation is rejected; if attach wins, retirement sees and fences it before RETIRED. |
+| Concurrent transfer | Race transfer with retirement | No cross-tenant/AI transfer or ownership mutation; operation blocks until transfer terminal state. |
+| Writer bypass | Attempt direct insert/update from every app role and worker | Database gate rejects Phone-scoped writes after DEPROVISIONING/RETIRED. |
+| Unauthorized retirement | Request without lifecycle authority or approval | No state change, no credential revocation, immutable denial evidence. |
+| Storage uncertainty | Provide missing/duplicate/shared/unknown storage_ref | Preserve reference/object and fail any physical purge. |
+
+Acceptance is PASS only if every invariant passes, no protected snapshot changes, all relevant writers are covered by the database gate, and failure injection proves atomicity. A successful API response or zero remaining ACTIVE endpoint alone is insufficient.
+
+## 22. Adversarial policy review (Round 9)
+
+| Attack | Policy defense | Remaining proof required |
+|---|---|---|
+| Endpoint credential remains usable | Endpoint DETACHED/REVOKED trigger revokes ACTIVE credentials; retirement must enumerate all endpoints and verify expiry/fence. | Integration test across every endpoint and old credential generation. |
+| Session remains usable | Phone attachment is fenced; shared session is intentionally retained for other resources. | Prove every Phone API checks lifecycle gate, not only session validity. |
+| Operator key revoked by mistake | Key is AI/tenant scoped and excluded from Phone cleanup. | Control-plane consumer inventory and explicit rotation/revocation workflow. |
+| Message loss | Message rows are retained and RESTRICT anchor remains. | Full content-hash snapshots and no-delete assertions. |
+| Attachment orphan | Attachment association and storage_ref are retained; no object deletion without registry proof. | Storage provider inventory, reference registry and restore test. |
+| Audit/outbox loss | Tenant is never deleted; retained rows are snapshotted and preserved. | Outbox consumer/retention policy and full row digest test. |
+| Non-participating writer bypass | Advisory lock is not considered universal; DB-enforced lifecycle gate is mandatory. | Prove every writer and DB role is guarded, including background/out-of-band workers. |
+| Retired Phone reactivated | RETIRED is terminal in proposed lifecycle table; all attach/register/API writes reject. | Schema migration, authorization test and database trigger enforcement. |
+| Duplicate retry side effects | Operation ID + manifest digest + durable receipt; same request returns same outcome. | Atomic receipt test under lost-response fault injection. |
+| Partial manifest deletes unknown rows | Complete signed manifest and DB dependency closure; partial manifest fails before writes. | Tamper, omission, extra-ID and stale-target tests. |
+| Transfer races retirement | Shared lifecycle gate and deterministic lock order; transfer in progress blocks retirement. | Concurrent integration test with transfer writer participating. |
+
+### 22.1 Corrections made by this policy review
+
+- ACTIVE is explicitly conceptual; it is not a legal current ai_phones.phone_status value.
+- DETACHED is explicitly reversible at endpoint level and is not equivalent to Phone retirement.
+- Phone-level DETACHING, DEPROVISIONING and RETIRED are future schema states, not existing states.
+- Expiration is distinguished from explicit credential/key/session revocation.
+- Endpoint credentials are eligible for Phone-scoped revocation; operator keys are not.
+- Sessions/workload identities are not automatically revoked because they are shared principal/runtime context.
+- A retained Phone attachment preserves its referenced session/principal/participant/execution anchors under RESTRICT.
+- External object existence, provider and deletion rights remain unproven; no storage deletion is allowed.
+- The handoffs.rs tenant deletion is identified as test teardown with a disposable-CI-database condition, not an operational cleanup method.
+- Advisory locks and SERIALIZABLE isolation are no longer presented as sufficient without a database-enforced writer gate.
+
+## 23. Final decision and authorization boundary (Round 10)
+
+| Component | Status |
+|---|---|
+| Schema compatibility review | PASS — current status values and FK/trigger behavior checked against captured catalog |
+| Current Phone lifecycle implementation | FAIL — no persistent Phone RETIRED state or universal write-admission barrier |
+| Endpoint credential revocation | PASS — trigger and handler behavior confirmed; complete retirement coverage untested |
+| Operator-key policy | SPECIFIED — key excluded from Phone cleanup; control-plane ownership remains unproven |
+| Parent retention policy | SPECIFIED — preserve Phone/endpoint and all RESTRICT anchors |
+| External storage policy | BLOCKED — provider, ownership and object reference closure unproven |
+| Universal concurrency guarantee | BLOCKED — no common enforced writer gate demonstrated |
+| Test teardown classification | PASS — test-only code identified; arbitrary DATABASE_URL is not guarded in the test helper |
+| Two-fixture acceptance plan | SPECIFIED, NOT EXECUTED |
+| Adversarial policy review | PASS as a design review; implementation defenses not tested |
+| Production implementation | NOT AUTHORIZED |
+| Integration / merge | BLOCKED |
+
+Final policy:
+1. Phone lifecycle default is deprovision/retire, never tenant deletion.
+2. Preserve Phone, endpoints, messages, attachments, credentials, audit and all required parent anchors.
+3. Revoke only exact endpoint credentials through endpoint lifecycle transitions.
+4. Preserve operator keys unless the trusted control plane independently authorizes revocation after consumer analysis.
+5. Do not revoke shared sessions, workload identities, tasks, handoffs or Team Room state as a Phone side effect.
+6. Do not delete external objects without verified exclusive ownership and a separate approved storage lifecycle.
+7. Do not claim retirement is secure until a durable lifecycle state and database-enforced writer barrier cover every writer.
+8. Any missing ownership proof, unknown consumer, lock failure, unguarded writer or partial manifest results in fail-closed preservation.
+
+**Final classification: BLOCKED.** The retention and authorization policy is now specified and internally aligned with the captured schema, but external storage ownership, lifecycle schema/barrier, writer-wide participation, complete tests and implementation review remain unresolved.
+
+**GPT-6 authorization requested for policy review only. No corrective implementation, migration, operational cleanup, 160-race run, 20-handoff run, integration or merge is authorized.**
