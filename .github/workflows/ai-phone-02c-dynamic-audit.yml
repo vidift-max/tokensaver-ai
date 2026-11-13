@@ -151,6 +151,8 @@ jobs:
           path: |
             ai-phone-02c-run-context.txt
             ai-phone-02c-http.log
+            ai-phone-02d-repetitions.jsonl
+            ai-phone-02d-repetition-summary.txt
             ai-phone-02c-full-suite.log
             ai-phone-02c-frontend.log
             ai-phone-02c-evidence-manifest.txt
