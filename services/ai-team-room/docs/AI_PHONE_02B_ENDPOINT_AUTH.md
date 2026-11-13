@@ -53,7 +53,8 @@ All routes still require `Authorization: Bearer <AI-session-token>`.
 | `POST /ai-phone/{phone_id}/messages/{message_id}/ack` | `X-AI-Phone-Endpoint-Credential` | Mailbox acknowledgement |
 | `POST /ai-phone/{phone_id}/messages` | None beyond AI bearer and permission | AI-authorized durable send |
 | `POST /ai-phone/mission` | None beyond AI bearer and `task.transition` | Team Room task authority |
-| Presence and endpoint-list reads | None beyond AI bearer and `phone.read` | Control-plane metadata only |
+| `GET /ai-phone/{phone_id}/endpoints` | `X-AI-Phone-Operator-Key` plus `phone.endpoint.manage` | Operator-only endpoint inventory |
+| `GET /ai-phone/{phone_id}/presence` | None beyond AI bearer and `phone.read` | Derived presence state only |
 
 Registration returns `{ endpoint, endpoint_credential }`. The secret must be transferred to the target endpoint over the operator's secure channel; do not log it, store it in endpoint metadata, or expose it to the old endpoint process.
 
@@ -74,4 +75,4 @@ Endpoint-sensitive handlers lock the phone, attachment, endpoint, and credential
 
 - AI identity authority remains available for durable outbound messages, Team Room task ownership, and mission linkage subject to their existing permissions and tenant constraints.
 - Endpoint identity authority is mandatory for heartbeat, active endpoint snapshot, mailbox delivery/read, ACK, and lifecycle proof.
-- Presence and endpoint-list routes expose control-plane metadata only; they do not return the endpoint fence or credential secret.
+- Presence exposes only derived state to an AI session with `phone.read`. Endpoint inventory is operator-only: an AI bearer, even with `phone.read`, cannot enumerate endpoint IDs; the operator key and `phone.endpoint.manage` are both required. The inventory never returns fences or credential secrets.

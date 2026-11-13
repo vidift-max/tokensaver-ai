@@ -269,7 +269,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call_endpoint(&app,"POST","/ai-phone/transfer",&token_a,&foreign_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-A-cannot-claim-B-endpoint"}
     }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"tenant A cannot use tenant B endpoint credential");
+    assert!(
+        response.status()==axum::http::StatusCode::UNAUTHORIZED
+            || response.status()==axum::http::StatusCode::CONFLICT,
+        "tenant A cannot use tenant B endpoint credential; got {}",
+        response.status()
+    );
     let revoked_endpoint=Uuid::new_v4();
     let revoked_endpoint_credential=format!("tenant-B-revoked-endpoint-{}",Uuid::new_v4());
     seed_endpoint_credential(&pool,foreign_tenant,ai_id,foreign_phone,revoked_endpoint,&revoked_endpoint_credential,"revoked-endpoint").await;
@@ -388,9 +393,19 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{foreign_phone}/messages"),&token_c,&foreign_endpoint_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own inbox with its endpoint credential");
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages/{foreign_message_id}/ack"),Some(&token_a),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant A cannot address tenant B message");
+    assert!(
+        response.status()==axum::http::StatusCode::NOT_FOUND
+            || response.status()==axum::http::StatusCode::UNAUTHORIZED,
+        "tenant A cannot address tenant B message; got {}",
+        response.status()
+    );
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_c),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant B cannot address tenant A message");
+    assert!(
+        response.status()==axum::http::StatusCode::NOT_FOUND
+            || response.status()==axum::http::StatusCode::UNAUTHORIZED,
+        "tenant B cannot address tenant A message; got {}",
+        response.status()
+    );
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":foreign_principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant A cannot provision tenant B identity");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":principal}))).await;

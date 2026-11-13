@@ -672,16 +672,28 @@ async fn presence_handler(
 async fn endpoint_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap)
     -> Result<Json<Vec<PhoneEndpoint>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    require_permission(&pool, &identity, "phone.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
-    let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai_phones p JOIN ai_identity_principals m ON m.ai_id=p.ai_id AND m.tenant_id=p.tenant_id WHERE p.ai_phone_id=$1 AND p.tenant_id=$2 AND m.principal_id=$3)")
-        .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id)
-        .fetch_one(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !owns { return Err(StatusCode::NOT_FOUND); }
-    let endpoints = sqlx::query_as::<_, PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 AND tenant_id=$2 ORDER BY created_at,endpoint_id")
-        .bind(phone_id).bind(identity.tenant_id).fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    validate_live_binding(&mut tx, &identity).await.map_err(|error| match error {
+        PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+        PhoneError::Forbidden => StatusCode::FORBIDDEN,
+        PhoneError::NotFound => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
+    let phone = owned_phone(&mut tx, &identity).await.map_err(|error| match error {
+        PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+        PhoneError::Forbidden => StatusCode::FORBIDDEN,
+        PhoneError::NotFound => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })?;
+    if phone.ai_phone_id != phone_id { return Err(StatusCode::NOT_FOUND); }
+    require_endpoint_operator(&pool, &mut tx, &identity, phone.ai_id, &headers).await?;
+    let endpoints = sqlx::query_as::<_, PhoneEndpoint>(
+        "SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 ORDER BY created_at,endpoint_id"
+    ).bind(phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+      .fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(endpoints))
 }
-
 async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<Uuid>, headers: HeaderMap)
     -> Result<Json<Vec<PhoneMessage>>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;

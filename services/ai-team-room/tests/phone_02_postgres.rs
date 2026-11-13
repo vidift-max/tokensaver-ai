@@ -754,8 +754,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,None).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "AI bearer alone cannot ACK a mailbox message");
-    let (status,body)=call(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&token_2,None).await;
-    assert_eq!(status,StatusCode::OK,"AI authority may inspect endpoint metadata");
+    let endpoint_list_path=format!("/ai-phone/{phone_2_id}/endpoints");
+    let (status,_) = call(&app,"GET",&endpoint_list_path,&token_2,None).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,
+        "AI bearer alone cannot enumerate endpoint identities, including the replacement endpoint");
+    let (status,body)=call_with_headers(&app,"GET",&endpoint_list_path,&token_2,None,Some(&operator_key_2),None).await;
+    assert_eq!(status,StatusCode::OK,"endpoint inventory requires the separately provisioned operator key");
     let endpoint_metadata:Value=serde_json::from_slice(&body).unwrap();
     assert!(!endpoint_metadata.to_string().contains("endpoint_fence"));
     assert!(!endpoint_metadata.to_string().contains("endpoint_credential"));
