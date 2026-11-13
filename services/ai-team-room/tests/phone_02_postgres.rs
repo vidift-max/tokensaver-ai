@@ -821,6 +821,33 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let current_snapshot:Value=serde_json::from_slice(&body).unwrap();
     assert_eq!(current_snapshot["attachment"]["endpoint_id"],current_endpoint_id.to_string());
     assert_eq!(current_snapshot["attachment"]["endpoint_fence"],current_fence);
+
+    // Detach racing transfer: either detach commits first and transfer attaches after,
+    // or transfer commits first and the old detach is rejected by credential revocation.
+    let endpoint_7=Uuid::new_v4();
+    let (register_7_status,register_7_body)=call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({"endpoint_id":endpoint_7,"endpoint_type":"TEST","metadata":{"label":"detach-transfer-race"}}))).await;
+    assert_eq!(register_7_status,StatusCode::CREATED);
+    let register_7:Value=serde_json::from_slice(&register_7_body).unwrap();
+    let endpoint_7_credential=register_7["endpoint_credential"].as_str().unwrap().to_owned();
+    let (detach_race,transfer_race)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/detach",&token_2,Some(&current_endpoint_credential),None,
+            Some(serde_json::json!({"endpoint_fence":current_fence}))),
+        call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_7_credential),None,
+            Some(serde_json::json!({"endpoint_id":endpoint_7,"endpoint_type":"TEST","metadata":{"label":"detach-transfer-race"}})))
+    );
+    assert!(detach_race.0==StatusCode::NO_CONTENT || detach_race.0==StatusCode::UNAUTHORIZED,
+        "detach racing transfer either completes first or is rejected after old credential revocation");
+    assert_eq!(transfer_race.0,StatusCode::OK,"new endpoint transfer wins regardless of detach ordering");
+    let (status,body)=call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&endpoint_7_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK);
+    let final_snapshot:Value=serde_json::from_slice(&body).unwrap();
+    assert_eq!(final_snapshot["attachment"]["endpoint_id"],endpoint_7.to_string());
+    let current_endpoint_id=endpoint_7;
+    let current_endpoint_credential=endpoint_7_credential;
+    let current_fence=final_snapshot["attachment"]["endpoint_fence"].as_i64().unwrap();
+
     // Adversarial revocation: an ACTIVE attachment must stop working as soon as
     // its endpoint is marked REVOKED, even when the fencing generation is current.
     let (status, body) = call(
@@ -840,9 +867,15 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status, _) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
         Some(&current_endpoint_credential),None,None).await;
     assert_eq!(status,StatusCode::OK,"probe message is delivered before revocation");
-    sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
-        .bind(current_endpoint_id).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
-        .execute(&pool).await.unwrap();
+    let (heartbeat_during_revoke,revoke_result)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&current_endpoint_credential),None,
+            Some(serde_json::json!({"endpoint_fence":current_fence}))),
+        sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
+            .bind(current_endpoint_id).bind(phone_2_id).bind(tenant_id).bind(ai_2_id).execute(&pool)
+    );
+    assert!(heartbeat_during_revoke.0==StatusCode::OK || heartbeat_during_revoke.0==StatusCode::UNAUTHORIZED,
+        "heartbeat racing REVOKED either commits before revocation or is rejected after it");
+    assert_eq!(revoke_result.unwrap().rows_affected(),1);
 
     let (status, body) = call(
         &app,
