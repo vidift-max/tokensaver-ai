@@ -891,12 +891,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (heartbeat_during_revoke,revoke_result)=tokio::join!(
         call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&current_endpoint_credential),None,
             Some(serde_json::json!({"endpoint_fence":current_fence}))),
-        sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
-            .bind(current_endpoint_id).bind(phone_2_id).bind(tenant_id).bind(ai_2_id).execute(&pool)
+        call_with_headers(&app,"POST",&format!("/ai-phone/endpoints/{current_endpoint_id}/revoke"),&token_2,
+            None,Some(&operator_key_2),None)
     );
     assert!(heartbeat_during_revoke.0==StatusCode::OK || heartbeat_during_revoke.0==StatusCode::UNAUTHORIZED,
-        "heartbeat racing REVOKED either commits before revocation or is rejected after it");
-    assert_eq!(revoke_result.unwrap().rows_affected(),1);
+        "heartbeat racing operator revocation either commits first or is rejected after revocation");
+    assert_eq!(revoke_result.0,StatusCode::NO_CONTENT,"operator revocation is atomic with endpoint fencing");
 
     let (status, body) = call(
         &app,
