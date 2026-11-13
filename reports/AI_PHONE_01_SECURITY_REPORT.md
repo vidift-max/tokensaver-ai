@@ -75,3 +75,51 @@ The PostgreSQL integration test is being expanded to exercise two authenticated 
 ## 6. Final evidence fields
 
 The final report must fill in the exact branch HEAD, PostgreSQL 16 workflow run, Cargo check/test conclusions, frontend build status, and SHA-256 manifest. Until those fields are complete and green, do not classify the phone MVP as ready.
+
+
+## 7. CHECKPOINT_PARTIAL — 2026-11-12
+
+**Checkpoint recorded from:** `349ee06f1bd6223158c11d406ffa9404930105ba`  
+**State at checkpoint:** implementation remains partial; no merge performed.  
+**Latest exact-SHA CI evidence:** workflow `43298891075`, commit `349ee06f1bd6223158c11d406ffa9404930105ba`, conclusion `success`.
+
+### Completed / evidenced
+
+- Tenant-scoped phone schema and composite constraints are present in migration `0012_ai_phone_tenant_isolation.sql`; explicit provisioning and read-only `GET /ai-phone/me` are implemented in the service.
+- Phone, endpoint, attachment, message, ACK, presence, and Team Room mission/task paths have tenant-scoping changes.
+- Endpoint UUID claim/replay handling was hardened, including race-safe inserts and stale/revoked endpoint rejection.
+- A responsive React phone surface exists at `src/AIPhone.tsx` and is wired into `src/TeamRoom.tsx`.
+- Architecture, migration-compatibility, remediation-design, and security reports exist.
+- GitHub Actions ran PostgreSQL **16.15**. On the exact code SHA above, `cargo check --manifest-path services/ai-team-room/Cargo.toml` passed and `cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output` passed. The log reports test binaries: 6 + 9 + 3 + 4 + 1 tests, all passing (23 total).
+- The passing PostgreSQL test `phone_identity_survives_session_rotation_and_endpoint_change` includes the phone continuity, tenant-separation, structural-FK, endpoint, and mailbox assertions added to that integration scenario.
+- Evidence artifact: `ai-phone-tenant-isolation-fix-43298891075`, artifact ID `13980447172`.
+
+### Partially completed / not yet accepted as complete
+
+- Migration 0012 has fail-closed compatibility guards, but no real legacy production-like snapshot was available; migration against a legacy dataset remains `NOT_RUN — ENVIRONMENT LIMITATION`.
+- The PostgreSQL CI suite proves the current integration fixture, not a production rollout or exhaustive proof of every listed cross-tenant resource/action.
+- UI source is present; browser E2E, accessibility, responsive-device validation, and frontend production build are not evidenced in this checkpoint.
+- The backend suite exercises a same-tenant AI-to-AI offline-message flow in the expanded integration test, but a separately deployed multi-process live communication demonstration is not evidenced.
+- No production database was migrated or modified.
+
+### Failed / superseded CI runs
+
+- `43297948264` — failed at the PostgreSQL integration/adversarial test step; Cargo check passed.
+- `43298134870` — failed at the PostgreSQL integration/adversarial test step; Cargo check passed.
+- The later exact-SHA run `43298891075` passed. Do not treat earlier failures as current failures, but retain them as iteration history. The retrieved logs did not expose a reliable root-cause line for those two failures, so no cause is asserted here.
+
+### Not run / outstanding
+
+- Frontend build, browser E2E, accessibility checks, `cargo fmt --check`, and a separate full `cargo test` command outside the passing GitHub workflow: `NOT_RUN — ENVIRONMENT LIMITATION` / not evidenced.
+- Migration execution against a representative pre-0012 legacy snapshot.
+- Independent adversarial coverage for all endpoint/session/key/attachment/mailbox/message/ACK/task/mission/checkpoint/handoff permutations and concurrency/replay combinations.
+- SHA-256 manifest of all delivered files.
+- Final independent security review and final verdict.
+
+### Next continuation actions
+
+1. Continue from the branch HEAD recorded in the checkpoint report (the checkpoint-only commit may advance HEAD; re-read it before any code changes).
+2. Review the complete migration 0012 against the actual predecessor schema and run it against a representative PostgreSQL 16 legacy snapshot.
+3. Expand adversarial and concurrency tests for all acceptance-matrix rows, preserving Team Room as task/lease/checkpoint/handoff authority.
+4. Run frontend build, browser E2E, accessibility, formatting, and exact-SHA CI; generate SHA-256 manifest.
+5. Do not merge or claim `PHONE_MVP_READY_FOR_REVIEW` until all acceptance criteria have evidence.
