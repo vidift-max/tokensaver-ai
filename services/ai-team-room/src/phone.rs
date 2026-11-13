@@ -184,7 +184,7 @@ pub async fn get_my_phone(pool: &PgPool, identity: &AuthenticatedIdentity) -> Re
     let mut tx = pool.begin().await?;
     let phone = owned_phone(&mut tx, identity).await?;
     let attachment = sqlx::query_as::<_, AttachmentRecord>(
-        "SELECT attachment_id,ai_phone_id,endpoint_id,endpoint_fence,attachment_status,attached_at,detached_at FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND attachment_status='ACTIVE'"
+        "SELECT a.attachment_id,a.ai_phone_id,a.endpoint_id,a.endpoint_fence,a.attachment_status,a.attached_at,a.detached_at FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.attachment_status='ACTIVE' AND e.endpoint_status='ATTACHED'"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).fetch_optional(&mut *tx).await?;
     let mission = if let Some(task_id) = phone.current_task_id {
         Some(sqlx::query_scalar::<_, Value>(
@@ -232,7 +232,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
         }
         sqlx::query("UPDATE phone_attachments SET attachment_status='FENCED',detached_at=NOW() WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3")
             .bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=(SELECT endpoint_id FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3) AND tenant_id=$2 AND ai_id=$3")
+        sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=(SELECT endpoint_id FROM phone_attachments WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3) AND tenant_id=$2 AND ai_id=$3 AND endpoint_status<>'REVOKED'")
             .bind(current_attachment).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     }
 
@@ -289,7 +289,7 @@ pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64)
       .ok_or(PhoneError::Fenced)?;
     sqlx::query("UPDATE phone_attachments SET attachment_status='DETACHED',detached_at=NOW() WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3")
         .bind(active.0).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
-    sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
+    sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status<>'REVOKED'")
         .bind(active.1).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
         .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
@@ -313,7 +313,7 @@ pub async fn heartbeat(
     validate_live_binding(&mut tx, identity).await?;
     let phone = owned_phone(&mut tx, identity).await?;
     let last_seen: DateTime<Utc> = sqlx::query_scalar(
-        "UPDATE phone_endpoints e SET last_seen_at=NOW() FROM phone_attachments a,ai_phones p WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND e.tenant_id=$2 AND e.ai_id=$3 AND a.endpoint_id=e.endpoint_id AND a.ai_phone_id=p.ai_phone_id AND p.tenant_id=$2 AND p.ai_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=$6 AND p.endpoint_fence=$6 RETURNING e.last_seen_at"
+        "UPDATE phone_endpoints e SET last_seen_at=NOW() FROM phone_attachments a,ai_phones p WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND e.tenant_id=$2 AND e.ai_id=$3 AND a.endpoint_id=e.endpoint_id AND a.ai_phone_id=p.ai_phone_id AND p.tenant_id=$2 AND p.ai_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND e.endpoint_status='ATTACHED' AND a.endpoint_fence=$6 AND p.endpoint_fence=$6 RETURNING e.last_seen_at"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(identity.session_id).bind(identity.execution_id).bind(endpoint_fence)
       .fetch_optional(&mut *tx).await?.ok_or(PhoneError::Fenced)?;
     sqlx::query("UPDATE ai_phones SET last_seen_at=$1 WHERE ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
@@ -470,11 +470,12 @@ async fn message_list_handler(State(pool): State<PgPool>, Path(phone_id): Path<U
     let owned = owned_phone(&mut tx, &identity).await.map_err(|_| StatusCode::NOT_FOUND)?;
     if owned.ai_phone_id != phone_id { return Err(StatusCode::NOT_FOUND); }
     validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
-    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND ip.principal_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id JOIN ai_phones p ON p.ai_phone_id=a.ai_phone_id AND p.tenant_id=a.tenant_id AND p.ai_id=a.ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND ip.principal_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND e.endpoint_status='ATTACHED' AND a.endpoint_fence=p.endpoint_fence)")
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(identity.session_id).bind(identity.execution_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !active { return Err(StatusCode::PRECONDITION_FAILED); }
-    let delivered_count = sqlx::query("UPDATE phone_messages m SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() FROM ai_phones p WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id AND m.message_state='PENDING'")
-        .bind(phone_id).bind(identity.tenant_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
+    let delivered_count = sqlx::query("UPDATE phone_messages m SET message_state='DELIVERED',delivered_at=COALESCE(delivered_at,NOW()),attempt_count=attempt_count+1,updated_at=NOW() FROM ai_phones p WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id AND m.message_state='PENDING' AND EXISTS(SELECT 1 FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id AND a.session_id=$3 AND a.execution_id=$4 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence AND e.endpoint_status='ATTACHED')")
+        .bind(phone_id).bind(identity.tenant_id).bind(identity.session_id).bind(identity.execution_id)
+        .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.rows_affected();
     if delivered_count > 0 {
         record_phone_event(&mut tx, &identity, phone_id, "PHONE_MESSAGE_DELIVERED",
             "phone.message.delivered", serde_json::json!({"count":delivered_count})
@@ -526,10 +527,10 @@ async fn ack_handler(State(pool): State<PgPool>, Path((phone_id,message_id)): Pa
     require_permission(&pool, &identity, "phone.message.ack").await.map_err(|_| StatusCode::FORBIDDEN)?;
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
-    let updated = sqlx::query("UPDATE phone_messages m SET message_state='ACK',acknowledged_at=NOW(),updated_at=NOW() FROM ai_phones p WHERE m.message_id=$1 AND m.ai_phone_id=$2 AND m.tenant_id=$4 AND m.recipient_ai_id=p.ai_id AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=$4 AND m.message_state='DELIVERED' AND EXISTS(SELECT 1 FROM phone_attachments a WHERE a.ai_phone_id=$2 AND a.tenant_id=$4 AND a.ai_id=p.ai_id AND a.session_id=$3 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+    let updated = sqlx::query("UPDATE phone_messages m SET message_state='ACK',acknowledged_at=NOW(),updated_at=NOW() FROM ai_phones p WHERE m.message_id=$1 AND m.ai_phone_id=$2 AND m.tenant_id=$4 AND m.recipient_ai_id=p.ai_id AND p.ai_phone_id=m.ai_phone_id AND p.tenant_id=$4 AND m.message_state='DELIVERED' AND EXISTS(SELECT 1 FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE a.ai_phone_id=$2 AND a.tenant_id=$4 AND a.ai_id=p.ai_id AND a.session_id=$3 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence AND e.endpoint_status='ATTACHED')")
         .bind(message_id).bind(phone_id).bind(identity.session_id).bind(identity.tenant_id).bind(identity.execution_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if updated.rows_affected()==0 {
-        let already_acked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id JOIN phone_attachments a ON a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id WHERE m.message_id=$1 AND m.ai_phone_id=$2 AND m.tenant_id=$4 AND m.message_state='ACK' AND ip.principal_id=$6 AND a.session_id=$3 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence)")
+        let already_acked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id JOIN ai_identity_principals ip ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id JOIN phone_attachments a ON a.ai_phone_id=p.ai_phone_id AND a.tenant_id=p.tenant_id AND a.ai_id=p.ai_id JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE m.message_id=$1 AND m.ai_phone_id=$2 AND m.tenant_id=$4 AND m.message_state='ACK' AND ip.principal_id=$6 AND a.session_id=$3 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND a.endpoint_fence=p.endpoint_fence AND e.endpoint_status='ATTACHED')")
             .bind(message_id).bind(phone_id).bind(identity.session_id).bind(identity.tenant_id).bind(identity.execution_id).bind(identity.principal_id)
             .fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if already_acked {
