@@ -12,6 +12,7 @@ A valid AI bearer is not an endpoint credential. A fencing number is not a crede
 
 ## Credential format and persistence
 
+- Migration 0013 fences and disconnects any pre-02B active attachment because it has no endpoint credential to prove endpoint identity. The durable phone, mailbox and Team Room state remain; an operator must re-enroll the endpoint and reconnect it with a new credential before it can resume endpoint operations.
 - Endpoint credentials are 32 bytes from the operating-system CSPRNG, encoded as URL-safe Base64 without padding.
 - The endpoint credential is returned once in the endpoint-registration response to the separately authorized operator for secure delivery to that endpoint.
 - PostgreSQL stores only SHA-256 digests in `phone_endpoint_credentials.credential_hash`; raw endpoint credentials are never stored.
