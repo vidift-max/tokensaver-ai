@@ -119,7 +119,6 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
     for (index, actor) in actors.iter().enumerate() {
         let pool = pool.clone();
         let identity = actor.identity.clone();
-        let phone_id = actor.phone_id;
         tasks.spawn(async move {
             attach(&pool, &identity, AttachRequest {
                 endpoint_id: Uuid::new_v4(), endpoint_type: "TEST".into(),
@@ -175,7 +174,7 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
     // Each listed phone exposes its current endpoint, session, execution and
     // heartbeat, without copying any identity or lifecycle state elsewhere.
     let all = http_call(&app, "GET", "/ai-phone/registry?limit=100", Some(&actors[0].token)).await;
-    let all: Value = serde_json::from_slice(&axum::body::to_bytes(all.into_body(), 100_000).await.unwrap()).await.unwrap();
+    let all: Value = serde_json::from_slice(&axum::body::to_bytes(all.into_body(), 100_000).await.unwrap()).unwrap();
     for item in all["items"].as_array().unwrap() {
         assert!(item["active_endpoint_id"].is_string());
         assert!(item["active_session_id"].is_string());
@@ -193,20 +192,18 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         "revoking the querying session also revokes registry access");
     
     // Disposable cleanup; no permanent AI Phone is created.
+    sqlx::query("DELETE FROM phone_messages WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM phone_attachments WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM phone_endpoints WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_phones WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id IN ($1,$2)")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id IN (SELECT ai_id FROM ai_identity_principals WHERE tenant_id IN ($1,$2))")
+        .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id IN ($1,$2)")
         .bind(tenant).bind(foreign_tenant).execute(&pool).await.unwrap();
-    for actor in &actors {
-        let ai_id: Uuid = sqlx::query_scalar("SELECT ai_id FROM ai_phones WHERE ai_phone_id=$1")
-            .bind(actor.phone_id).fetch_optional(&pool).await.unwrap().unwrap_or(Uuid::nil());
-        let _ = ai_id;
-    }
-    // ai_phones and dependent rows are restricted; explicitly remove fixture-owned
-    // rows in dependency order, then tenant records.
-    sqlx::query("DELETE FROM phone_attachments WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM phone_endpoints WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM ai_phones WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM ai_identity_principals WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("DELETE FROM ai_identities WHERE ai_id IN (SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1)").bind(tenant).execute(&pool).await.unwrap();
-    let _ = foreign_room;
 }
