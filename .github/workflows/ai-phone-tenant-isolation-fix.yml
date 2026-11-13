@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/ai-phone-01-tenant-isolation
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,10 +32,19 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_isolation_test
+      IMPLEMENTATION_SHA: 673ef169709dbfea906128205f0fd544df0555a3
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.IMPLEMENTATION_SHA }}
+          fetch-depth: 0
+      - name: Verify exact implementation SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$IMPLEMENTATION_SHA"
+          echo "Validated implementation SHA: $actual"
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
