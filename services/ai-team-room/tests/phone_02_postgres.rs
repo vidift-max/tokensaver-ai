@@ -121,6 +121,7 @@ async fn grant_permissions(pool: &PgPool, tenant_id: Uuid, room_id: Uuid, princi
         "phone.attach",
         "phone.detach",
         "phone.transfer",
+        "phone.endpoint.manage",
         "phone.heartbeat",
         "phone.message.read",
         "phone.message.send",
@@ -161,17 +162,25 @@ async fn grant_permission(
     .unwrap();
 }
 
-async fn call(
+async fn call_with_headers(
     app: &Router,
     method: &str,
     uri: &str,
     token: &str,
+    endpoint_credential: Option<&str>,
+    operator_key: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Vec<u8>) {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
         .header("authorization", format!("Bearer {token}"));
+    if let Some(secret)=endpoint_credential {
+        builder=builder.header("x-ai-phone-endpoint-credential",secret);
+    }
+    if let Some(secret)=operator_key {
+        builder=builder.header("x-ai-phone-operator-key",secret);
+    }
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
     }
@@ -189,6 +198,16 @@ async fn call(
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
     (status, bytes.to_vec())
+}
+
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Vec<u8>) {
+    call_with_headers(app,method,uri,token,None,None,body).await
 }
 
 #[tokio::test]
