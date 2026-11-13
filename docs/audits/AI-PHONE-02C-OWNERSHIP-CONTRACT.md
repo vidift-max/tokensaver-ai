@@ -1444,6 +1444,6 @@ The adversarial review is a design review, not a test result. No mitigation abov
 
 **Integrated result: BLOCKED — NOT APPROVED FOR IMPLEMENTATION.**
 
-The architecture has a conservative lifecycle model and explicit retention boundaries, but four critical dependencies remain blocked and the shared-resource writer context is incomplete. No implementation, migration, production-code change, operational cleanup, tenant/identity deletion, operator-key revocation, session/workload revocation, 160-race test, 20-handoff test, integration or merge is authorized.
+The architecture has a conservative lifecycle model and explicit retention boundaries, but five critical dependencies remain blocked and the shared-resource writer context is incomplete. No implementation, migration, production-code change, operational cleanup, tenant/identity deletion, operator-key revocation, session/workload revocation, 160-race test, 20-handoff test, integration or merge is authorized.
 
 This addendum is documentary only. Any later implementation requires a separate, explicit GPT-6 authorization after the blocked evidence is supplied. A green CI workflow would not, by itself, change this decision.
