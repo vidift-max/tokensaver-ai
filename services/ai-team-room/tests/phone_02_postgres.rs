@@ -717,19 +717,103 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status,body)=call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
         None,Some(&operator_key_2),Some(serde_json::json!({"endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}}))).await;
     assert_eq!(status,StatusCode::CREATED);
-    let endpoint_4_registration:Value=serde_json::from_slice(&body).unwrap();
-    let endpoint_4_credential=endpoint_4_registration["endpoint_credential"].as_str().unwrap().to_owned();
+    let endpoint_4_initial:Value=serde_json::from_slice(&body).unwrap();
+    let endpoint_4_initial_credential=endpoint_4_initial["endpoint_credential"].as_str().unwrap().to_owned();
+
+    // Two concurrent credential rotations serialize on the phone row. Exactly one digest remains ACTIVE.
+    let register_body=serde_json::json!({"endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}});
+    let (rotation_a,rotation_b)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,None,Some(&operator_key_2),Some(register_body.clone())),
+        call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,None,Some(&operator_key_2),Some(register_body))
+    );
+    assert_eq!(rotation_a.0,StatusCode::CREATED);
+    assert_eq!(rotation_b.0,StatusCode::CREATED);
+    let rotation_a:Value=serde_json::from_slice(&rotation_a.1).unwrap();
+    let rotation_b:Value=serde_json::from_slice(&rotation_b.1).unwrap();
+    let endpoint_4_credential_a=rotation_a["endpoint_credential"].as_str().unwrap().to_owned();
+    let endpoint_4_credential_b=rotation_b["endpoint_credential"].as_str().unwrap().to_owned();
+    let active_hash:Vec<u8>=sqlx::query_scalar("SELECT credential_hash FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
+        .bind(endpoint_4).fetch_one(&pool).await.unwrap();
+    assert_eq!(active_hash==Sha256::digest(endpoint_4_credential_a.as_bytes()).to_vec()
+        || active_hash==Sha256::digest(endpoint_4_credential_b.as_bytes()).to_vec(),true,
+        "exactly one concurrently issued secret matches the sole active credential hash");
+    let endpoint_4_credential=if active_hash==Sha256::digest(endpoint_4_credential_a.as_bytes()).to_vec() {
+        endpoint_4_credential_a.clone()
+    } else { endpoint_4_credential_b.clone() };
+    let active_credential_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
+        .bind(endpoint_4).fetch_one(&pool).await.unwrap();
+    assert_eq!(active_credential_count,1);
+    let initial_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE credential_hash=$1")
+        .bind(Sha256::digest(endpoint_4_initial_credential.as_bytes()).to_vec()).fetch_one(&pool).await.unwrap();
+    assert_eq!(initial_status,"REVOKED","credential rotation invalidates the previous secret");
     let (status,_) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
         Some(&endpoint_4_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
-        "credential of another registered endpoint cannot authenticate the active endpoint");
-    let (status, body) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
-        Some(&endpoint_3_credential),None,None).await;
-    assert_eq!(status,StatusCode::OK,"only endpoint B's new credential can recover its own generation");
-    let current_snapshot:Value=serde_json::from_slice(&body).unwrap();
-    assert_eq!(current_snapshot["attachment"]["endpoint_id"],endpoint_3.to_string());
-    assert_eq!(current_snapshot["attachment"]["endpoint_fence"],transfer_fence);
+        "registered-but-unattached endpoint credential cannot impersonate the active endpoint");
 
+    // Two simultaneous transfers plus heartbeat and ACK race against the old generation.
+    let endpoint_5=Uuid::new_v4();
+    let endpoint_6=Uuid::new_v4();
+    let (reg5,reg6)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,None,Some(&operator_key_2),
+            Some(serde_json::json!({"endpoint_id":endpoint_5,"endpoint_type":"TEST","metadata":{"label":"transfer-race-5"}}))),
+        call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,None,Some(&operator_key_2),
+            Some(serde_json::json!({"endpoint_id":endpoint_6,"endpoint_type":"TEST","metadata":{"label":"transfer-race-6"}})))
+    );
+    assert_eq!(reg5.0,StatusCode::CREATED);
+    assert_eq!(reg6.0,StatusCode::CREATED);
+    let reg5:Value=serde_json::from_slice(&reg5.1).unwrap();
+    let reg6:Value=serde_json::from_slice(&reg6.1).unwrap();
+    let endpoint_5_credential=reg5["endpoint_credential"].as_str().unwrap().to_owned();
+    let endpoint_6_credential=reg6["endpoint_credential"].as_str().unwrap().to_owned();
+
+    let (status,body)=call(&app,"POST",&phone_2_messages_path,&token_1,
+        Some(serde_json::json!({"idempotency_key":"phone-02-transfer-race-ack","content":{"text":"ACK races endpoint transfer"}}))).await;
+    assert_eq!(status,StatusCode::CREATED);
+    let race_message:Value=serde_json::from_slice(&body).unwrap();
+    let race_message_id=race_message["message_id"].as_str().unwrap().to_owned();
+    let (status,_) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK,"old generation can deliver before concurrent transfer");
+
+    let transfer_body_5=serde_json::json!({"endpoint_id":endpoint_5,"endpoint_type":"TEST","metadata":{"label":"transfer-race-5"}});
+    let transfer_body_6=serde_json::json!({"endpoint_id":endpoint_6,"endpoint_type":"TEST","metadata":{"label":"transfer-race-6"}});
+    let (transfer_5,transfer_6,heartbeat_old,ack_old)=tokio::join!(
+        call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_5_credential),None,Some(transfer_body_5)),
+        call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_6_credential),None,Some(transfer_body_6)),
+        call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&endpoint_3_credential),None,
+            Some(serde_json::json!({"endpoint_fence":transfer_fence}))),
+        call_with_headers(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages/{race_message_id}/ack"),&token_2,
+            Some(&endpoint_3_credential),None,None)
+    );
+    assert_eq!(transfer_5.0,StatusCode::OK,"first concurrent transfer is serialized and succeeds");
+    assert_eq!(transfer_6.0,StatusCode::OK,"second concurrent transfer serializes after the first");
+    assert!(heartbeat_old.0==StatusCode::OK || heartbeat_old.0==StatusCode::UNAUTHORIZED,
+        "heartbeat racing transfer either commits before the fence or is rejected after it");
+    assert!(ack_old.0==StatusCode::NO_CONTENT || ack_old.0==StatusCode::UNAUTHORIZED,
+        "ACK racing transfer either commits before the fence or is rejected after it");
+
+    let (current_endpoint_id,current_fence):(Uuid,i64)=sqlx::query_as(
+        "SELECT a.endpoint_id,a.endpoint_fence FROM phone_attachments a WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.attachment_status='ACTIVE'"
+    ).bind(phone_2_id).bind(tenant_id).bind(ai_2_id).fetch_one(&pool).await.unwrap();
+    assert!(current_endpoint_id==endpoint_5 || current_endpoint_id==endpoint_6,
+        "exactly one target endpoint owns the final generation");
+    let current_endpoint_credential=if current_endpoint_id==endpoint_5 {endpoint_5_credential.clone()} else {endpoint_6_credential.clone()};
+    let active_race_credentials:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_endpoint_credentials WHERE endpoint_id IN ($1,$2) AND credential_status='ACTIVE'")
+        .bind(endpoint_5).bind(endpoint_6).fetch_one(&pool).await.unwrap();
+    assert_eq!(active_race_credentials,1,"two concurrent transfers leave exactly one active target credential");
+    let old_generation_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_hash=$2")
+        .bind(endpoint_3).bind(Sha256::digest(endpoint_3_credential.as_bytes()).to_vec()).fetch_one(&pool).await.unwrap();
+    assert_eq!(old_generation_status,"REVOKED","credential of the previous generation is revoked atomically");
+    let (status,_) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"transferred-away endpoint cannot recover the final generation");
+    let (status,body)=call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&current_endpoint_credential),None,None).await;
+    assert_eq!(status,StatusCode::OK);
+    let current_snapshot:Value=serde_json::from_slice(&body).unwrap();
+    assert_eq!(current_snapshot["attachment"]["endpoint_id"],current_endpoint_id.to_string());
+    assert_eq!(current_snapshot["attachment"]["endpoint_fence"],current_fence);
     // Adversarial revocation: an ACTIVE attachment must stop working as soon as
     // its endpoint is marked REVOKED, even when the fencing generation is current.
     let (status, body) = call(
