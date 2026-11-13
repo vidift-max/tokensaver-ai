@@ -141,6 +141,26 @@ async fn grant_permissions(pool: &PgPool, tenant_id: Uuid, room_id: Uuid, princi
     }
 }
 
+async fn grant_permission(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    room_id: Uuid,
+    principal_id: Uuid,
+    permission: &str,
+) {
+    sqlx::query(
+        "INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(tenant_id)
+    .bind(principal_id)
+    .bind(room_id)
+    .bind(permission)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn call(
     app: &Router,
     method: &str,
@@ -196,7 +216,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
 
     let (ai_1_principal, _, ai_1_session, _, _, _) =
         add_ai(&pool, tenant_id, room_id, "AI-PHONE-01-TEST").await;
-    let (ai_2_principal, _, ai_2_session, _, _, _) =
+    let (ai_2_principal, ai_2_participant, ai_2_session, ai_2_execution, _, _) =
         add_ai(&pool, tenant_id, room_id, "AI-PHONE-02-TEST").await;
     grant_permissions(&pool, tenant_id, room_id, ai_1_principal).await;
     grant_permissions(&pool, tenant_id, room_id, ai_2_principal).await;
@@ -477,6 +497,214 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "duplicate ACK is idempotent");
+
+    // Team Room remains the task authority: Phone #2 can link only a task owned by AI #2.
+    let ai_2_task = Uuid::new_v4();
+    let ai_2_mission = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,status,owner_principal_id,owner_participant_id,owner_session_id,owner_execution_id,fencing_token,lease_issued_at,lease_expires_at,created_by_principal_id) VALUES($1,$2,$3,$4,'AI-PHONE-02 mission ownership','OWNED',$5,$6,$7,$8,1,NOW(),NOW()+INTERVAL '60 seconds',$5)",
+    )
+    .bind(ai_2_task)
+    .bind(tenant_id)
+    .bind(room_id)
+    .bind(ai_2_mission)
+    .bind(ai_2_principal)
+    .bind(ai_2_participant)
+    .bind(ai_2_session)
+    .bind(ai_2_execution)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/mission",
+        &token_2,
+        Some(serde_json::json!({"task_id": ai_2_task})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "task.read alone cannot change Phone #2 mission linkage"
+    );
+    grant_permission(&pool, tenant_id, room_id, ai_2_principal, "task.transition").await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/mission",
+        &token_2,
+        Some(serde_json::json!({"task_id": ai_2_task})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "AI #2 with task.transition can link its own Team Room task"
+    );
+    grant_permission(&pool, tenant_id, room_id, ai_1_principal, "task.transition").await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/mission",
+        &token_1,
+        Some(serde_json::json!({"task_id": ai_2_task})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "AI #1 cannot link AI #2-owned task to Phone #1"
+    );
+    let (status, body) = call(&app, "GET", "/ai-phone/me", &token_2, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let linked_phone_2: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(linked_phone_2["phone"]["current_task_id"], ai_2_task.to_string());
+    assert_eq!(linked_phone_2["phone"]["current_mission_id"], ai_2_mission.to_string());
+
+    // Phone #2 lifecycle: heartbeat, detach, stale-fence rejection, reconnect and transfer.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/heartbeat",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": initial_fence})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "current Phone #2 endpoint heartbeat succeeds");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/detach",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": initial_fence})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "Phone #2 endpoint detaches");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/heartbeat",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": initial_fence})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "detached Phone #2 endpoint cannot heartbeat with stale fence"
+    );
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/ai-phone/reconnect",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_2,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-endpoint"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Phone #2 reconnects using its registered endpoint");
+    let reconnect: Value = serde_json::from_slice(&body).unwrap();
+    let reconnect_fence = reconnect["endpoint_fence"].as_i64().unwrap();
+    assert!(reconnect_fence > initial_fence, "reconnect advances the endpoint fence");
+
+    let endpoint_3 = Uuid::new_v4();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/endpoints/register",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_3,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-transfer-target"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/ai-phone/transfer",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_3,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-transfer-target"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Phone #2 endpoint transfer succeeds");
+    let transfer: Value = serde_json::from_slice(&body).unwrap();
+    let transfer_fence = transfer["endpoint_fence"].as_i64().unwrap();
+    assert!(transfer_fence > reconnect_fence, "transfer advances fencing token");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/heartbeat",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": reconnect_fence})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "transferred-away endpoint cannot heartbeat with its old fence"
+    );
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/detach",
+        &token_2,
+        Some(serde_json::json!({"endpoint_fence": transfer_fence})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let revoked_endpoint = Uuid::new_v4();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/endpoints/register",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": revoked_endpoint,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-revoked"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
+        .bind(revoked_endpoint)
+        .bind(phone_2_id)
+        .bind(tenant_id)
+        .bind(ai_2_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/attach",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": revoked_endpoint,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-revoked"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "revoked endpoint cannot be reattached to Phone #2"
+    );
 
     let cross_tenant_id = Uuid::new_v4();
     let cross_tenant_room = Uuid::new_v4();
