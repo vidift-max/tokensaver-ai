@@ -404,4 +404,15 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=ANY($1::uuid[])").bind(&ai_ids).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=ANY($1::uuid[])").bind(&ai_ids).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+
+    let residual_phones: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_phones WHERE tenant_id=$1")
+        .bind(tenant).fetch_one(&pool).await.unwrap();
+    let residual_identities: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identity_tenants WHERE tenant_id=$1")
+        .bind(tenant).fetch_one(&pool).await.unwrap();
+    let tenant_remains: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id=$1)")
+        .bind(tenant).fetch_one(&pool).await.unwrap();
+    assert_eq!(residual_phones, 0, "all seven disposable phones must be removed");
+    assert_eq!(residual_identities, 0, "all disposable AI identity bindings must be removed");
+    assert!(!tenant_remains, "the disposable tenant must be removed");
+    println!("SCALE_1_TO_7_CLEANUP=PASS");
 }
