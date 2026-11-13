@@ -1,0 +1,145 @@
+name: AI-PHONE-02C Independent Dynamic Audit
+
+on:
+  push:
+    branches:
+      - audit/ai-phone-02c-execution
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-02c-dynamic-audit
+  cancel-in-progress: false
+
+jobs:
+  dynamic-audit:
+    name: Exact-SHA HTTP + PostgreSQL + WebSocket audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_02c_audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_02c_audit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_02c_audit
+      TARGET_SHA: ebb8eeecfea087443c5f3eba7021e96cb5302fe7
+    steps:
+      - name: Checkout audit harness and workflow
+        uses: actions/checkout@v4
+        with:
+          ref: audit/ai-phone-02c-execution
+          path: audit-harness
+          fetch-depth: 0
+
+      - name: Checkout immutable implementation SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+
+      - name: Verify exact implementation and harness provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C target rev-parse HEAD)"
+          test "$actual" = "$TARGET_SHA"
+          printf 'TARGET_SHA=%s\nTARGET_HEAD=%s\nHARNESS_SHA=%s\nWORKFLOW_SHA=%s\nRUN_ID=%s\nEVENT=%s\n' \
+            "$TARGET_SHA" "$actual" "$(git -C audit-harness rev-parse HEAD)" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_EVENT_NAME" \
+            | tee ai-phone-02c-run-context.txt
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Confirm PostgreSQL 16 disposable database
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SELECT current_setting('server_version_num'); SELECT current_setting('transaction_read_only');"
+
+      - name: Inject audit-only HTTP test into exact target worktree
+        run: |
+          set -euo pipefail
+          install -D audit-harness/services/ai-team-room/tests/ai_phone_02c_network.rs \
+            target/services/ai-team-room/tests/ai_phone_02c_network.rs
+          rustfmt --edition 2021 --check target/services/ai-team-room/tests/ai_phone_02c_network.rs
+
+      - name: Cargo check exact implementation
+        working-directory: target
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+
+      - name: Legacy migration compatibility on PostgreSQL 16
+        working-directory: target
+        run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
+
+      - name: New real-TCP HTTP adversarial Phone audit
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml --test ai_phone_02c_network -- --show-output 2>&1 | tee ../ai-phone-02c-http.log
+
+      - name: Full exact-SHA PostgreSQL, Registry, scale, Team Room and WebSocket suite
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ../ai-phone-02c-full-suite.log
+
+      - name: Frontend production build from exact implementation tree
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install
+          npm run build 2>&1 | tee ../ai-phone-02c-frontend.log
+
+      - name: Build reproducibility and evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "TARGET_SHA=$TARGET_SHA"
+            echo "TARGET_HEAD=$(git -C target rev-parse HEAD)"
+            echo "HARNESS_SHA=$(git -C audit-harness rev-parse HEAD)"
+            echo "WORKFLOW_SHA=$GITHUB_SHA"
+            echo "WORKFLOW_RUN_ID=$GITHUB_RUN_ID"
+            echo "WORKFLOW_REF=$GITHUB_REF"
+            echo "POSTGRESQL:"
+            psql "$DATABASE_URL" -Atc "SELECT version();" || true
+            echo "SHA256:"
+            find target/services/ai-team-room/migrations target/services/ai-team-room/src target/services/ai-team-room/tests audit-harness/services/ai-team-room/tests \
+              -type f \( -name '*.sql' -o -name '*.rs' -o -name '*.sh' \) -print0 | sort -z | xargs -0 sha256sum
+          } | tee ai-phone-02c-evidence-manifest.txt
+
+      - name: Upload independent audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-02c-dynamic-audit-${{ github.run_id }}
+          path: |
+            ai-phone-02c-run-context.txt
+            ai-phone-02c-http.log
+            ai-phone-02c-full-suite.log
+            ai-phone-02c-frontend.log
+            ai-phone-02c-evidence-manifest.txt
+            audit-harness/services/ai-team-room/tests/ai_phone_02c_network.rs
+            audit-harness/.github/workflows/ai-phone-02c-dynamic-audit.yml
+          if-no-files-found: warn
+          retention-days: 30
