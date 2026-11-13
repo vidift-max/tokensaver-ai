@@ -260,33 +260,29 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let foreign_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
     let foreign_phone=Uuid::parse_str(foreign_snapshot["phone"]["ai_phone_id"].as_str().unwrap()).unwrap();
     assert_ne!(foreign_phone,first.phone.ai_phone_id,"same AI_ID maps to distinct tenant phone IDs");
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
+    let foreign_endpoint_credential=format!("tenant-B-endpoint-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,foreign_tenant,ai_id,foreign_phone,foreign_endpoint,&foreign_endpoint_credential,"tenant-B-endpoint").await;
+    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_c,&foreign_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-B-endpoint"}
     }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B registers its own endpoint");
-    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_c),Some(serde_json::json!({
-        "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-B-endpoint"}
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B attaches to its own phone");
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_a),Some(serde_json::json!({
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B attaches to its own phone using its own endpoint credential");
+    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_a,&foreign_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-A-cannot-claim-B-endpoint"}
     }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"tenant A cannot claim tenant B endpoint UUID");
+    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"tenant A cannot use tenant B endpoint credential");
     let revoked_endpoint=Uuid::new_v4();
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
-        "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED);
+    let revoked_endpoint_credential=format!("tenant-B-revoked-endpoint-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,foreign_tenant,ai_id,foreign_phone,revoked_endpoint,&revoked_endpoint_credential,"revoked-endpoint").await;
     sqlx::query("UPDATE phone_endpoints SET endpoint_status='REVOKED' WHERE endpoint_id=$1 AND tenant_id=$2")
         .bind(revoked_endpoint).bind(foreign_tenant).execute(&pool).await.unwrap();
-    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_c),Some(serde_json::json!({
+    let credential_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1")
+        .bind(revoked_endpoint).fetch_one(&pool).await.unwrap();
+    assert_eq!(credential_status,"REVOKED","endpoint lifecycle trigger revokes its credential");
+    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_c,&revoked_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
     }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint cannot be reattached");
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_c),Some(serde_json::json!({
-        "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint-replay"}
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"revoked endpoint UUID cannot be registered again");
+    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"revoked endpoint credential cannot reattach");
+
     // A second AI in tenant A proves actual same-tenant AI-to-AI delivery.
     let second_ai_id=Uuid::new_v4();
     let second_principal=Uuid::new_v4();
@@ -326,10 +322,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"second AI cannot read the first AI's mailbox");
     let response=http_call(&app,"GET",&format!("/ai-phone/{second_phone}/messages"),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"first AI cannot read the second AI's mailbox");
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_second),Some(serde_json::json!({
-        "endpoint_id":second_endpoint,"endpoint_type":"TEST","metadata":{"label":"second-ai-endpoint"}
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED);
+    let second_endpoint_credential=format!("second-ai-endpoint-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,second_ai_id,second_phone,second_endpoint,&second_endpoint_credential,"second-ai-endpoint").await;
     let response=http_call(&app,"POST",&format!("/ai-phone/{second_phone}/messages"),Some(&token_a),Some(serde_json::json!({
         "idempotency_key":"ai-to-ai-offline-1","content":{"text":"durable message from AI-X to AI-Y"}
     }))).await;
@@ -340,16 +334,16 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let queued_state:String=sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1 AND tenant_id=$2")
         .bind(Uuid::parse_str(&ai_to_ai_message_id).unwrap()).bind(tenant).fetch_one(&pool).await.unwrap();
     assert_eq!(queued_state,"PENDING","offline AI-to-AI message is durably queued");
-    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_second),Some(serde_json::json!({
+    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_second,&second_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":second_endpoint,"endpoint_type":"TEST","metadata":{"label":"second-ai-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"AI-Y reconnects to its own phone");
-    let response=http_call(&app,"GET",&format!("/ai-phone/{second_phone}/messages"),Some(&token_second),None).await;
+    let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{second_phone}/messages"),&token_second,&second_endpoint_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"AI-Y receives the durable offline message");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let ai_y_inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
     assert!(ai_y_inbox.iter().any(|m|m["message_id"]==ai_to_ai_message_id && m["message_state"]=="DELIVERED"));
-    let response=http_call(&app,"POST",&format!("/ai-phone/{second_phone}/messages/{ai_to_ai_message_id}/ack"),Some(&token_second),None).await;
+    let response=http_call_endpoint(&app,"POST",&format!("/ai-phone/{second_phone}/messages/{ai_to_ai_message_id}/ack"),&token_second,&second_endpoint_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"AI-Y ACKs the message it received");
     let duplicate_principal=Uuid::new_v4();
     sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','duplicate-test',$3)")
