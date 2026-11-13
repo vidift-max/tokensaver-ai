@@ -503,6 +503,17 @@ mod postgres_tests {
     use crate::tasks::{self,CreateTask};
     use crate::phone::{self,AttachRequest};
     use ai_team_room_service::{connect_pool,migrate};
+    use sha2::{Digest,Sha256};
+
+    async fn seed_endpoint_credential(
+        pool:&PgPool,tenant:Uuid,ai_id:Uuid,phone_id:Uuid,endpoint_id:Uuid,secret:&str
+    ) {
+        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,'TEST','REGISTERED','{}'::jsonb)")
+            .bind(endpoint_id).bind(phone_id).bind(tenant).bind(ai_id).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
+            .bind(Uuid::new_v4()).bind(endpoint_id).bind(phone_id).bind(tenant).bind(ai_id)
+            .bind(Sha256::digest(secret.as_bytes()).to_vec()).execute(pool).await.unwrap();
+    }
 
     async fn fixture() -> (PgPool,Uuid,Vec<AuthenticatedIdentity>) {
         let url=std::env::var("DATABASE_URL").expect("PostgreSQL integration tests require DATABASE_URL");
@@ -712,12 +723,14 @@ mod postgres_tests {
         }
         let (provisioned_phone,created)=phone::provision_phone(&pool,&identity_a,phone::PhoneProvisionRequest { principal_id:identity_a.principal_id }).await.unwrap();
         assert!(created,"first explicit phone provision creates one durable phone");
-        let phone_a=phone::get_my_phone(&pool,&identity_a).await.unwrap();
+        let phone_a=phone::get_my_phone(&pool,&identity_a,None).await.unwrap();
         assert_eq!(provisioned_phone.ai_phone_id,phone_a.phone.ai_phone_id);
         let endpoint_a=Uuid::new_v4();
+        let endpoint_a_credential=format!("continuity-endpoint-A-{}",Uuid::new_v4());
+        seed_endpoint_credential(&pool,tenant,ai_id,phone_a.phone.ai_phone_id,endpoint_a,&endpoint_a_credential).await;
         let attachment_a=phone::attach(&pool,&identity_a,AttachRequest {
             endpoint_id:endpoint_a,endpoint_type:"TEST".into(),metadata:serde_json::json!({"label":"continuity-A"})
-        },false).await.unwrap();
+        },&endpoint_a_credential,false).await.unwrap();
         assert_eq!(attachment_a.endpoint_fence,1);
 
         // Session A owns a real Team Room task lease and writes a canonical checkpoint.
@@ -762,12 +775,14 @@ mod postgres_tests {
 
         // B reconnects to the exact same AI_PHONE_ID using a new endpoint and phone fence.
         let endpoint_b=Uuid::new_v4();
+        let endpoint_b_credential=format!("continuity-endpoint-B-{}",Uuid::new_v4());
+        seed_endpoint_credential(&pool,tenant,ai_id,phone_a.phone.ai_phone_id,endpoint_b,&endpoint_b_credential).await;
         let attachment_b=phone::attach(&pool,&identity_b,AttachRequest {
             endpoint_id:endpoint_b,endpoint_type:"TEST".into(),metadata:serde_json::json!({"label":"continuity-B"})
-        },false).await.unwrap();
+        },&endpoint_b_credential,false).await.unwrap();
         assert_eq!(attachment_b.ai_phone_id,phone_a.phone.ai_phone_id);
         assert_eq!(attachment_b.endpoint_fence,2);
-        let snapshot=phone::get_my_phone(&pool,&identity_b).await.unwrap();
+        let snapshot=phone::get_my_phone(&pool,&identity_b,Some(&endpoint_b_credential)).await.unwrap();
         assert_eq!(snapshot.phone.ai_phone_id,phone_a.phone.ai_phone_id);
         assert_eq!(snapshot.mission.as_ref().unwrap()["checkpoint"]["progress"],55);
 
@@ -784,7 +799,7 @@ mod postgres_tests {
         assert!(matches!(tasks::write_checkpoint(&pool,&identity_a,task.task_id,lease_a.task.fencing_token,serde_json::json!({"stale":true})).await,Err(tasks::TaskError::Fenced)));
         assert!(matches!(tasks::complete_task(&pool,&identity_a,task.task_id,lease_a.task.fencing_token,serde_json::json!({"stale":true})).await,Err(tasks::TaskError::Fenced)));
         assert!(matches!(tasks::release_lease(&pool,&identity_a,task.task_id,lease_a.task.fencing_token).await,Err(tasks::TaskError::Fenced)));
-        assert!(matches!(phone::heartbeat(&pool,&identity_a,attachment_a.endpoint_fence).await,Err(phone::PhoneError::InvalidSession)));
+        assert!(matches!(phone::heartbeat(&pool,&identity_a,&endpoint_a_credential,attachment_a.endpoint_fence).await,Err(phone::PhoneError::InvalidSession)));
         let continued=tasks::write_checkpoint(&pool,&identity_b,task.task_id,lease_b.task.fencing_token,
             serde_json::json!({"step":"resumed-by-B","progress":80})).await.unwrap();
         assert_eq!(continued.checkpoint["step"],"resumed-by-B");
