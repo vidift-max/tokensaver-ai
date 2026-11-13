@@ -5,6 +5,20 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+// These modules are compiled directly from the immutable TARGET_SHA checkout.
+// The workflow injects this test into that checkout; neither source file is copied
+// or modified. communication.rs depends on crate::tasks, so tasks.rs is included
+// from the same exact target tree as a required companion module.
+const COMMUNICATION_SOURCE_TARGET_SHA: &str = "ebb8eeecfea087443c5f3eba7021e96cb5302fe7";
+const COMMUNICATION_SOURCE_BLOB_SHA: &str = "4a89ffd34fe78a8b68fd7ed2c83ed43f18b6eb65";
+const TASKS_SOURCE_BLOB_SHA: &str = "b6bd7f33d7a1bcad943060c09b38ec9dcf612819";
+#[path = "../src/tasks.rs"]
+mod tasks;
+#[path = "../src/communication.rs"]
+mod communication;
+
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
 async fn add_ai(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -261,7 +275,10 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .bind(Uuid::new_v4()).bind(tenant_id).bind(ai_1_id)
         .bind(Sha256::digest(operator_key_1.as_bytes()).to_vec())
         .execute(&pool).await.unwrap();
-    let router = ai_team_room_service::phone::router(pool.clone());
+    assert_eq!(std::env::var("TARGET_SHA").as_deref(), Ok(COMMUNICATION_SOURCE_TARGET_SHA),
+        "the included Team Room source must come from the immutable implementation SHA");
+    let router = communication::router(pool.clone())
+        .merge(ai_team_room_service::phone::router(pool.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -272,6 +289,22 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .bearer_auth("invalid-probe").send().await.unwrap();
     assert_eq!(probe.status(), reqwest::StatusCode::UNAUTHORIZED,
         "server must be reached through a real TCP HTTP listener");
+
+    // Team Room authorization uses the real session, room membership and permission
+    // contract. Phone endpoint credentials are deliberately not supplied here.
+    grant_permission(&pool, tenant_id, room_id, ai_2_principal, "room.read").await;
+    let (ticket_status, ticket_body) = call(
+        &app, "POST", &format!("/team-room/{room_id}/ws-ticket"), &token_2, Some(serde_json::json!({}))
+    ).await;
+    assert_eq!(ticket_status, StatusCode::OK, "integrated Team Room ticket route must authorize the real session");
+    let ticket_json: Value = serde_json::from_slice(&ticket_body).unwrap();
+    let ticket_value = ticket_json["ticket"].as_str().expect("real one-time websocket ticket");
+    let ws_url = format!("ws://{address}/team-room/{room_id}/ws?ticket={ticket_value}");
+    let mut ws_request = ws_url.into_client_request().unwrap();
+    ws_request.headers_mut().insert("Sec-WebSocket-Protocol", "team-room.v1".parse().unwrap());
+    let (team_room_socket, _) = tokio_tungstenite::connect_async(ws_request).await
+        .expect("integrated Team Room WebSocket route must complete a real TCP upgrade");
+    drop(team_room_socket);
 
     let (status, body) = call(
         &app,
