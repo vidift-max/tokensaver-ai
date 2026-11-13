@@ -296,9 +296,10 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     // Concurrent retries against one recipient converge to the same durable message.
     let target_phone = phone_by_principal[&actors[1].principal_id];
     let duplicate_body = serde_json::json!({"idempotency_key":"scale-duplicate-key","content":{"text":"duplicate-safe"}});
+    let duplicate_uri = format!("/ai-phone/{target_phone}/messages");
     let (left, right) = tokio::join!(
-        request(&app, "POST", &format!("/ai-phone/{target_phone}/messages"), &actors[0].token, Some(duplicate_body.clone())),
-        request(&app, "POST", &format!("/ai-phone/{target_phone}/messages"), &actors[0].token, Some(duplicate_body.clone()))
+        request(&app, "POST", &duplicate_uri, &actors[0].token, Some(duplicate_body.clone())),
+        request(&app, "POST", &duplicate_uri, &actors[0].token, Some(duplicate_body.clone()))
     );
     let mut duplicate_statuses = vec![left.status(), right.status()];
     duplicate_statuses.sort();
