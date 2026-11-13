@@ -501,6 +501,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
     sqlx::query("DELETE FROM phone_messages WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_attachments WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoint_credentials WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM phone_endpoint_operator_keys WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_endpoints WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
