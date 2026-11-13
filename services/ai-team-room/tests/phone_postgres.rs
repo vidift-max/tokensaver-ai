@@ -460,7 +460,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     // A different endpoint cannot attach while the previous authenticated session remains live.
     let blocked = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: Uuid::new_v4(), endpoint_type: "TEST".into(), metadata: serde_json::json!({}),
-    },false).await;
+    },"invalid-unregistered-endpoint-secret",false).await;
     assert!(matches!(blocked,Err(PhoneError::Conflict)));
 
     // Session A expires. Its phone attachment remains persisted, but it is no longer authoritative.
@@ -483,16 +483,14 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(presence["presence_state"],"OFFLINE","expired session A leaves the persistent phone offline");
     let endpoint_b = Uuid::new_v4();
-    let response=http_call(&app,"POST","/ai-phone/endpoints/register",Some(&token_b),Some(serde_json::json!({
-        "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"endpoint registry accepts a new authenticated endpoint");
+    let endpoint_b_credential=format!("phone-01-endpoint-B-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_b,&endpoint_b_credential,"endpoint-B").await;
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(presence["presence_state"],"RECONNECTING");
-    let response=http_call(&app,"POST","/ai-phone/reconnect",Some(&token_b),Some(serde_json::json!({
+    let response=http_call_endpoint(&app,"POST","/ai-phone/reconnect",&token_b,&endpoint_b_credential,Some(serde_json::json!({
         "endpoint_id":endpoint_b,"endpoint_type":"TEST","metadata":{"label":"endpoint-B"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"same AI phone reconnects through the HTTP route");
@@ -502,7 +500,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(presence["presence_state"],"CONNECTED");
     let attached_b = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_b, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-B"}),
-    },false).await.expect("idempotent view of HTTP reconnect");
+    },&endpoint_b_credential,false).await.expect("idempotent view of HTTP reconnect");
     assert_eq!(attached_b.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(attached_b.endpoint_fence,2);
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
@@ -510,38 +508,45 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_ne!(attached_b.endpoint_id,attached_a.endpoint_id);
 
     // The expired old session cannot detach or mutate the newly fenced phone attachment.
-    let stale = detach(&pool,&identity_a,attached_a.endpoint_fence).await;
+    let stale = detach(&pool,&identity_a,&endpoint_a_credential,attached_a.endpoint_fence).await;
     assert!(matches!(stale,Err(PhoneError::InvalidSession)));
 
     // Explicit transfer is separately permission-gated and fences endpoint B.
     let endpoint_c = Uuid::new_v4();
-    let response=http_call(&app,"POST","/ai-phone/transfer",Some(&token_b),Some(serde_json::json!({
+    let endpoint_c_credential=format!("phone-01-endpoint-C-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_c,&endpoint_c_credential,"endpoint-C").await;
+    let response=http_call_endpoint(&app,"POST","/ai-phone/transfer",&token_b,&endpoint_c_credential,Some(serde_json::json!({
         "endpoint_id":endpoint_c,"endpoint_type":"TEST","metadata":{"label":"endpoint-C"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"explicit endpoint transfer is exercised through the HTTP route");
     let transferred = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_c, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-C"}),
-    },true).await.expect("idempotent view of HTTP transfer");
+    },&endpoint_c_credential,true).await.expect("idempotent view of HTTP transfer");
     assert_eq!(transferred.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(transferred.endpoint_fence,3);
-    let stale_endpoint = detach(&pool,&identity_b,attached_b.endpoint_fence).await;
+    let stale_endpoint = detach(&pool,&identity_b,&endpoint_c_credential,attached_b.endpoint_fence).await;
     assert!(matches!(stale_endpoint,Err(PhoneError::Fenced)));
-    detach(&pool,&identity_b,transferred.endpoint_fence).await.expect("detach transferred endpoint");
+    detach(&pool,&identity_b,&endpoint_c_credential,transferred.endpoint_fence).await.expect("detach transferred endpoint");
 
     // Two concurrent endpoints race for a disconnected phone: the row lock + partial
     // unique index must produce exactly one winner and one conflict.
     let endpoint_d = Uuid::new_v4();
     let endpoint_e = Uuid::new_v4();
+    let endpoint_d_credential=format!("phone-01-endpoint-D-{}",Uuid::new_v4());
+    let endpoint_e_credential=format!("phone-01-endpoint-E-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_d,&endpoint_d_credential,"endpoint-D").await;
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_e,&endpoint_e_credential,"endpoint-E").await;
     let (race_left,race_right) = tokio::join!(
-        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_d, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false),
-        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_e, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },false)
+        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_d, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },&endpoint_d_credential,false),
+        attach(&pool,&identity_b,AttachRequest { endpoint_id:endpoint_e, endpoint_type:"TEST".into(), metadata:serde_json::json!({}) },&endpoint_e_credential,false)
     );
     let race_winner = match (race_left,race_right) {
         (Ok(winner),Err(PhoneError::Conflict)) | (Err(PhoneError::Conflict),Ok(winner)) => winner,
         other => panic!("expected one concurrent attach winner and one conflict, got {other:?}"),
     };
     assert_eq!(race_winner.endpoint_fence,5);
-    detach(&pool,&identity_b,race_winner.endpoint_fence).await.expect("release concurrent winner");
+    let race_winner_credential=if race_winner.endpoint_id==endpoint_d {&endpoint_d_credential} else {&endpoint_e_credential};
+    detach(&pool,&identity_b,race_winner_credential,race_winner.endpoint_fence).await.expect("release concurrent winner");
 
     // Persistent offline inbox: no active attachment is required to enqueue a message.
     let sender = Uuid::new_v4();
@@ -570,9 +575,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
     let endpoint_f = Uuid::new_v4();
+    let endpoint_f_credential=format!("phone-01-endpoint-F-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_f,&endpoint_f_credential,"endpoint-F").await;
     let attached_f = attach(&pool,&identity_b,AttachRequest {
         endpoint_id: endpoint_f, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-F"}),
-    },false).await.expect("reconnect to retrieve offline inbox");
+    },&endpoint_f_credential,false).await.expect("reconnect to retrieve offline inbox");
     assert_eq!(attached_f.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(attached_f.endpoint_fence,7);
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
@@ -634,7 +641,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let invalid_current_mission=sqlx::query("UPDATE ai_phones SET current_mission_id=$1 WHERE ai_phone_id=$2 AND tenant_id=$3")
         .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).execute(&pool).await;
     assert!(invalid_current_mission.is_err(),"composite task/mission FK rejects a mission ID not owned by the current task");
-    let current = get_my_phone(&pool,&identity_b).await.expect("same phone and mission after reconnect");
+    let current = get_my_phone(&pool,&identity_b,Some(&endpoint_f_credential)).await.expect("same phone and mission after reconnect");
     assert_eq!(current.phone.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(current.phone.ai_id,ai_id);
     assert_eq!(current.phone.current_task_id,Some(task_id));
@@ -648,12 +655,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert!(tenant_b_snapshot["mission"].is_null() || tenant_b_snapshot["mission"]["task_id"]!=task_id.to_string(),
         "tenant B cannot see tenant A mission/checkpoint snapshot");
 
-    let response=http_call(&app,"POST","/ai-phone/detach",Some(&token_b),
+    let response=http_call_endpoint(&app,"POST","/ai-phone/detach",&token_b,&endpoint_f_credential,
         Some(serde_json::json!({"endpoint_fence":attached_f.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
-    let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_b),
+    let response=http_call_endpoint(&app,"POST","/ai-phone/heartbeat",&token_b,&endpoint_f_credential,
         Some(serde_json::json!({"endpoint_fence":attached_f.endpoint_fence}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::PRECONDITION_FAILED,"detached endpoint cannot heartbeat");
+    assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"detached endpoint credential is revoked");
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_b),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
