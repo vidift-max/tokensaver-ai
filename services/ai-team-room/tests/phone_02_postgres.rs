@@ -778,6 +778,20 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         Some(&endpoint_4_credential),None,Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "registered-but-unattached endpoint credential cannot impersonate the active endpoint");
+    let (status,_) = call_with_headers(&app,"POST",&format!("/ai-phone/endpoints/{endpoint_4}/revoke"),&token_2,
+        None,Some(&operator_key_2),None).await;
+    assert_eq!(status,StatusCode::NO_CONTENT,"operator can revoke an unattached endpoint credential");
+    let endpoint_4_status:String=sqlx::query_scalar("SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1")
+        .bind(endpoint_4).fetch_one(&pool).await.unwrap();
+    let endpoint_4_credential_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1 AND credential_hash=$2")
+        .bind(endpoint_4).bind(Sha256::digest(endpoint_4_credential.as_bytes()).to_vec()).fetch_one(&pool).await.unwrap();
+    assert_eq!(endpoint_4_status,"REVOKED");
+    assert_eq!(endpoint_4_credential_status,"REVOKED");
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":endpoint_4,"endpoint_type":"TEST","metadata":{"label":"unattached-endpoint"}
+        }))).await;
+    assert_eq!(status,StatusCode::CONFLICT,"revoked endpoint ID cannot be enrolled again");
 
     // Two simultaneous transfers plus heartbeat and ACK race against the old generation.
     let endpoint_5=Uuid::new_v4();
