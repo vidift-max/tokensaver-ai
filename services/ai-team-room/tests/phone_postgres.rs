@@ -497,6 +497,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     },&endpoint_b_credential,false).await.expect("idempotent view of HTTP reconnect");
     assert_eq!(attached_b.ai_phone_id,first.phone.ai_phone_id);
     assert_eq!(attached_b.endpoint_fence,2);
+    assert!(matches!(
+        heartbeat(&pool,&identity_b,&endpoint_a_credential,attached_b.endpoint_fence).await,
+        Err(PhoneError::EndpointUnauthorized)
+    ),"new session cannot reuse the previous endpoint's revoked credential");
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"expired session A cannot operate after B reconnects");
     assert_ne!(attached_b.endpoint_id,attached_a.endpoint_id);
