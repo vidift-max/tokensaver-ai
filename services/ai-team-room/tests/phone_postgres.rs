@@ -570,6 +570,35 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(acked,"ACK");
 
+    // Concurrent retries with the same idempotency key must converge to one durable message.
+    let concurrent_body = serde_json::json!({
+        "idempotency_key":"concurrent-message-key",
+        "content":{"text":"concurrent idempotent send"}
+    });
+    let (send_left, send_right) = tokio::join!(
+        http_call(&app, "POST", &format!("/ai-phone/{}/messages", first.phone.ai_phone_id),
+            Some(&token_b), Some(concurrent_body.clone())),
+        http_call(&app, "POST", &format!("/ai-phone/{}/messages", first.phone.ai_phone_id),
+            Some(&token_b), Some(concurrent_body.clone()))
+    );
+    let mut concurrent_statuses = vec![send_left.status(), send_right.status()];
+    concurrent_statuses.sort();
+    assert_eq!(concurrent_statuses, vec![
+        axum::http::StatusCode::CREATED,
+        axum::http::StatusCode::OK,
+    ], "concurrent identical sends return one create and one idempotent replay");
+    let left_bytes = axum::body::to_bytes(send_left.into_body(), 100_000).await.unwrap();
+    let right_bytes = axum::body::to_bytes(send_right.into_body(), 100_000).await.unwrap();
+    let left_message: Value = serde_json::from_slice(&left_bytes).unwrap();
+    let right_message: Value = serde_json::from_slice(&right_bytes).unwrap();
+    assert_eq!(left_message["message_id"], right_message["message_id"],
+        "concurrent retries return the same persisted message identity");
+    let concurrent_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-message-key'"
+    ).bind(first.phone.ai_phone_id).bind(tenant).bind(principal)
+      .fetch_one(&pool).await.unwrap();
+    assert_eq!(concurrent_count, 1, "concurrent idempotent send persists exactly one row");
+
     // The phone points to the existing canonical task/checkpoint record; it does not copy it.
     let task_id = Uuid::new_v4();
     let mission_id = Uuid::new_v4();
