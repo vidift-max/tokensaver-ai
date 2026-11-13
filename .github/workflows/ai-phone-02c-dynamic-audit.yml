@@ -55,9 +55,24 @@ jobs:
           set -euo pipefail
           actual="$(git -C target rev-parse HEAD)"
           test "$actual" = "$TARGET_SHA"
-          printf 'TARGET_SHA=%s\nTARGET_HEAD=%s\nHARNESS_SHA=%s\nWORKFLOW_SHA=%s\nRUN_ID=%s\nEVENT=%s\n' \
-            "$TARGET_SHA" "$actual" "$(git -C audit-harness rev-parse HEAD)" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_EVENT_NAME" \
-            | tee ai-phone-02c-run-context.txt
+          communication_blob="$(git -C target rev-parse "$TARGET_SHA:services/ai-team-room/src/communication.rs")"
+          tasks_blob="$(git -C target rev-parse "$TARGET_SHA:services/ai-team-room/src/tasks.rs")"
+          test "$communication_blob" = "4a89ffd34fe78a8b68fd7ed2c83ed43f18b6eb65"
+          test "$tasks_blob" = "b6bd7f33d7a1bcad943060c09b38ec9dcf612819"
+          {
+            echo "TARGET_SHA=$TARGET_SHA"
+            echo "TARGET_HEAD=$actual"
+            echo "COMMUNICATION_SOURCE_BLOB_SHA=$communication_blob"
+            echo "TASKS_SOURCE_BLOB_SHA=$tasks_blob"
+            echo "HARNESS_SHA=$(git -C audit-harness rev-parse HEAD)"
+            echo "WORKFLOW_SHA=$GITHUB_SHA"
+            echo "RUN_ID=$GITHUB_RUN_ID"
+            echo "EVENT=$GITHUB_EVENT_NAME"
+          } | tee ai-phone-02c-run-context.txt
+          {
+            echo "COMMUNICATION_SOURCE_BLOB_SHA=$communication_blob"
+            echo "TASKS_SOURCE_BLOB_SHA=$tasks_blob"
+          } >> "$GITHUB_ENV"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

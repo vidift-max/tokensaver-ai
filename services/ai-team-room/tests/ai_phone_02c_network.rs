@@ -277,6 +277,10 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .execute(&pool).await.unwrap();
     assert_eq!(std::env::var("TARGET_SHA").as_deref(), Ok(COMMUNICATION_SOURCE_TARGET_SHA),
         "the included Team Room source must come from the immutable implementation SHA");
+    assert_eq!(std::env::var("COMMUNICATION_SOURCE_BLOB_SHA").as_deref(), Ok(COMMUNICATION_SOURCE_BLOB_SHA),
+        "communication.rs must be the exact blob from TARGET_SHA");
+    assert_eq!(std::env::var("TASKS_SOURCE_BLOB_SHA").as_deref(), Ok(TASKS_SOURCE_BLOB_SHA),
+        "tasks.rs must be the exact companion blob from TARGET_SHA");
     let router = communication::router(pool.clone())
         .merge(ai_team_room_service::phone::router(pool.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
