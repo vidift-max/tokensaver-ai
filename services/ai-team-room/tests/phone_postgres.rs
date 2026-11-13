@@ -646,8 +646,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(current.phone.ai_id,ai_id);
     assert_eq!(current.phone.current_task_id,Some(task_id));
     assert_eq!(current.mission.as_ref().unwrap()["checkpoint"]["progress"],40);
-    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_c),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own phone snapshot");
+    let response=http_call_endpoint(&app,"GET","/ai-phone/me",&token_c,&foreign_endpoint_credential,None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own active phone snapshot with its own endpoint credential");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let tenant_b_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
     let tenant_b_phone_id=Uuid::parse_str(tenant_b_snapshot["phone"]["ai_phone_id"].as_str().unwrap()).unwrap();
