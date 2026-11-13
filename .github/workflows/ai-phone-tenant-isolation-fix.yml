@@ -36,18 +36,42 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Confirm disposable PostgreSQL 16
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SHOW transaction_read_only;"
+      - name: Rust formatting
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
       - name: Cargo check
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Real pre-0012 legacy migration compatibility (PostgreSQL 16)
+        run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
+      - name: Frontend TypeScript and production build
+        run: |
+          npm install
+          npm run build
       - name: Full PostgreSQL integration and adversarial suite
         run: cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee ai-phone-tenant-isolation.log
         shell: bash
+      - name: SHA-256 evidence manifest
+        if: always()
+        run: |
+          sha256sum \\
+            services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \\
+            services/ai-team-room/src/phone.rs \\
+            services/ai-team-room/src/handoffs.rs \\
+            services/ai-team-room/tests/phone_postgres.rs \\
+            services/ai-team-room/tests/ai_phone_legacy_migration.sh \\
+            src/AIPhone.tsx src/TeamRoom.tsx src/styles.css \\
+            reports/AI_PHONE_01_SECURITY_REPORT.md > ai-phone-01-sha256-manifest.txt
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-phone-tenant-isolation-fix-${{ github.run_id }}
-          path: ai-phone-tenant-isolation.log
+          path: |
+            ai-phone-tenant-isolation.log
+            ai-phone-01-sha256-manifest.txt
           if-no-files-found: warn
           retention-days: 14
