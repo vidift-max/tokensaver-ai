@@ -709,6 +709,13 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         Some(serde_json::json!({"endpoint_fence":transfer_fence}))).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,
         "AI bearer plus a guessed/observed fence cannot heartbeat without endpoint credential");
+    let (status,_) = call(&app,"GET",&phone_2_messages_path,&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "AI bearer alone cannot read/deliver the endpoint mailbox");
+    let (status,_) = call(&app,"POST",
+        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "AI bearer alone cannot ACK a mailbox message");
     // Attack B: the transferred-away endpoint's own credential is terminally revoked.
     let (status, _) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&endpoint_2_credential),None,None).await;
