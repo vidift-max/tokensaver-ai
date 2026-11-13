@@ -775,6 +775,22 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .bind(endpoint_3).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
         .execute(&pool).await.unwrap();
 
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/ai-phone/{phone_2_id}/presence"),
+        &token_2,
+        None,
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    let presence: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(presence["presence_state"], "REVOKED",
+        "presence must expose an active attachment's terminal revoked state");
+
+    let (status, _) = call(&app, "GET", &phone_2_messages_path, &token_2, None).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED,
+        "a revoked endpoint cannot receive mailbox messages");
+
     let (status, _) = call(
         &app,
         "POST",
@@ -824,18 +840,6 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     ).await;
     assert_eq!(status, StatusCode::CONFLICT,
         "a revoked endpoint identifier cannot be re-registered");
-
-    let (status, body) = call(
-        &app,
-        "GET",
-        &format!("/ai-phone/{phone_2_id}/presence"),
-        &token_2,
-        None,
-    ).await;
-    assert_eq!(status, StatusCode::OK);
-    let presence: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(presence["presence_state"], "REVOKED",
-        "presence must expose the terminal revoked state");
 
     let revoked_endpoint = Uuid::new_v4();
     let (status, _) = call(
