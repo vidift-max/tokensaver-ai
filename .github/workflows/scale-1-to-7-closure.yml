@@ -1,0 +1,95 @@
+name: TokenSaver AI — Scale 1-to-7 Closure
+
+on:
+  push:
+    branches:
+      - mission/scale-1-to-7-closure
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-1-to-7-closure-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  scale-1-to-7-postgres-16:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scale_ci
+          POSTGRES_PASSWORD: disposable-scale-ci-only
+          POSTGRES_DB: scale_1_to_7_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scale_ci -d scale_1_to_7_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://scale_ci:disposable-scale-ci-only@localhost:5432/scale_1_to_7_test
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify exact tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SHA"
+          echo "SCALE_VALIDATED_SHA=$actual"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Confirm disposable PostgreSQL 16
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SHOW transaction_read_only;"
+      - name: Rust formatting diagnostic
+        continue-on-error: true
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+      - name: Cargo check
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Full service, registry, 1-to-7 and Team Room integration suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee scale-1-to-7-postgres.log
+      - name: Frontend production build
+        run: |
+          npm install
+          npm run build
+      - name: SHA-256 evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            services/ai-team-room/migrations/0011_ai_phone_foundation.sql \
+            services/ai-team-room/migrations/0012_ai_phone_tenant_isolation.sql \
+            services/ai-team-room/migrations/0013_phone_registry.sql \
+            services/ai-team-room/src/phone.rs \
+            services/ai-team-room/src/communication.rs \
+            services/ai-team-room/tests/phone_postgres.rs \
+            services/ai-team-room/tests/registry_postgres.rs \
+            services/ai-team-room/tests/scale_1_to_7_postgres.rs \
+            > scale-1-to-7-sha256-manifest.txt
+          cat scale-1-to-7-sha256-manifest.txt
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-1-to-7-evidence-${{ github.run_id }}
+          path: |
+            scale-1-to-7-postgres.log
+            scale-1-to-7-sha256-manifest.txt
+          if-no-files-found: warn
+          retention-days: 30
