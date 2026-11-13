@@ -103,10 +103,24 @@ jobs:
             set -e
             completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
             if [ "$rc" -eq 0 ]; then outcome=PASS; else outcome=FAIL; failures=$((failures+1)); fi
-            printf '{"repetition":%s,"started_at":"%s","completed_at":"%s","exit_code":%s,"result":"%s"}\\n' "$repetition" "$started_at" "$completed_at" "$rc" "$outcome" | tee -a ../ai-phone-02d-repetitions.jsonl
+            printf '{"timestamp":"%s","scenario":"existing_http_tcp_adversarial_bundle","iteration":%s,"tenant_id":null,"ai_id":null,"ai_phone_id":null,"endpoint_id":null,"credential_state":"mixed_assertions_in_test","fence":null,"operation":"test_execution","transport":"HTTP/TCP","http_status":"assertions_internal_to_test","expected":"all existing assertions hold","observed":"%s","exit_code":%s,"authorization_result":"%s"}\n' "$completed_at" "$repetition" "$outcome" "$rc" "$outcome" >> ../ai-phone-02d-repetitions.jsonl
           done
-          echo "TOTAL_REPETITIONS=20" | tee -a ../ai-phone-02d-repetitions.jsonl
-          echo "FAILED_REPETITIONS=$failures" | tee -a ../ai-phone-02d-repetitions.jsonl
+          printf 'TOTAL_REPETITIONS=%s\nFAILED_REPETITIONS=%s\n' 20 "$failures" | tee ../ai-phone-02d-repetition-summary.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("../ai-phone-02d-repetitions.jsonl")
+          raw = p.read_bytes()
+          assert raw.endswith(b"\\n"), "JSONL must end with a physical newline"
+          lines = raw.splitlines()
+          assert len(lines) == 20, f"expected 20 JSON records, got {len(lines)}"
+          records = [json.loads(line) for line in lines]
+          required = {"timestamp","scenario","iteration","tenant_id","ai_id","ai_phone_id","endpoint_id","credential_state","fence","operation","transport","http_status","expected","observed","authorization_result"}
+          assert all(required <= set(r) for r in records)
+          assert [r["iteration"] for r in records] == list(range(1,21))
+          print("JSONL_VALIDATION=PASS")
+          print(f"JSONL_PHYSICAL_LINES={len(lines)}")
+          PY
           test "$failures" -eq 0
 
       - name: Full exact-SHA PostgreSQL, Registry, scale, Team Room and WebSocket suite
