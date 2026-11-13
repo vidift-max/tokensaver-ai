@@ -631,14 +631,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(linked_phone_2["phone"]["current_mission_id"], ai_2_mission.to_string());
 
     // Phone #2 lifecycle: heartbeat, detach, stale-fence rejection, reconnect and transfer.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/heartbeat",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": initial_fence})),
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":initial_fence}))).await;
     assert_eq!(status, StatusCode::OK, "current Phone #2 endpoint heartbeat succeeds");
     let (status, _) = call_with_headers(&app,"POST","/ai-phone/detach",&token_2,
         Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":initial_fence}))).await;
@@ -691,11 +685,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert!(transfer_fence > reconnect_fence, "transfer advances fencing token");
     let (status, _) = call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,
         Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":reconnect_fence}))).await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "transferred-away endpoint cannot heartbeat with its old fence"
-    );
+    assert_eq!(status,StatusCode::UNAUTHORIZED,
+        "transferred-away endpoint credential is revoked even if old fence is supplied");
 
     // Attack A: a process retaining only the AI bearer cannot recover the active generation.
     let (status, _) = call(&app,"GET","/ai-phone/me",&token_2,None).await;
