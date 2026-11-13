@@ -345,6 +345,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .await;
     assert_eq!(status, StatusCode::CREATED, "Phone #2 attaches its own endpoint");
 
+    let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
     let same_payload = serde_json::json!({
         "idempotency_key": "phone-02-concurrent-idempotency",
         "content": {"text": "durable message addressed to AI-PHONE-02"}
@@ -353,21 +354,21 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         call(
             &app,
             "POST",
-            &format!("/ai-phone/{phone_2_id}/messages"),
+            &phone_2_messages_path,
             &token_1,
             Some(same_payload.clone())
         ),
         call(
             &app,
             "POST",
-            &format!("/ai-phone/{phone_2_id}/messages"),
+            &phone_2_messages_path,
             &token_1,
             Some(same_payload.clone())
         ),
         call(
             &app,
             "POST",
-            &format!("/ai-phone/{phone_2_id}/messages"),
+            &phone_2_messages_path,
             &token_1,
             Some(same_payload.clone())
         ),
