@@ -376,7 +376,7 @@ pub async fn attach(pool: &PgPool, identity: &AuthenticatedIdentity, request: At
     ).bind(attachment_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(pool).await?)
 }
 
-pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64) -> Result<(), PhoneError> {
+pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, endpoint_credential: &str, fence: i64) -> Result<(), PhoneError> {
     require_permission(pool, identity, "phone.detach").await.map_err(|_| PhoneError::Forbidden)?;
     let mut tx = pool.begin().await?;
     validate_live_binding(&mut tx, identity).await?;
@@ -384,39 +384,46 @@ pub async fn detach(pool: &PgPool, identity: &AuthenticatedIdentity, fence: i64)
     let phone = sqlx::query_as::<_, PhoneRecord>(
         "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
-    let active = sqlx::query_as::<_, (Uuid,Uuid)>(
-        "SELECT attachment_id,endpoint_id FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 AND attachment_status='ACTIVE' AND session_id=$4 AND endpoint_fence=$5 FOR UPDATE"
-    ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(identity.session_id).bind(fence).fetch_optional(&mut *tx).await?
-      .ok_or(PhoneError::Fenced)?;
+    let (_, endpoint_id, current_fence) =
+        require_current_endpoint_credential(&mut tx, identity, &phone, endpoint_credential).await?;
+    if current_fence != fence { return Err(PhoneError::Fenced); }
+    let attachment_id: Uuid = sqlx::query_scalar(
+        "SELECT attachment_id FROM phone_attachments WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 AND endpoint_id=$4 AND attachment_status='ACTIVE' AND session_id=$5 AND endpoint_fence=$6 FOR UPDATE"
+    ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(endpoint_id)
+      .bind(identity.session_id).bind(fence).fetch_optional(&mut *tx).await?.ok_or(PhoneError::Fenced)?;
     sqlx::query("UPDATE phone_attachments SET attachment_status='DETACHED',detached_at=NOW() WHERE attachment_id=$1 AND tenant_id=$2 AND ai_id=$3")
-        .bind(active.0).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
+        .bind(attachment_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE phone_endpoints SET endpoint_status='DETACHED',detached_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status<>'REVOKED'")
-        .bind(active.1).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
+        .bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE ai_phones SET endpoint_fence=endpoint_fence+1,phone_status='DISCONNECTED',version=version+1,updated_at=NOW() WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
         .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     record_phone_event(&mut tx, identity, phone.ai_phone_id, "PHONE_DISCONNECTED",
         "phone.endpoint.detached",
-        serde_json::json!({"endpoint_id":active.1,"endpoint_fence":fence+1})
+        serde_json::json!({"endpoint_id":endpoint_id,"endpoint_fence":fence+1})
     ).await?;
     tx.commit().await?;
     Ok(())
 }
 
-
-
 pub async fn heartbeat(
     pool: &PgPool,
     identity: &AuthenticatedIdentity,
+    endpoint_credential: &str,
     endpoint_fence: i64,
 ) -> Result<DateTime<Utc>, PhoneError> {
     require_permission(pool, identity, "phone.heartbeat").await.map_err(|_| PhoneError::Forbidden)?;
     let mut tx = pool.begin().await?;
     validate_live_binding(&mut tx, identity).await?;
     let phone = owned_phone(&mut tx, identity).await?;
+    let (credential_id, endpoint_id, current_fence) =
+        require_current_endpoint_credential(&mut tx, identity, &phone, endpoint_credential).await?;
+    if current_fence != endpoint_fence { return Err(PhoneError::Fenced); }
     let last_seen: DateTime<Utc> = sqlx::query_scalar(
-        "UPDATE phone_endpoints e SET last_seen_at=NOW() FROM phone_attachments a,ai_phones p WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND e.tenant_id=$2 AND e.ai_id=$3 AND a.endpoint_id=e.endpoint_id AND a.ai_phone_id=p.ai_phone_id AND p.tenant_id=$2 AND p.ai_id=$3 AND a.session_id=$4 AND a.execution_id=$5 AND a.attachment_status='ACTIVE' AND e.endpoint_status='ATTACHED' AND a.endpoint_fence=$6 AND p.endpoint_fence=$6 RETURNING e.last_seen_at"
-    ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(identity.session_id).bind(identity.execution_id).bind(endpoint_fence)
+        "UPDATE phone_endpoints SET last_seen_at=NOW() WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 AND endpoint_status='ATTACHED' RETURNING last_seen_at"
+    ).bind(endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
       .fetch_optional(&mut *tx).await?.ok_or(PhoneError::Fenced)?;
+    sqlx::query("UPDATE phone_endpoint_credentials SET last_used_at=$1 WHERE credential_id=$2")
+        .bind(last_seen).bind(credential_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE ai_phones SET last_seen_at=$1 WHERE ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4")
         .bind(last_seen).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).execute(&mut *tx).await?;
     tx.commit().await?;
