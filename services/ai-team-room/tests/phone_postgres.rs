@@ -119,7 +119,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"explicit authorized provision creates the phone");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let provisioned:Value=serde_json::from_slice(&bytes).unwrap();
-    let first = get_my_phone(&pool,&identity_a).await.expect("read explicitly provisioned permanent phone");
+    let first = get_my_phone(&pool,&identity_a,None).await.expect("read explicitly provisioned permanent phone");
     assert_eq!(provisioned["ai_phone_id"],first.phone.ai_phone_id.to_string());
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
@@ -144,9 +144,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(presence["presence_state"],"REGISTERED");
     let endpoint_a = Uuid::new_v4();
+    let endpoint_a_credential=format!("phone-01-endpoint-A-{}",Uuid::new_v4());
+    seed_endpoint_credential(&pool,tenant,ai_id,first.phone.ai_phone_id,endpoint_a,&endpoint_a_credential,"endpoint-A").await;
     let attached_a = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
-    },false).await.expect("attach endpoint A");
+    },&endpoint_a_credential,false).await.expect("attach endpoint A");
     assert_eq!(attached_a.endpoint_fence,1);
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/presence",first.phone.ai_phone_id),Some(&token_a),None).await;
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
@@ -155,15 +157,15 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     // Real Axum HTTP router E2E: authenticate with the persisted bearer hash and exercise
     // the public phone routes rather than calling only the internal service functions.
-    let response=http_call(&app,"POST","/ai-phone/attach",Some(&token_a),Some(serde_json::json!({
+    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_a,&endpoint_a_credential,Some(serde_json::json!({
         "endpoint_id":endpoint_a,"endpoint_type":"TEST","metadata":{"label":"endpoint-A"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"attach route is reachable and authenticated");
-    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
+    let response=http_call_endpoint(&app,"GET","/ai-phone/me",&token_a,&endpoint_a_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/endpoints",first.phone.ai_phone_id),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
-    let response=http_call(&app,"POST","/ai-phone/heartbeat",Some(&token_a),Some(serde_json::json!({"endpoint_fence":attached_a.endpoint_fence}))).await;
+    let response=http_call_endpoint(&app,"POST","/ai-phone/heartbeat",&token_a,&endpoint_a_credential,Some(serde_json::json!({"endpoint_fence":attached_a.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
@@ -180,7 +182,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"different payload"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"same idempotency key with different payload is rejected");
-    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),&token_a,&endpoint_a_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
@@ -193,15 +195,15 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let sent:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
     assert!(sent.iter().any(|m|m["message_id"]==message_id),"sender history contains the persisted outgoing message");
-    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),None).await;
+    let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),&token_a,&endpoint_a_credential,None).await;
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let retried:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
     let retried_message=retried.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
     assert_eq!(retried_message["attempt_count"],1,"repeated history polling does not inflate delivery attempts");
     assert_eq!(retried_message["message_state"],"DELIVERED");
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
+    let response=http_call_endpoint(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),&token_a,&endpoint_a_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT);
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),Some(&token_a),None).await;
+    let response=http_call_endpoint(&app,"POST",&format!("/ai-phone/{}/messages/{}/ack",first.phone.ai_phone_id,message_id),&token_a,&endpoint_a_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NO_CONTENT,"duplicate ACK is idempotent");
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/endpoints",Uuid::new_v4()),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"unknown or unauthorized phone must not leak endpoint data");
@@ -423,7 +425,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         Some(serde_json::json!({"task_id":owned_task_id}))).await;
     assert_eq!(allowed_link.status(), axum::http::StatusCode::NO_CONTENT,
         "task.transition plus task ownership authorizes linking the canonical task");
-    let linked_snapshot = get_my_phone(&pool, &identity_a).await.unwrap();
+    let linked_snapshot = get_my_phone(&pool, &identity_a,Some(&endpoint_a_credential)).await.unwrap();
     assert_eq!(linked_snapshot.phone.current_task_id, Some(owned_task_id));
     assert_eq!(linked_snapshot.mission.as_ref().unwrap()["task_id"], owned_task_id.to_string());
     let invalid_attachment=sqlx::query("INSERT INTO phone_attachments(attachment_id,ai_phone_id,ai_id,endpoint_id,tenant_id,room_id,principal_id,participant_id,session_id,execution_id,endpoint_fence,attachment_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,99,'ACTIVE')")
@@ -450,9 +452,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     let retry_a = attach(&pool,&identity_a,AttachRequest {
         endpoint_id: endpoint_a, endpoint_type: "TEST".into(), metadata: serde_json::json!({"label":"endpoint-A"}),
-    },false).await.expect("idempotent attach retry");
+    },&endpoint_a_credential,false).await.expect("idempotent attach retry");
     assert_eq!(retry_a.attachment_id,attached_a.attachment_id);
-    let last_seen = heartbeat(&pool,&identity_a,attached_a.endpoint_fence).await.expect("authenticated endpoint heartbeat");
+    let last_seen = heartbeat(&pool,&identity_a,&endpoint_a_credential,attached_a.endpoint_fence).await.expect("authenticated endpoint heartbeat");
     assert!(last_seen <= chrono::Utc::now());
 
     // A different endpoint cannot attach while the previous authenticated session remains live.
