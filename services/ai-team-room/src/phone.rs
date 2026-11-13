@@ -286,10 +286,26 @@ fn contains_secret_key(value: &Value) -> bool {
     }
 }
 
-pub async fn get_my_phone(pool: &PgPool, identity: &AuthenticatedIdentity) -> Result<PhoneSnapshot, PhoneError> {
+pub async fn get_my_phone(
+    pool: &PgPool,
+    identity: &AuthenticatedIdentity,
+    endpoint_credential: Option<&str>,
+) -> Result<PhoneSnapshot, PhoneError> {
     require_permission(pool, identity, "phone.read").await.map_err(|_| PhoneError::Forbidden)?;
     let mut tx = pool.begin().await?;
+    validate_live_binding(&mut tx,identity).await?;
     let phone = owned_phone(&mut tx, identity).await?;
+    // Hold the phone row lock until the snapshot is read. A concurrent transfer cannot
+    // replace the endpoint between credential validation and response construction.
+    let phone = sqlx::query_as::<_,PhoneRecord>(
+        "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE"
+    ).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
+    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.attachment_status='ACTIVE')")
+        .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&mut *tx).await?;
+    if active {
+        let secret=endpoint_credential.ok_or(PhoneError::EndpointUnauthorized)?;
+        require_current_endpoint_credential(&mut tx,identity,&phone,secret).await?;
+    }
     let attachment = sqlx::query_as::<_, AttachmentRecord>(
         "SELECT a.attachment_id,a.ai_phone_id,a.endpoint_id,a.endpoint_fence,a.attachment_status,a.attached_at,a.detached_at FROM phone_attachments a JOIN phone_endpoints e ON e.endpoint_id=a.endpoint_id AND e.ai_phone_id=a.ai_phone_id AND e.tenant_id=a.tenant_id AND e.ai_id=a.ai_id WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.attachment_status='ACTIVE' AND e.endpoint_status='ATTACHED'"
     ).bind(phone.ai_phone_id).bind(identity.tenant_id).fetch_optional(&mut *tx).await?;
@@ -460,21 +476,12 @@ async fn heartbeat_handler(
 async fn get_phone_handler(State(pool): State<PgPool>, headers: HeaderMap)
     -> Result<Json<PhoneSnapshot>, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    // /me exposes the active endpoint generation only to its endpoint credential holder.
-    let mut tx=pool.begin().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    validate_live_binding(&mut tx,&identity).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
-    let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
-    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_attachments a WHERE a.ai_phone_id=$1 AND a.tenant_id=$2 AND a.ai_id=$3 AND a.attachment_status='ACTIVE')")
-        .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
-        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    if active {
-        let secret=endpoint_secret_from_headers(&headers).map_err(|_|StatusCode::UNAUTHORIZED)?;
-        require_current_endpoint_credential(&mut tx,&identity,&phone,&secret).await
-            .map_err(|_|StatusCode::UNAUTHORIZED)?;
-    }
-    tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    get_my_phone(&pool, &identity).await.map(Json).map_err(|e| match e {
-        PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
+    let endpoint_credential=headers.get("x-ai-phone-endpoint-credential")
+        .and_then(|value|value.to_str().ok());
+    get_my_phone(&pool,&identity,endpoint_credential).await.map(Json).map_err(|e| match e {
+        PhoneError::NotFound => StatusCode::NOT_FOUND,
+        PhoneError::Forbidden => StatusCode::FORBIDDEN,
+        PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
         _ => StatusCode::INTERNAL_SERVER_ERROR
     })
 }
