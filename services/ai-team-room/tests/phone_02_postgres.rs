@@ -1133,4 +1133,15 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "tenant A cannot send into tenant B phone");
+
+    // Operator keys are independently revocable and cannot be recovered from the AI bearer.
+    sqlx::query("UPDATE phone_endpoint_operator_keys SET key_status='REVOKED',revoked_at=NOW() WHERE tenant_id=$1 AND ai_id=$2 AND key_hash=$3")
+        .bind(tenant_id).bind(ai_2_id).bind(Sha256::digest(operator_key_2.as_bytes()).to_vec())
+        .execute(&pool).await.unwrap();
+    let (status,_) = call_with_headers(&app,"POST","/ai-phone/endpoints/register",&token_2,
+        None,Some(&operator_key_2),Some(serde_json::json!({
+            "endpoint_id":Uuid::new_v4(),"endpoint_type":"TEST","metadata":{"label":"operator-key-revoked"}
+        }))).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,
+        "revoked operator key cannot enroll or rotate endpoint credentials");
 }
