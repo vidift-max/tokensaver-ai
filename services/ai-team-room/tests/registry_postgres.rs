@@ -178,9 +178,15 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
     let all = http_call(&app, "GET", "/ai-phone/registry?limit=100", Some(&actors[0].token)).await;
     let all: Value = serde_json::from_slice(&axum::body::to_bytes(all.into_body(), 100_000).await.unwrap()).unwrap();
     for item in all["items"].as_array().unwrap() {
+        let phone_id = Uuid::parse_str(item["ai_phone_id"].as_str().unwrap()).unwrap();
+        let actor = actors.iter().find(|actor| actor.phone_id == phone_id).unwrap();
+        assert_eq!(item["ai_id"], actor.ai_id.to_string());
+        assert_eq!(item["tenant_id"], tenant.to_string());
+        assert_eq!(item["phone_status"], "ATTACHED");
         assert!(item["active_endpoint_id"].is_string());
-        assert!(item["active_session_id"].is_string());
-        assert!(item["active_execution_id"].is_string());
+        assert_eq!(item["endpoint_status"], "ATTACHED");
+        assert_eq!(item["active_session_id"], actor.identity.session_id.to_string());
+        assert_eq!(item["active_execution_id"], actor.identity.execution_id.to_string());
         assert!(item["heartbeat_at"].is_string());
         assert!(item["last_activity_at"].is_string());
         assert_eq!(item["availability"], "AVAILABLE");
