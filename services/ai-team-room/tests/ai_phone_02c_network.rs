@@ -1635,6 +1635,9 @@ async fn cleanup_phone_fixture(
     pool: &PgPool,
     scope: &PhoneFixtureCleanupScope,
 ) -> Result<(), sqlx::Error> {
+    if scope.identities.is_empty() {
+        return Err(sqlx::Error::RowNotFound);
+    }
     let mut tx = pool.begin().await?;
 
     // Remove all Phone descendants before their RESTRICT parents.
@@ -1647,8 +1650,9 @@ async fn cleanup_phone_fixture(
             .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
         sqlx::query("DELETE FROM phone_endpoint_credentials WHERE tenant_id=$1 AND ai_phone_id=$2")
             .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM phone_endpoint_operator_keys WHERE operator_key_id = ANY($1)")
-            .bind(&identity.operator_key_ids).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_endpoint_operator_keys WHERE operator_key_id = ANY($1) AND tenant_id=$2 AND ai_id=$3")
+            .bind(&identity.operator_key_ids).bind(scope.tenant_id).bind(identity.ai_id)
+            .execute(&mut *tx).await?;
         sqlx::query("DELETE FROM phone_endpoints WHERE tenant_id=$1 AND ai_phone_id=$2")
             .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
         sqlx::query("DELETE FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 AND ai_phone_id=$3")
