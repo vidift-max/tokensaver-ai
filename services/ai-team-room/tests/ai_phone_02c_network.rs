@@ -1613,3 +1613,233 @@ async fn ai_phone_02c_phone_transfer_preserves_team_room_websocket_session() {
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1").bind(ai_id).execute(&pool).await.unwrap();
 }
+
+
+// Centralized fixture cleanup. Every Phone row is constrained by tenant_id and
+// the fixture-owned ai_phone_id; operator keys are deleted only by explicit IDs.
+// Global ai_identities are deliberately never deleted by this helper.
+#[derive(Clone)]
+struct PhoneIdentityFixtureScope {
+    ai_id: Uuid,
+    ai_phone_id: Uuid,
+    principal_id: Uuid,
+    operator_key_ids: Vec<Uuid>,
+}
+
+struct PhoneFixtureCleanupScope {
+    tenant_id: Uuid,
+    identities: Vec<PhoneIdentityFixtureScope>,
+}
+
+async fn cleanup_phone_fixture(
+    pool: &PgPool,
+    scope: &PhoneFixtureCleanupScope,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Remove all Phone descendants before their RESTRICT parents.
+    for identity in &scope.identities {
+        sqlx::query("DELETE FROM phone_messages WHERE tenant_id=$1 AND ai_phone_id=$2")
+            .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_mission_links WHERE tenant_id=$1 AND ai_phone_id=$2")
+            .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_attachments WHERE tenant_id=$1 AND ai_phone_id=$2")
+            .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_endpoint_credentials WHERE tenant_id=$1 AND ai_phone_id=$2")
+            .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_endpoint_operator_keys WHERE operator_key_id = ANY($1)")
+            .bind(&identity.operator_key_ids).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM phone_endpoints WHERE tenant_id=$1 AND ai_phone_id=$2")
+            .bind(scope.tenant_id).bind(identity.ai_phone_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 AND ai_phone_id=$3")
+            .bind(scope.tenant_id).bind(identity.ai_id).bind(identity.ai_phone_id)
+            .execute(&mut *tx).await?;
+    }
+
+    // Remove a tenant binding only when this fixture owns every principal link
+    // for that (global AI, tenant) pair. Otherwise preserve it; deleting the
+    // tenant will fail closed and roll back rather than destroy another fixture.
+    for identity in &scope.identities {
+        sqlx::query(
+            "DELETE FROM ai_identity_tenants it
+             WHERE it.ai_id=$1 AND it.tenant_id=$2
+               AND NOT EXISTS (
+                 SELECT 1 FROM ai_identity_principals ip
+                 WHERE ip.ai_id=it.ai_id AND ip.tenant_id=it.tenant_id
+                   AND ip.principal_id <> $3
+               )"
+        )
+        .bind(identity.ai_id).bind(scope.tenant_id).bind(identity.principal_id)
+        .execute(&mut *tx).await?;
+
+        sqlx::query(
+            "DELETE FROM ai_identity_principals
+             WHERE ai_id=$1 AND tenant_id=$2 AND principal_id=$3"
+        )
+        .bind(identity.ai_id).bind(scope.tenant_id).bind(identity.principal_id)
+        .execute(&mut *tx).await?;
+    }
+
+    // Tenant deletion is the final fixture boundary. Any unlisted RESTRICT
+    // dependency causes this transaction to fail and roll back in full.
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1")
+        .bind(scope.tenant_id).execute(&mut *tx).await?;
+    tx.commit().await
+}
+
+async fn phone_fixture_snapshot(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    ai_id: Uuid,
+    ai_phone_id: Uuid,
+    principal_id: Uuid,
+) -> Value {
+    let tenant: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE tenant_id=$1")
+        .bind(tenant_id).fetch_one(pool).await.unwrap();
+    let principal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM principals WHERE tenant_id=$1 AND principal_id=$2")
+        .bind(tenant_id).bind(principal_id).fetch_one(pool).await.unwrap();
+    let identity_principal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identity_principals WHERE ai_id=$1 AND tenant_id=$2 AND principal_id=$3")
+        .bind(ai_id).bind(tenant_id).bind(principal_id).fetch_one(pool).await.unwrap();
+    let identity_tenant: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2")
+        .bind(ai_id).bind(tenant_id).fetch_one(pool).await.unwrap();
+    let phone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3")
+        .bind(ai_phone_id).bind(tenant_id).bind(ai_id).fetch_one(pool).await.unwrap();
+    let endpoints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_endpoints WHERE tenant_id=$1 AND ai_phone_id=$2")
+        .bind(tenant_id).bind(ai_phone_id).fetch_one(pool).await.unwrap();
+    let attachments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_attachments WHERE tenant_id=$1 AND ai_phone_id=$2")
+        .bind(tenant_id).bind(ai_phone_id).fetch_one(pool).await.unwrap();
+    let credentials: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_endpoint_credentials WHERE tenant_id=$1 AND ai_phone_id=$2")
+        .bind(tenant_id).bind(ai_phone_id).fetch_one(pool).await.unwrap();
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE tenant_id=$1 AND ai_phone_id=$2")
+        .bind(tenant_id).bind(ai_phone_id).fetch_one(pool).await.unwrap();
+    let mission_links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_mission_links WHERE tenant_id=$1 AND ai_phone_id=$2")
+        .bind(tenant_id).bind(ai_phone_id).fetch_one(pool).await.unwrap();
+    serde_json::json!({
+        "tenant":tenant,"principal":principal,"identity_principal":identity_principal,
+        "identity_tenant":identity_tenant,"phone":phone,"endpoints":endpoints,
+        "attachments":attachments,"credentials":credentials,"messages":messages,
+        "mission_links":mission_links
+    })
+}
+
+fn append_cleanup_isolation_evidence(record: Value) {
+    let directory = std::env::var("AUDIT_EVIDENCE_DIR")
+        .expect("AUDIT_EVIDENCE_DIR must be configured by CI");
+    std::fs::create_dir_all(&directory).expect("create cleanup evidence directory");
+    let path = std::path::Path::new(&directory).join("cleanup-isolation-results.jsonl");
+    let mut file = OpenOptions::new().create(true).append(true).open(path)
+        .expect("open cleanup isolation JSONL");
+    writeln!(file, "{}", record).expect("append cleanup isolation JSONL");
+}
+
+#[tokio::test]
+async fn ai_phone_02c_transactional_cleanup_isolates_shared_identity_fixtures_10x() {
+    let database_url = std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool = connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("apply exact-target migrations");
+
+    let shared_ai_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label)
+         VALUES($1,$2,'TEST','shared cleanup isolation identity')"
+    )
+    .bind(shared_ai_id)
+    .bind(format!("phone-02c-cleanup-shared-{shared_ai_id}"))
+    .execute(&pool).await.unwrap();
+
+    for iteration in 1..=10 {
+        let tenant_a = Uuid::new_v4();
+        let tenant_b = Uuid::new_v4();
+        let room_a = Uuid::new_v4();
+        let room_b = Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,$2),($3,$4)")
+            .bind(tenant_a).bind(format!("cleanup-A-{iteration}"))
+            .bind(tenant_b).bind(format!("cleanup-B-{iteration}"))
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,$3),($4,$5,$6)")
+            .bind(room_a).bind(tenant_a).bind(format!("cleanup-room-A-{iteration}"))
+            .bind(room_b).bind(tenant_b).bind(format!("cleanup-room-B-{iteration}"))
+            .execute(&pool).await.unwrap();
+
+        let (principal_a, _, _, _, _, _) =
+            add_ai(&pool, tenant_a, room_a, &format!("CLEANUP-A-{iteration}")).await;
+        let (principal_b, _, _, _, _, _) =
+            add_ai(&pool, tenant_b, room_b, &format!("CLEANUP-B-{iteration}")).await;
+
+        for (tenant_id, principal_id) in [(tenant_a, principal_a), (tenant_b, principal_b)] {
+            sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+                .bind(shared_ai_id).bind(tenant_id).bind(principal_id)
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+                .bind(shared_ai_id).bind(tenant_id).execute(&pool).await.unwrap();
+        }
+
+        let phone_a = Uuid::new_v4();
+        let phone_b = Uuid::new_v4();
+        sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3),($4,$2,$5)")
+            .bind(phone_a).bind(shared_ai_id).bind(tenant_a)
+            .bind(phone_b).bind(tenant_b).execute(&pool).await.unwrap();
+
+        let before_a = phone_fixture_snapshot(&pool, tenant_a, shared_ai_id, phone_a, principal_a).await;
+        let before_b = phone_fixture_snapshot(&pool, tenant_b, shared_ai_id, phone_b, principal_b).await;
+        let global_identity_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identities WHERE ai_id=$1")
+            .bind(shared_ai_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(global_identity_before, 1);
+
+        let scope_a = PhoneFixtureCleanupScope {
+            tenant_id: tenant_a,
+            identities: vec![PhoneIdentityFixtureScope {
+                ai_id: shared_ai_id, ai_phone_id: phone_a, principal_id: principal_a,
+                operator_key_ids: Vec::new(),
+            }],
+        };
+        cleanup_phone_fixture(&pool, &scope_a).await
+            .expect("cleanup of fixture A must commit atomically");
+
+        let after_a = phone_fixture_snapshot(&pool, tenant_a, shared_ai_id, phone_a, principal_a).await;
+        let after_b = phone_fixture_snapshot(&pool, tenant_b, shared_ai_id, phone_b, principal_b).await;
+        let global_identity_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identities WHERE ai_id=$1")
+            .bind(shared_ai_id).fetch_one(&pool).await.unwrap();
+
+        assert_eq!(after_a["tenant"], 0, "fixture A tenant must be gone");
+        assert_eq!(after_a["phone"], 0, "fixture A phone must be gone");
+        assert_eq!(after_a["identity_principal"], 0);
+        assert_eq!(after_a["identity_tenant"], 0);
+        assert_eq!(after_b, before_b, "cleanup A must leave fixture B byte-for-byte count-equivalent");
+        assert_eq!(global_identity_after, 1, "shared global AI identity must survive cleanup A");
+
+        append_cleanup_isolation_evidence(serde_json::json!({
+            "iteration":iteration,"stage":"cleanup_A_preserves_B",
+            "tenant_a":tenant_a,"tenant_b":tenant_b,"shared_ai_id":shared_ai_id,
+            "snapshot_a_before":before_a,"snapshot_a_after":after_a,
+            "snapshot_b_before":before_b,"snapshot_b_after":after_b,
+            "shared_identity_count":global_identity_after,"status":"PASS",
+            "target_sha":std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+            "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+        }));
+
+        let scope_b = PhoneFixtureCleanupScope {
+            tenant_id: tenant_b,
+            identities: vec![PhoneIdentityFixtureScope {
+                ai_id: shared_ai_id, ai_phone_id: phone_b, principal_id: principal_b,
+                operator_key_ids: Vec::new(),
+            }],
+        };
+        cleanup_phone_fixture(&pool, &scope_b).await
+            .expect("cleanup of fixture B must commit atomically");
+        let after_b_cleanup = phone_fixture_snapshot(&pool, tenant_b, shared_ai_id, phone_b, principal_b).await;
+        assert_eq!(after_b_cleanup["tenant"], 0);
+        assert_eq!(after_b_cleanup["phone"], 0);
+        let final_identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_identities WHERE ai_id=$1")
+            .bind(shared_ai_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(final_identity_count, 1, "global identity is intentionally retained");
+
+        append_cleanup_isolation_evidence(serde_json::json!({
+            "iteration":iteration,"stage":"cleanup_B_complete",
+            "tenant_b":tenant_b,"snapshot_b_after_cleanup":after_b_cleanup,
+            "shared_identity_count":final_identity_count,"status":"PASS",
+            "target_sha":std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+            "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+        }));
+    }
+}
