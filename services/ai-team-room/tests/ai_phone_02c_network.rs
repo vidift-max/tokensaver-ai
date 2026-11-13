@@ -12,6 +12,9 @@ use uuid::Uuid;
 const COMMUNICATION_SOURCE_TARGET_SHA: &str = "ebb8eeecfea087443c5f3eba7021e96cb5302fe7";
 const COMMUNICATION_SOURCE_BLOB_SHA: &str = "4a89ffd34fe78a8b68fd7ed2c83ed43f18b6eb65";
 const TASKS_SOURCE_BLOB_SHA: &str = "b6bd7f33d7a1bcad943060c09b38ec9dcf612819";
+const HANDOFFS_SOURCE_BLOB_SHA: &str = "f6736c77ef66d8c85c1c1ddb261d96649638761e";
+#[path = "../src/handoffs.rs"]
+mod handoffs;
 #[path = "../src/tasks.rs"]
 mod tasks;
 #[path = "../src/communication.rs"]
@@ -281,6 +284,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "communication.rs must be the exact blob from TARGET_SHA");
     assert_eq!(std::env::var("TASKS_SOURCE_BLOB_SHA").as_deref(), Ok(TASKS_SOURCE_BLOB_SHA),
         "tasks.rs must be the exact companion blob from TARGET_SHA");
+    assert_eq!(std::env::var("HANDOFFS_SOURCE_BLOB_SHA").as_deref(), Ok(HANDOFFS_SOURCE_BLOB_SHA),
+        "handoffs.rs must be the exact companion blob from TARGET_SHA");
     let router = communication::router(pool.clone())
         .merge(ai_team_room_service::phone::router(pool.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

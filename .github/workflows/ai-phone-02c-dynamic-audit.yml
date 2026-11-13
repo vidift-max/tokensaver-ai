@@ -57,13 +57,16 @@ jobs:
           test "$actual" = "$TARGET_SHA"
           communication_blob="$(git -C target rev-parse "$TARGET_SHA:services/ai-team-room/src/communication.rs")"
           tasks_blob="$(git -C target rev-parse "$TARGET_SHA:services/ai-team-room/src/tasks.rs")"
+          handoffs_blob="$(git -C target rev-parse "$TARGET_SHA:services/ai-team-room/src/handoffs.rs")"
           test "$communication_blob" = "4a89ffd34fe78a8b68fd7ed2c83ed43f18b6eb65"
           test "$tasks_blob" = "b6bd7f33d7a1bcad943060c09b38ec9dcf612819"
+          test "$handoffs_blob" = "f6736c77ef66d8c85c1c1ddb261d96649638761e"
           {
             echo "TARGET_SHA=$TARGET_SHA"
             echo "TARGET_HEAD=$actual"
             echo "COMMUNICATION_SOURCE_BLOB_SHA=$communication_blob"
             echo "TASKS_SOURCE_BLOB_SHA=$tasks_blob"
+            echo "HANDOFFS_SOURCE_BLOB_SHA=$handoffs_blob"
             echo "HARNESS_SHA=$(git -C audit-harness rev-parse HEAD)"
             echo "WORKFLOW_SHA=$GITHUB_SHA"
             echo "RUN_ID=$GITHUB_RUN_ID"
@@ -72,6 +75,7 @@ jobs:
           {
             echo "COMMUNICATION_SOURCE_BLOB_SHA=$communication_blob"
             echo "TASKS_SOURCE_BLOB_SHA=$tasks_blob"
+            echo "HANDOFFS_SOURCE_BLOB_SHA=$handoffs_blob"
           } >> "$GITHUB_ENV"
 
       - name: Install Rust stable
