@@ -1892,3 +1892,240 @@ async fn ai_phone_02c_cleanup_round1_reproduces_mismatched_scope_tenant_deletion
         "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
     }));
 }
+
+
+// Round 1 independent scope-mismatch probes. These are characterization/security
+// tests against the immutable TARGET helper. Each scenario owns its own disposable
+// rows and emits before/after JSONL even when the expected safety assertion fails.
+async fn round1_create_fixture(
+    pool: &PgPool,
+    label: &str,
+    with_phone: bool,
+) -> (Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>) {
+    let tenant_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,$2)")
+        .bind(tenant_id).bind(format!("round1-{label}-{tenant_id}"))
+        .execute(pool).await.unwrap();
+
+    let (ai_id, phone_id, principal_id) = if with_phone {
+        let principal_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject)
+             VALUES($1,$2,'AI','phone-02c-round1',$3)"
+        )
+        .bind(principal_id).bind(tenant_id).bind(format!("round1-{label}-{principal_id}"))
+        .execute(pool).await.unwrap();
+
+        let ai_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label)
+             VALUES($1,$2,'TEST',$3)"
+        )
+        .bind(ai_id).bind(format!("round1-{label}-{ai_id}")).bind(label)
+        .execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)"
+        )
+        .bind(ai_id).bind(tenant_id).bind(principal_id)
+        .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+            .bind(ai_id).bind(tenant_id).execute(pool).await.unwrap();
+
+        let phone_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3)")
+            .bind(phone_id).bind(ai_id).bind(tenant_id)
+            .execute(pool).await.unwrap();
+        (Some(ai_id), Some(phone_id), Some(principal_id))
+    } else {
+        (None, None, None)
+    };
+
+    sqlx::query(
+        "INSERT INTO audit_events(audit_event_id,tenant_id,action,resource_type,outcome)
+         VALUES($1,$2,'round1.fixture.created','audit_probe','SUCCESS')"
+    )
+    .bind(Uuid::new_v4()).bind(tenant_id).execute(pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload)
+         VALUES($1,$2,'round1_fixture',$3,'round1.fixture.created','{}'::jsonb)"
+    )
+    .bind(Uuid::new_v4()).bind(tenant_id).bind(tenant_id)
+    .execute(pool).await.unwrap();
+
+    (tenant_id, ai_id, phone_id, principal_id)
+}
+
+async fn round1_state(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    ai_id: Option<Uuid>,
+    phone_id: Option<Uuid>,
+    principal_id: Option<Uuid>,
+) -> Value {
+    let tenant: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id=$1)")
+        .bind(tenant_id).fetch_one(pool).await.unwrap();
+    let audit_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE tenant_id=$1")
+        .bind(tenant_id).fetch_one(pool).await.unwrap();
+    let outbox_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outbox_events WHERE tenant_id=$1")
+        .bind(tenant_id).fetch_one(pool).await.unwrap();
+    let ai_exists: bool = if let Some(id) = ai_id {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai_identities WHERE ai_id=$1)")
+            .bind(id).fetch_one(pool).await.unwrap()
+    } else { false };
+    let phone_exists: bool = if let Some(id) = phone_id {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai_phones WHERE ai_phone_id=$1)")
+            .bind(id).fetch_one(pool).await.unwrap()
+    } else { false };
+    let principal_exists: bool = if let Some(id) = principal_id {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM principals WHERE tenant_id=$1 AND principal_id=$2)")
+            .bind(tenant_id).bind(id).fetch_one(pool).await.unwrap()
+    } else { false };
+    serde_json::json!({
+        "tenant_exists":tenant,
+        "global_ai_exists":ai_exists,
+        "phone_exists":phone_exists,
+        "principal_exists":principal_exists,
+        "audit_event_count":audit_events,
+        "outbox_event_count":outbox_events
+    })
+}
+
+fn round1_emit_scenario(
+    scenario: &str,
+    tenant_id: Uuid,
+    before: Value,
+    after: Value,
+    result: &Result<(), sqlx::Error>,
+) {
+    append_cleanup_isolation_evidence(serde_json::json!({
+        "round":1,
+        "scenario":scenario,
+        "before":before,
+        "cleanup_returned_ok":result.is_ok(),
+        "cleanup_error":result.as_ref().err().map(|e| e.to_string()),
+        "after":after,
+        "target_sha":std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+        "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+    }));
+}
+
+#[tokio::test]
+async fn ai_phone_02c_round1_case1_valid_tenant_random_ai_only() {
+    let database_url=std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool=connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("migrate");
+    let (tenant_id,_,_,_)=round1_create_fixture(&pool,"case1",false).await;
+    let before=round1_state(&pool,tenant_id,None,None,None).await;
+    let scope=PhoneFixtureCleanupScope{tenant_id,identities:vec![PhoneIdentityFixtureScope{
+        ai_id:Uuid::new_v4(),ai_phone_id:Uuid::new_v4(),principal_id:Uuid::new_v4(),
+        operator_key_ids:vec![]
+    }]};
+    let result=cleanup_phone_fixture(&pool,&scope).await;
+    let after=round1_state(&pool,tenant_id,None,None,None).await;
+    round1_emit_scenario("1_valid_tenant_random_nonexistent_ai_only",tenant_id,before,after.clone(),&result);
+    assert!(after["tenant_exists"].as_bool().unwrap_or(false),
+        "unsafe cleanup deleted a valid tenant for a nonexistent AI scope");
+    assert_eq!(after["audit_event_count"],1,"audit row must survive");
+    assert_eq!(after["outbox_event_count"],1,"outbox row must survive");
+}
+
+#[tokio::test]
+async fn ai_phone_02c_round1_case2_valid_tenant_random_phone_only() {
+    let database_url=std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool=connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("migrate");
+    let (tenant_id,ai_id,_,principal_id)=round1_create_fixture(&pool,"case2",true).await;
+    let (ai_id,principal_id)=(ai_id.unwrap(),principal_id.unwrap());
+    let before=round1_state(&pool,tenant_id,Some(ai_id),None,Some(principal_id)).await;
+    let scope=PhoneFixtureCleanupScope{tenant_id,identities:vec![PhoneIdentityFixtureScope{
+        ai_id,ai_phone_id:Uuid::new_v4(),principal_id,operator_key_ids:vec![]
+    }]};
+    let result=cleanup_phone_fixture(&pool,&scope).await;
+    let after=round1_state(&pool,tenant_id,Some(ai_id),None,Some(principal_id)).await;
+    round1_emit_scenario("2_valid_tenant_valid_ai_random_nonexistent_phone",tenant_id,before,after.clone(),&result);
+    assert!(after["tenant_exists"].as_bool().unwrap_or(false),
+        "tenant must survive a cleanup scope with a nonexistent Phone ID");
+    assert!(after["global_ai_exists"].as_bool().unwrap_or(false));
+    assert_eq!(after["audit_event_count"],1);
+    assert_eq!(after["outbox_event_count"],1);
+}
+
+#[tokio::test]
+async fn ai_phone_02c_round1_case3_valid_tenant_incompatible_principal() {
+    let database_url=std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool=connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("migrate");
+    let (tenant_id,ai_id,phone_id,principal_id)=round1_create_fixture(&pool,"case3",true).await;
+    let (ai_id,phone_id,principal_id)=(ai_id.unwrap(),phone_id.unwrap(),principal_id.unwrap());
+    let before=round1_state(&pool,tenant_id,Some(ai_id),Some(phone_id),Some(principal_id)).await;
+    let scope=PhoneFixtureCleanupScope{tenant_id,identities:vec![PhoneIdentityFixtureScope{
+        ai_id,ai_phone_id:phone_id,principal_id:Uuid::new_v4(),operator_key_ids:vec![]
+    }]};
+    let result=cleanup_phone_fixture(&pool,&scope).await;
+    let after=round1_state(&pool,tenant_id,Some(ai_id),Some(phone_id),Some(principal_id)).await;
+    round1_emit_scenario("3_valid_tenant_incompatible_principal",tenant_id,before,after.clone(),&result);
+    assert!(after["tenant_exists"].as_bool().unwrap_or(false),
+        "tenant must survive a cleanup scope with an incompatible principal");
+    assert!(after["global_ai_exists"].as_bool().unwrap_or(false));
+    assert!(after["phone_exists"].as_bool().unwrap_or(false));
+    assert!(after["principal_exists"].as_bool().unwrap_or(false));
+    assert_eq!(after["audit_event_count"],1);
+    assert_eq!(after["outbox_event_count"],1);
+}
+
+#[tokio::test]
+async fn ai_phone_02c_round1_case4_valid_tenant_nonexistent_operator_key() {
+    let database_url=std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool=connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("migrate");
+    let (tenant_id,ai_id,phone_id,principal_id)=round1_create_fixture(&pool,"case4",true).await;
+    let (ai_id,phone_id,principal_id)=(ai_id.unwrap(),phone_id.unwrap(),principal_id.unwrap());
+    let before=round1_state(&pool,tenant_id,Some(ai_id),Some(phone_id),Some(principal_id)).await;
+    let scope=PhoneFixtureCleanupScope{tenant_id,identities:vec![PhoneIdentityFixtureScope{
+        ai_id,ai_phone_id:phone_id,principal_id,operator_key_ids:vec![Uuid::new_v4()]
+    }]};
+    let result=cleanup_phone_fixture(&pool,&scope).await;
+    let after=round1_state(&pool,tenant_id,Some(ai_id),Some(phone_id),Some(principal_id)).await;
+    round1_emit_scenario("4_valid_tenant_nonexistent_operator_key",tenant_id,before,after.clone(),&result);
+    assert!(after["tenant_exists"].as_bool().unwrap_or(false),
+        "tenant must survive a cleanup scope with an operator key ID that does not exist");
+    assert!(after["global_ai_exists"].as_bool().unwrap_or(false));
+    assert_eq!(after["audit_event_count"],1);
+    assert_eq!(after["outbox_event_count"],1);
+}
+
+#[tokio::test]
+async fn ai_phone_02c_round1_case5_tenant_a_ids_from_different_fixtures() {
+    let database_url=std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool=connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("migrate");
+    let (tenant_a,_,_,_)=round1_create_fixture(&pool,"case5-tenant-a",false).await;
+    let (tenant_b,ai_b,phone_b,_)=round1_create_fixture(&pool,"case5-phone-b",true).await;
+    let (tenant_c,_,_,principal_c)=round1_create_fixture(&pool,"case5-principal-c",true).await;
+    let (ai_b,phone_b,principal_c)=(ai_b.unwrap(),phone_b.unwrap(),principal_c.unwrap());
+    let before_a=round1_state(&pool,tenant_a,None,None,None).await;
+    let before_b=round1_state(&pool,tenant_b,Some(ai_b),Some(phone_b),None).await;
+    let before_c=round1_state(&pool,tenant_c,None,None,Some(principal_c)).await;
+    let scope=PhoneFixtureCleanupScope{tenant_id:tenant_a,identities:vec![PhoneIdentityFixtureScope{
+        ai_id:ai_b,ai_phone_id:phone_b,principal_id:principal_c,operator_key_ids:vec![]
+    }]};
+    let result=cleanup_phone_fixture(&pool,&scope).await;
+    let after_a=round1_state(&pool,tenant_a,None,None,None).await;
+    let after_b=round1_state(&pool,tenant_b,Some(ai_b),Some(phone_b),None).await;
+    let after_c=round1_state(&pool,tenant_c,None,None,Some(principal_c)).await;
+    append_cleanup_isolation_evidence(serde_json::json!({
+        "round":1,"scenario":"5_tenant_a_with_ai_phone_and_principal_ids_from_distinct_fixtures_b_and_c",
+        "before":{"tenant_a":before_a,"fixture_b":before_b,"fixture_c":before_c},
+        "cleanup_returned_ok":result.is_ok(),
+        "cleanup_error":result.as_ref().err().map(|e|e.to_string()),
+        "after":{"tenant_a":after_a,"fixture_b":after_b,"fixture_c":after_c},
+        "target_sha":std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+        "harness_sha":std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+    }));
+    assert!(after_a["tenant_exists"].as_bool().unwrap_or(false),
+        "tenant A must not be deleted using IDs from fixtures B and C");
+    assert_eq!(after_a["audit_event_count"],1);
+    assert_eq!(after_a["outbox_event_count"],1);
+    assert_eq!(after_b,before_b,"fixture B must remain unchanged");
+    assert_eq!(after_c,before_c,"fixture C must remain unchanged");
+}
