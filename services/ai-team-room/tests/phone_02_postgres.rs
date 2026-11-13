@@ -901,6 +901,18 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status,_) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&endpoint_3_credential),None,None).await;
     assert_eq!(status,StatusCode::UNAUTHORIZED,"transferred-away endpoint cannot recover the final generation");
+    let (status,_) = call(&app,"GET","/ai-phone/me",&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"AI bearer alone cannot recover the replacement generation or fence");
+    let (status,_) = call(&app,"GET",&format!("/ai-phone/{phone_2_id}/endpoints"),&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"AI bearer alone cannot discover the replacement endpoint");
+    let (status,_) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old endpoint credential cannot access the replacement mailbox");
+    let (status,_) = call(&app,"GET",&phone_2_messages_path,&token_2,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"AI bearer alone cannot access the endpoint mailbox");
+    let (status,_) = call_with_headers(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages/{race_message_id}/ack"),&token_2,
+        Some(&endpoint_3_credential),None,None).await;
+    assert_eq!(status,StatusCode::UNAUTHORIZED,"old endpoint credential cannot ACK after transfer");
     let (status,body)=call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&current_endpoint_credential),None,None).await;
     assert_eq!(status,StatusCode::OK);
