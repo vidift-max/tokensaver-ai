@@ -578,11 +578,10 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "idempotency_key":"concurrent-message-key",
         "content":{"text":"concurrent idempotent send"}
     });
+    let concurrent_uri = format!("/ai-phone/{}/messages", first.phone.ai_phone_id);
     let (send_left, send_right) = tokio::join!(
-        http_call(&app, "POST", &format!("/ai-phone/{}/messages", first.phone.ai_phone_id),
-            Some(&token_b), Some(concurrent_body.clone())),
-        http_call(&app, "POST", &format!("/ai-phone/{}/messages", first.phone.ai_phone_id),
-            Some(&token_b), Some(concurrent_body.clone()))
+        http_call(&app, "POST", &concurrent_uri, Some(&token_b), Some(concurrent_body.clone())),
+        http_call(&app, "POST", &concurrent_uri, Some(&token_b), Some(concurrent_body.clone()))
     );
     let mut concurrent_statuses = vec![send_left.status(), send_right.status()];
     concurrent_statuses.sort();
