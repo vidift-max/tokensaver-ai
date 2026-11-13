@@ -108,6 +108,13 @@ pub struct MissionLinkRequest {
     pub task_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EndpointRegistration {
+    pub endpoint: PhoneEndpoint,
+    /// Returned once to the separately authorized operator for secure delivery to the endpoint.
+    pub endpoint_credential: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PhoneSnapshot {
     pub phone: PhoneRecord,
@@ -845,7 +852,8 @@ async fn provision_phone_handler(State(pool): State<PgPool>, headers: HeaderMap,
         .map_err(|error| match error {
             PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT, PhoneError::Invalid => StatusCode::BAD_REQUEST,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
+            PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
             PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })
 }
@@ -861,7 +869,7 @@ async fn provision_identity_handler(
             PhoneError::Forbidden => StatusCode::FORBIDDEN,
             PhoneError::Conflict => StatusCode::CONFLICT,
             PhoneError::Invalid => StatusCode::BAD_REQUEST,
-            PhoneError::InvalidSession => StatusCode::UNAUTHORIZED,
+            PhoneError::InvalidSession | PhoneError::EndpointUnauthorized => StatusCode::UNAUTHORIZED,
             PhoneError::Fenced => StatusCode::PRECONDITION_FAILED,
             PhoneError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })
