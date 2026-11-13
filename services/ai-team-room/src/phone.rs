@@ -1,5 +1,5 @@
 use crate::auth::{authenticate_session, require_permission, AuthenticatedIdentity};
-use axum::{extract::{Path, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, http::{HeaderMap, StatusCode}, routing::{get, post}, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -718,11 +718,137 @@ async fn provision_identity_handler(
         })
 }
 
+
+
+#[derive(Debug, Deserialize)]
+struct PhoneRegistryQuery {
+    limit: Option<i64>,
+    after: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+struct PhoneRegistryItem {
+    ai_id: Uuid,
+    tenant_id: Uuid,
+    ai_phone_id: Uuid,
+    phone_status: String,
+    active_endpoint_id: Option<Uuid>,
+    endpoint_status: Option<String>,
+    active_session_id: Option<Uuid>,
+    active_execution_id: Option<Uuid>,
+    heartbeat_at: Option<DateTime<Utc>>,
+    last_activity_at: Option<DateTime<Utc>>,
+    availability: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PhoneRegistryPage {
+    items: Vec<PhoneRegistryItem>,
+    next_cursor: Option<Uuid>,
+}
+
+async fn registry_handler(
+    State(pool): State<PgPool>,
+    Query(query): Query<PhoneRegistryQuery>,
+    headers: HeaderMap,
+) -> Result<Json<PhoneRegistryPage>, StatusCode> {
+    let identity = authenticate_session(&pool, &headers).await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    require_permission(&pool, &identity, "phone.registry.read").await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // There is deliberately no tenant_id request field. Tenant scope comes only
+    // from the authenticated session, even if a caller appends tenant_id to the URL.
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let mut rows = sqlx::query_as::<_, PhoneRegistryItem>(
+        r#"SELECT
+            p.ai_id,
+            p.tenant_id,
+            p.ai_phone_id,
+            p.phone_status,
+            active.endpoint_id AS active_endpoint_id,
+            e.endpoint_status,
+            active.session_id AS active_session_id,
+            active.execution_id AS active_execution_id,
+            w.heartbeat_at,
+            GREATEST(p.last_seen_at, e.last_seen_at, w.heartbeat_at) AS last_activity_at,
+            CASE
+              WHEN active.endpoint_id IS NULL THEN
+                CASE WHEN EXISTS (
+                  SELECT 1 FROM phone_endpoints registered
+                  WHERE registered.ai_phone_id=p.ai_phone_id
+                    AND registered.tenant_id=p.tenant_id
+                    AND registered.ai_id=p.ai_id
+                    AND registered.endpoint_status='REGISTERED'
+                ) THEN 'RECONNECTING' ELSE 'OFFLINE' END
+              WHEN s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
+                AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()
+                AND e.endpoint_status='ATTACHED'
+                AND e.last_seen_at>NOW()-INTERVAL '90 seconds'
+                AND w.heartbeat_at>NOW()-INTERVAL '90 seconds'
+                THEN 'AVAILABLE'
+              WHEN s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW()
+                AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW()
+                THEN 'DEGRADED'
+              ELSE 'OFFLINE'
+            END AS availability
+          FROM ai_phones p
+          JOIN ai_identity_principals ip
+            ON ip.ai_id=p.ai_id AND ip.tenant_id=p.tenant_id
+          LEFT JOIN LATERAL (
+            SELECT a.endpoint_id, a.session_id, a.execution_id,
+                   a.room_id, a.principal_id, a.participant_id
+            FROM phone_attachments a
+            WHERE a.ai_phone_id=p.ai_phone_id
+              AND a.tenant_id=p.tenant_id
+              AND a.ai_id=p.ai_id
+              AND a.attachment_status='ACTIVE'
+              AND a.endpoint_fence=(SELECT current_phone.endpoint_fence
+                                    FROM ai_phones current_phone
+                                    WHERE current_phone.ai_phone_id=p.ai_phone_id
+                                      AND current_phone.tenant_id=p.tenant_id)
+            ORDER BY a.attached_at DESC
+            LIMIT 1
+          ) active ON TRUE
+          LEFT JOIN phone_endpoints e
+            ON e.endpoint_id=active.endpoint_id
+           AND e.ai_phone_id=p.ai_phone_id
+           AND e.tenant_id=p.tenant_id
+           AND e.ai_id=p.ai_id
+          LEFT JOIN sessions s
+            ON s.session_id=active.session_id
+           AND s.tenant_id=p.tenant_id
+           AND s.room_id=active.room_id
+           AND s.principal_id=active.principal_id
+          LEFT JOIN workload_executions w
+            ON w.execution_id=active.execution_id
+           AND w.tenant_id=p.tenant_id
+           AND w.room_id=active.room_id
+           AND w.participant_id=active.participant_id
+           AND w.principal_id=active.principal_id
+           AND w.session_id=active.session_id
+          WHERE p.tenant_id=$1
+            AND ($2::uuid IS NULL OR p.ai_phone_id>$2)
+          ORDER BY p.ai_phone_id
+          LIMIT $3"#
+    )
+    .bind(identity.tenant_id)
+    .bind(query.after)
+    .bind(limit + 1)
+    .fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let has_more = rows.len() as i64 > limit;
+    if has_more { rows.pop(); }
+    let next_cursor = if has_more { rows.last().map(|row| row.ai_phone_id) } else { None };
+    Ok(Json(PhoneRegistryPage { items: rows, next_cursor }))
+}
+
 pub fn router(pool: PgPool) -> Router {
     Router::new()
         .route("/ai-phone/identities", post(provision_identity_handler))
         .route("/ai-phone/provision", post(provision_phone_handler))
         .route("/ai-phone/me", get(get_phone_handler))
+        .route("/ai-phone/registry", get(registry_handler))
         .route("/ai-phone/attach", post(attach_handler))
         .route("/ai-phone/detach", post(detach_handler))
         .route("/ai-phone/heartbeat", post(heartbeat_handler))
