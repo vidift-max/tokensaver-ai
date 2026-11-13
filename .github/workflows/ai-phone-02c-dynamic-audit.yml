@@ -111,7 +111,7 @@ jobs:
           from pathlib import Path
           p = Path("../ai-phone-02d-repetitions.jsonl")
           raw = p.read_bytes()
-          assert raw.endswith(b"\\n"), "JSONL must end with a physical newline"
+          assert raw.endswith(b"\n"), "JSONL must end with a physical newline"
           lines = raw.splitlines()
           assert len(lines) == 20, f"expected 20 JSON records, got {len(lines)}"
           records = [json.loads(line) for line in lines]
