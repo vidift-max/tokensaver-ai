@@ -857,12 +857,13 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
 
     let transfer_body_5=serde_json::json!({"endpoint_id":endpoint_5,"endpoint_type":"TEST","metadata":{"label":"transfer-race-5"}});
     let transfer_body_6=serde_json::json!({"endpoint_id":endpoint_6,"endpoint_type":"TEST","metadata":{"label":"transfer-race-6"}});
+    let race_ack_path=format!("/ai-phone/{phone_2_id}/messages/{race_message_id}/ack");
     let (transfer_5,transfer_6,heartbeat_old,ack_old)=tokio::join!(
         call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_5_credential),None,Some(transfer_body_5)),
         call_with_headers(&app,"POST","/ai-phone/transfer",&token_2,Some(&endpoint_6_credential),None,Some(transfer_body_6)),
         call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&endpoint_3_credential),None,
             Some(serde_json::json!({"endpoint_fence":transfer_fence}))),
-        call_with_headers(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages/{race_message_id}/ack"),&token_2,
+        call_with_headers(&app,"POST",&race_ack_path,&token_2,
             Some(&endpoint_3_credential),None,None)
     );
     assert_eq!(transfer_5.0,StatusCode::OK,"first concurrent transfer is serialized and succeeds");
@@ -939,10 +940,11 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let (status, _) = call_with_headers(&app,"GET",&phone_2_messages_path,&token_2,
         Some(&current_endpoint_credential),None,None).await;
     assert_eq!(status,StatusCode::OK,"probe message is delivered before revocation");
+    let revoke_endpoint_path=format!("/ai-phone/endpoints/{current_endpoint_id}/revoke");
     let (heartbeat_during_revoke,revoke_result)=tokio::join!(
         call_with_headers(&app,"POST","/ai-phone/heartbeat",&token_2,Some(&current_endpoint_credential),None,
             Some(serde_json::json!({"endpoint_fence":current_fence}))),
-        call_with_headers(&app,"POST",&format!("/ai-phone/endpoints/{current_endpoint_id}/revoke"),&token_2,
+        call_with_headers(&app,"POST",&revoke_endpoint_path,&token_2,
             None,Some(&operator_key_2),None)
     );
     assert!(heartbeat_during_revoke.0==StatusCode::OK || heartbeat_during_revoke.0==StatusCode::UNAUTHORIZED,
