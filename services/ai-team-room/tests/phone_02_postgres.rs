@@ -548,8 +548,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     ).await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
-        "AI #1 endpoint credential cannot ACK a message delivered to Phone #2"
+        StatusCode::NOT_FOUND,
+        "AI #1 cannot address Phone #2's message through its own phone context"
     );
 
     let (status, _) = call_with_headers(
