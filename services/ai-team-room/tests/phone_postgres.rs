@@ -585,7 +585,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let pending: (i64,String) = sqlx::query_as("SELECT sequence_no,message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(pending,(next_sequence,"PENDING".to_string()));
-    let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_b),None).await;
+    let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),&token_b,&endpoint_f_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let inbox:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
