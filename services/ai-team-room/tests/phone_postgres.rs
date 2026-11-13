@@ -665,7 +665,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let presence:Value=serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(presence["presence_state"],"DISCONNECTED");
+    assert_eq!(presence["presence_state"],"RECONNECTING",
+        "a pre-registered replacement endpoint keeps the phone in reconnecting state after detach");
 
     sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1").bind(foreign_phone).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM team_tasks WHERE task_id=$1").bind(foreign_task).execute(&pool).await.unwrap();
