@@ -474,7 +474,7 @@ async fn detach_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(req
 
 async fn register_endpoint_handler(
     State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<AttachRequest>,
-) -> Result<(StatusCode, Json<PhoneEndpoint>), StatusCode> {
+) -> Result<(StatusCode, Json<EndpointRegistration>), StatusCode> {
     let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
     require_permission(&pool,&identity,"phone.attach").await.map_err(|_|StatusCode::FORBIDDEN)?;
     if !valid_endpoint_type(&request.endpoint_type) || !request.metadata.is_object()
@@ -488,33 +488,49 @@ async fn register_endpoint_handler(
         _=>StatusCode::INTERNAL_SERVER_ERROR
     })?;
     let phone=owned_phone(&mut tx,&identity).await.map_err(|_|StatusCode::NOT_FOUND)?;
+    let _locked=sqlx::query("SELECT ai_phone_id FROM ai_phones WHERE ai_phone_id=$1 AND tenant_id=$2 AND ai_id=$3 FOR UPDATE")
+        .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    require_endpoint_operator(&pool,&identity,phone.ai_id,&headers).await?;
+
     let existing=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4 FOR UPDATE")
-        .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    if existing.is_none() {
-        let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
-            .bind(request.endpoint_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-        if claimed { return Err(StatusCode::CONFLICT); }
-    }
+        .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .fetch_optional(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(endpoint)=existing {
         if endpoint.endpoint_status=="REVOKED" || endpoint.endpoint_status=="ATTACHED" {
             return Err(StatusCode::CONFLICT);
         }
         sqlx::query("UPDATE phone_endpoints SET endpoint_type=$1,endpoint_status='REGISTERED',metadata=$2,detached_at=NULL WHERE endpoint_id=$3 AND ai_phone_id=$4 AND tenant_id=$5 AND ai_id=$6")
-            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+            .bind(&request.endpoint_type).bind(&request.metadata).bind(request.endpoint_id)
+            .bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
-        let inserted=sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,$5,'REGISTERED',$6) ON CONFLICT(endpoint_id) DO NOTHING")
-            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id).bind(&request.endpoint_type).bind(&request.metadata)
+        let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phone_endpoints WHERE endpoint_id=$1)")
+            .bind(request.endpoint_id).fetch_one(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        if claimed { return Err(StatusCode::CONFLICT); }
+        sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,$5,'REGISTERED',$6)")
+            .bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id).bind(phone.ai_id)
+            .bind(&request.endpoint_type).bind(&request.metadata)
             .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-        if inserted.rows_affected()==0 { return Err(StatusCode::CONFLICT); }
     }
+
+    // Rotation is serialized by the phone row lock. Only the separately authorized operator
+    // receives this one-time random secret; the database stores only its SHA-256 digest.
+    sqlx::query("UPDATE phone_endpoint_credentials SET credential_status='REVOKED',revoked_at=NOW() WHERE endpoint_id=$1 AND credential_status='ACTIVE'")
+        .bind(request.endpoint_id).execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    let endpoint_credential=generate_endpoint_secret();
+    sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
+        .bind(Uuid::new_v4()).bind(request.endpoint_id).bind(phone.ai_phone_id).bind(identity.tenant_id)
+        .bind(phone.ai_id).bind(credential_hash(&endpoint_credential))
+        .execute(&mut *tx).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     record_phone_event(&mut tx,&identity,phone.ai_phone_id,"PHONE_ENDPOINT_REGISTERED","phone.endpoint.registered",
         serde_json::json!({"endpoint_id":request.endpoint_id,"endpoint_type":request.endpoint_type}))
         .await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit().await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let endpoint=sqlx::query_as::<_,PhoneEndpoint>("SELECT endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata,created_at,last_seen_at,detached_at FROM phone_endpoints WHERE endpoint_id=$1 AND tenant_id=$2 AND ai_id=$3")
-        .bind(request.endpoint_id).bind(identity.tenant_id).bind(phone.ai_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((StatusCode::CREATED,Json(endpoint)))
+        .bind(request.endpoint_id).bind(identity.tenant_id).bind(phone.ai_id)
+        .fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((StatusCode::CREATED,Json(EndpointRegistration{endpoint,endpoint_credential})))
 }
 
 async fn presence_handler(
