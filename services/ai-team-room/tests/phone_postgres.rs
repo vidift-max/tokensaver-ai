@@ -266,7 +266,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-B-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B attaches to its own phone using its own endpoint credential");
-    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_a,&foreign_endpoint_credential,Some(serde_json::json!({
+    let response=http_call_endpoint(&app,"POST","/ai-phone/transfer",&token_a,&foreign_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":foreign_endpoint,"endpoint_type":"TEST","metadata":{"label":"tenant-A-cannot-claim-B-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"tenant A cannot use tenant B endpoint credential");
@@ -278,7 +278,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let credential_status:String=sqlx::query_scalar("SELECT credential_status FROM phone_endpoint_credentials WHERE endpoint_id=$1")
         .bind(revoked_endpoint).fetch_one(&pool).await.unwrap();
     assert_eq!(credential_status,"REVOKED","endpoint lifecycle trigger revokes its credential");
-    let response=http_call_endpoint(&app,"POST","/ai-phone/attach",&token_c,&revoked_endpoint_credential,Some(serde_json::json!({
+    let response=http_call_endpoint(&app,"POST","/ai-phone/transfer",&token_c,&revoked_endpoint_credential,Some(serde_json::json!({
         "endpoint_id":revoked_endpoint,"endpoint_type":"TEST","metadata":{"label":"revoked-endpoint"}
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"revoked endpoint credential cannot reattach");
