@@ -562,7 +562,7 @@ async fn sent_message_list_handler(State(pool): State<PgPool>, headers: HeaderMa
 async fn mission_link_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<MissionLinkRequest>)
     -> Result<StatusCode, StatusCode> {
     let identity = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    require_permission(&pool, &identity, "task.read").await.map_err(|_| StatusCode::FORBIDDEN)?;
+    require_permission(&pool, &identity, "task.transition").await.map_err(|_| StatusCode::FORBIDDEN)?;
     let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     validate_live_binding(&mut tx, &identity).await.map_err(|error| match error { PhoneError::InvalidSession => StatusCode::UNAUTHORIZED, _ => StatusCode::INTERNAL_SERVER_ERROR })?;
     let phone = owned_phone(&mut tx, &identity).await.map_err(|_| StatusCode::NOT_FOUND)?;
