@@ -27,6 +27,26 @@ async fn http_call(app:&Router,method:&str,uri:&str,token:Option<&str>,body:Opti
         .await.unwrap()
 }
 
+async fn http_call_endpoint(app:&Router,method:&str,uri:&str,token:&str,endpoint_credential:&str,body:Option<Value>)->Response {
+    let mut builder=Request::builder().method(method).uri(uri)
+        .header("authorization",format!("Bearer {token}"))
+        .header("x-ai-phone-endpoint-credential",endpoint_credential);
+    if body.is_some(){builder=builder.header("content-type","application/json");}
+    app.clone().oneshot(builder.body(Body::from(body.map(|v|v.to_string()).unwrap_or_default())).unwrap())
+        .await.unwrap()
+}
+
+async fn seed_endpoint_credential(
+    pool:&PgPool,tenant:Uuid,ai_id:Uuid,phone_id:Uuid,endpoint_id:Uuid,secret:&str,label:&str
+) {
+    sqlx::query("INSERT INTO phone_endpoints(endpoint_id,ai_phone_id,tenant_id,ai_id,endpoint_type,endpoint_status,metadata) VALUES($1,$2,$3,$4,'TEST','REGISTERED',$5)")
+        .bind(endpoint_id).bind(phone_id).bind(tenant).bind(ai_id)
+        .bind(serde_json::json!({"label":label})).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO phone_endpoint_credentials(credential_id,endpoint_id,ai_phone_id,tenant_id,ai_id,credential_hash,credential_status,expires_at) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE',NOW()+INTERVAL '90 days')")
+        .bind(Uuid::new_v4()).bind(endpoint_id).bind(phone_id).bind(tenant).bind(ai_id)
+        .bind(Sha256::digest(secret.as_bytes()).to_vec()).execute(pool).await.unwrap();
+}
+
 async fn grant(pool: &PgPool, tenant: Uuid, room: Uuid, principal: Uuid, permission: &str) {
     sqlx::query("INSERT INTO principal_permissions(permission_id,tenant_id,principal_id,room_id,permission) VALUES($1,$2,$3,$4,$5)")
         .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(permission)
