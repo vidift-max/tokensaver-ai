@@ -162,16 +162,16 @@ run_compatible_legacy_case() {
        AND e.endpoint_id='b0000000-0000-0000-0000-000000000001'
        AND a.attachment_id='c0000000-0000-0000-0000-000000000001'")"
   [[ "$endpoint_backfill" == "DISCONNECTED:3:DETACHED:FENCED" ]] || {
-    echo "FAIL: 0013 did not fence the legacy endpoint attachment: $endpoint_backfill" >&2
+    echo "FAIL: 0014 did not fence the legacy endpoint attachment: $endpoint_backfill" >&2
     exit 1
   }
   local after_0013
   after_0013="$(snapshot "$url")"
   [[ "$after_0013" == "$before" ]] || {
-    echo "FAIL: 0013 deleted or duplicated legacy durable resources: before=$before after=$after_0013" >&2
+    echo "FAIL: 0014 deleted or duplicated legacy durable resources: before=$before after=$after_0013" >&2
     exit 1
   }
-  echo "PASS: 0013 preserved phone/mailbox/mission rows and fenced legacy endpoint generation ($endpoint_backfill)"
+  echo "PASS: 0014 preserved phone/mailbox/mission rows and fenced legacy endpoint generation ($endpoint_backfill)"
 }
 
 run_shared_legacy_case
