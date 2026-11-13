@@ -1415,3 +1415,181 @@ async fn ai_phone_02c_seven_real_websockets_revoke_one_and_preserve_six() {
         .bind(tenant_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
 }
+
+
+fn append_websocket_transfer_evidence(stage: &str, expected: &str, observed: &str, passed: bool) {
+    let directory = std::env::var("AUDIT_EVIDENCE_DIR").expect("AUDIT_EVIDENCE_DIR must be configured by CI");
+    std::fs::create_dir_all(&directory).expect("create audit evidence directory");
+    let path = std::path::Path::new(&directory).join("websocket-transfer-persistent.jsonl");
+    let record = serde_json::json!({
+        "client_id": 1,
+        "stage": stage,
+        "expected": expected,
+        "observed": observed,
+        "status": if passed { "PASS" } else { "FAIL" },
+        "target_sha": std::env::var("TARGET_SHA").expect("TARGET_SHA"),
+        "harness_sha": std::env::var("HARNESS_SHA").expect("HARNESS_SHA")
+    });
+    let mut file = OpenOptions::new().create(true).append(true).open(path).expect("open transfer JSONL evidence");
+    writeln!(file, "{}", record).expect("append transfer JSONL evidence");
+}
+
+#[tokio::test]
+async fn ai_phone_02c_phone_transfer_preserves_team_room_websocket_session() {
+    let database_url = std::env::var("DATABASE_URL").expect("PostgreSQL 16 required");
+    let pool = connect_pool(&database_url).await.expect("connect PostgreSQL");
+    migrate(&pool).await.expect("apply exact-target migrations");
+
+    let tenant_id = Uuid::new_v4();
+    let room_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'AI-PHONE-02C persistent websocket transfer')")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO rooms(room_id,tenant_id,name,capacity_limit) VALUES($1,$2,'persistent websocket transfer room',15)")
+        .bind(room_id).bind(tenant_id).execute(&pool).await.unwrap();
+
+    let (principal, _participant, session_id, _execution, _unused, _subject) =
+        add_ai(&pool, tenant_id, room_id, "WS-PHONE-TRANSFER").await;
+    grant_permissions(&pool, tenant_id, room_id, principal).await;
+    grant_permission(&pool, tenant_id, room_id, principal, "room.read").await;
+    grant_permission(&pool, tenant_id, room_id, principal, "room.write").await;
+    let token = bearer_for(&pool, session_id).await;
+
+    let ai_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','WS-PHONE-TRANSFER')")
+        .bind(ai_id).bind(format!("phone-02c-ws-transfer-{ai_id}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(ai_id).bind(tenant_id).bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+        .bind(ai_id).bind(tenant_id).execute(&pool).await.unwrap();
+
+    let operator_key = format!("phone-02c-ws-transfer-operator-{}", Uuid::new_v4());
+    sqlx::query("INSERT INTO phone_endpoint_operator_keys(operator_key_id,tenant_id,ai_id,key_hash) VALUES($1,$2,$3,$4)")
+        .bind(Uuid::new_v4()).bind(tenant_id).bind(ai_id)
+        .bind(Sha256::digest(operator_key.as_bytes()).to_vec())
+        .execute(&pool).await.unwrap();
+
+    let router = communication::router(pool.clone())
+        .merge(ai_team_room_service::phone::router(pool.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base = format!("http://{address}");
+
+    let (provision_status, provision_body) = call(
+        &base, "POST", "/ai-phone/provision", &token,
+        Some(serde_json::json!({"principal_id": principal}))
+    ).await;
+    assert_eq!(provision_status, StatusCode::CREATED);
+    let provision: Value = serde_json::from_slice(&provision_body).unwrap();
+    let phone_id = Uuid::parse_str(provision["ai_phone_id"].as_str().unwrap()).unwrap();
+
+    let endpoint_old = Uuid::new_v4();
+    let endpoint_new = Uuid::new_v4();
+    let (old_register_status, old_register_body) = call_with_headers(
+        &base, "POST", "/ai-phone/endpoints/register", &token, None, Some(&operator_key),
+        Some(serde_json::json!({"endpoint_id":endpoint_old,"endpoint_type":"TEST","metadata":{"label":"ws-old-endpoint"}}))
+    ).await;
+    assert_eq!(old_register_status, StatusCode::CREATED);
+    let old_register: Value = serde_json::from_slice(&old_register_body).unwrap();
+    let old_credential = old_register["endpoint_credential"].as_str().unwrap().to_owned();
+
+    let (new_register_status, new_register_body) = call_with_headers(
+        &base, "POST", "/ai-phone/endpoints/register", &token, None, Some(&operator_key),
+        Some(serde_json::json!({"endpoint_id":endpoint_new,"endpoint_type":"TEST","metadata":{"label":"ws-new-endpoint"}}))
+    ).await;
+    assert_eq!(new_register_status, StatusCode::CREATED);
+    let new_register: Value = serde_json::from_slice(&new_register_body).unwrap();
+    let new_credential = new_register["endpoint_credential"].as_str().unwrap().to_owned();
+
+    let (attach_status, attach_body) = call_with_headers(
+        &base, "POST", "/ai-phone/attach", &token, Some(&old_credential), None,
+        Some(serde_json::json!({"endpoint_id":endpoint_old,"endpoint_type":"TEST","metadata":{"label":"ws-old-endpoint"}}))
+    ).await;
+    assert_eq!(attach_status, StatusCode::CREATED);
+    let initial_attachment: Value = serde_json::from_slice(&attach_body).unwrap();
+    let old_fence = initial_attachment["endpoint_fence"].as_i64().unwrap();
+
+    let (ticket_status, ticket_body) = call(
+        &base, "POST", &format!("/team-room/{room_id}/ws-ticket"), &token, Some(serde_json::json!({}))
+    ).await;
+    assert_eq!(ticket_status, StatusCode::OK);
+    let ticket: Value = serde_json::from_slice(&ticket_body).unwrap();
+    let ws_url = format!("ws://{address}/team-room/{room_id}/ws?ticket={}", ticket["ticket"].as_str().unwrap());
+    let mut ws_request = ws_url.into_client_request().unwrap();
+    ws_request.headers_mut().insert("Sec-WebSocket-Protocol", "team-room.v1".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(ws_request).await.expect("persistent session websocket handshake");
+
+    let (transfer_status, transfer_body) = call_with_headers(
+        &base, "POST", "/ai-phone/transfer", &token, Some(&new_credential), None,
+        Some(serde_json::json!({"endpoint_id":endpoint_new,"endpoint_type":"TEST","metadata":{"label":"ws-new-endpoint"}}))
+    ).await;
+    assert_eq!(transfer_status, StatusCode::OK, "Phone endpoint transfer must complete independently of Team Room session state");
+    let transferred: Value = serde_json::from_slice(&transfer_body).unwrap();
+    let new_fence = transferred["endpoint_fence"].as_i64().unwrap();
+    assert!(new_fence > old_fence, "Phone endpoint transfer advances the endpoint fence");
+    append_websocket_transfer_evidence("phone_transfer", "new endpoint attached and fence advanced", "transfer returned HTTP 200 with increased fence", true);
+
+    let (old_heartbeat_status, _) = call_with_headers(
+        &base, "POST", "/ai-phone/heartbeat", &token, Some(&old_credential), None,
+        Some(serde_json::json!({"endpoint_fence":old_fence}))
+    ).await;
+    assert_eq!(old_heartbeat_status, StatusCode::UNAUTHORIZED, "old endpoint credential is fenced after transfer");
+    append_websocket_transfer_evidence("old_endpoint_context", "old endpoint credential rejected", format!("HTTP {}", old_heartbeat_status.as_u16()).as_str(), true);
+
+    let (new_heartbeat_status, _) = call_with_headers(
+        &base, "POST", "/ai-phone/heartbeat", &token, Some(&new_credential), None,
+        Some(serde_json::json!({"endpoint_fence":new_fence}))
+    ).await;
+    assert_eq!(new_heartbeat_status, StatusCode::OK, "new endpoint credential is valid for the new fence");
+    append_websocket_transfer_evidence("new_endpoint_context", "new endpoint heartbeat authorized", format!("HTTP {}", new_heartbeat_status.as_u16()).as_str(), true);
+
+    let (session_status, session_revoked): (String, bool) = sqlx::query_as(
+        "SELECT status, revoked_at IS NOT NULL FROM sessions WHERE session_id=$1"
+    ).bind(session_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(session_status, "ACTIVE");
+    assert!(!session_revoked, "Phone transfer must not implicitly revoke the Team Room session");
+
+    // Wait through the actual 15-second WebSocket revalidation interval.
+    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    let (message_status, _) = call(
+        &base, "POST", &format!("/team-room/{room_id}/messages"), &token,
+        Some(serde_json::json!({
+            "client_message_id": Uuid::new_v4(),
+            "body": "Team Room session remains live after Phone endpoint transfer",
+            "parent_message_id": null
+        }))
+    ).await;
+    assert_eq!(message_status, StatusCode::CREATED);
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await.expect("persistent websocket should remain open after Phone transfer").unwrap().unwrap();
+    let event: Value = serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+    assert_eq!(event["type"], "MESSAGE_CREATED");
+    append_websocket_transfer_evidence("persistent_websocket", "existing websocket remains authorized after revalidation", "received post-transfer MESSAGE_CREATED event", true);
+
+    let (reconnect_ticket_status, reconnect_ticket_body) = call(
+        &base, "POST", &format!("/team-room/{room_id}/ws-ticket"), &token, Some(serde_json::json!({}))
+    ).await;
+    assert_eq!(reconnect_ticket_status, StatusCode::OK, "the still-active session may obtain a new ticket");
+    let reconnect_ticket: Value = serde_json::from_slice(&reconnect_ticket_body).unwrap();
+    let reconnect_url = format!("ws://{address}/team-room/{room_id}/ws?ticket={}", reconnect_ticket["ticket"].as_str().unwrap());
+    let mut reconnect_request = reconnect_url.into_client_request().unwrap();
+    reconnect_request.headers_mut().insert("Sec-WebSocket-Protocol", "team-room.v1".parse().unwrap());
+    let (reconnected_socket, _) = tokio_tungstenite::connect_async(reconnect_request).await
+        .expect("same active session can reconnect after endpoint transfer");
+    append_websocket_transfer_evidence("reconnect", "same Team Room session reconnects", "new WebSocket handshake accepted", true);
+
+    let (final_session_status, final_revoked): (String, bool) = sqlx::query_as(
+        "SELECT status, revoked_at IS NOT NULL FROM sessions WHERE session_id=$1"
+    ).bind(session_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(final_session_status, "ACTIVE");
+    assert!(!final_revoked);
+
+    drop(reconnected_socket);
+    drop(socket);
+    server.abort();
+    sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
+        .bind(tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_id).execute(&pool).await.unwrap();
+}
