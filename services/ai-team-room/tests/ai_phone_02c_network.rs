@@ -1592,7 +1592,7 @@ async fn ai_phone_02c_phone_transfer_preserves_team_room_websocket_session() {
     sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
         .bind(tenant_id).execute(&pool).await.unwrap();
     // Remove Phone descendants in FK order before removing the tenant binding.
-    sqlx::query("DELETE FROM phone_messages WHERE tenant_id=$1 AND ai_id=$2")
+    sqlx::query("DELETE FROM phone_messages WHERE tenant_id=$1 AND recipient_ai_id=$2")
         .bind(tenant_id).bind(ai_id).execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM phone_mission_links WHERE tenant_id=$1 AND ai_phone_id IN (SELECT ai_phone_id FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2)")
         .bind(tenant_id).bind(ai_id).execute(&pool).await.unwrap();
