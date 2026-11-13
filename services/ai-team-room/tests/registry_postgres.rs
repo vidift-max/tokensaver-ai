@@ -186,7 +186,17 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         assert_eq!(item["availability"], "AVAILABLE");
     }
 
-    // An expired/revoked live session changes the registry's derived availability.
+    // Revoking a different phone's session changes only that phone's derived availability.
+    sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1")
+        .bind(actors[1].identity.session_id).execute(&pool).await.unwrap();
+    let offline_page = http_call(&app, "GET", "/ai-phone/registry?limit=100", Some(&actors[0].token)).await;
+    let offline_page: Value = serde_json::from_slice(
+        &axum::body::to_bytes(offline_page.into_body(), 100_000).await.unwrap()).unwrap();
+    let offline_item = offline_page["items"].as_array().unwrap().iter()
+        .find(|item| item["ai_phone_id"] == actors[1].phone_id.to_string()).unwrap();
+    assert_eq!(offline_item["availability"], "OFFLINE");
+
+    // Revoking the querying session itself removes registry authorization.
     sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1")
         .bind(actors[0].identity.session_id).execute(&pool).await.unwrap();
     let offline = http_call(&app, "GET", "/ai-phone/registry?limit=100", Some(&actors[0].token)).await;
