@@ -133,9 +133,12 @@ async fn registry_is_tenant_scoped_authorized_live_and_keyset_paginated() {
         attachments.push(result.expect("attach task"));
     }
     assert_eq!(attachments.len(), 3);
-    for (actor, attachment) in actors.iter().zip(attachments.iter()) {
-        assert_eq!(actor.phone_id, attachment.ai_phone_id);
-        heartbeat(&pool, &actor.identity, attachment.endpoint_fence).await.expect("heartbeat fixture phone");
+    for actor in &actors {
+        let attachment = attachments.iter()
+            .find(|attachment| attachment.ai_phone_id == actor.phone_id)
+            .expect("each fixture AI has its own attachment");
+        heartbeat(&pool, &actor.identity, attachment.endpoint_fence).await
+            .expect("heartbeat fixture phone");
     }
 
     let app = phone_router(pool.clone());
