@@ -405,7 +405,7 @@ async fn disposable_scale_one_to_seven_provisions_and_operates_concurrently() {
         Some(serde_json::json!({"endpoint_id":endpoint_one,"endpoint_type":"TEST","metadata":{}}))).await;
     assert_eq!(endpoint_claim.status(), StatusCode::CONFLICT,
         "another AI cannot register an endpoint ID already owned by AI #1");
-    let cross_attach = request_endpoint(&app, "POST", "/ai-phone/attach", &actors[6].token,
+    let cross_attach = request_endpoint(&app, "POST", "/ai-phone/transfer", &actors[6].token,
         &actors[0].endpoint_credential,
         Some(serde_json::json!({"endpoint_id":actors[6].reconnect_endpoint_id,"endpoint_type":"TEST","metadata":{}}))).await;
     assert_eq!(cross_attach.status(), StatusCode::UNAUTHORIZED,
