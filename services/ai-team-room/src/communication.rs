@@ -641,6 +641,8 @@ mod postgres_tests {
                 "private event must not fan out to AI #{}",index+1);
         }
         server.abort();
+        sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
+            .bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
 }
