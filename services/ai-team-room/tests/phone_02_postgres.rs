@@ -804,6 +804,39 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+    let endpoint_status: String = sqlx::query_scalar(
+        "SELECT endpoint_status FROM phone_endpoints WHERE endpoint_id=$1 AND ai_phone_id=$2 AND tenant_id=$3 AND ai_id=$4"
+    ).bind(endpoint_3).bind(phone_2_id).bind(tenant_id).bind(ai_2_id)
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(endpoint_status, "REVOKED",
+        "detach must not downgrade a terminal endpoint revocation to DETACHED");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/endpoints/register",
+        &token_2,
+        Some(serde_json::json!({
+            "endpoint_id": endpoint_3,
+            "endpoint_type": "TEST",
+            "metadata": {"label": "AI-PHONE-02-transfer-target"}
+        })),
+    ).await;
+    assert_eq!(status, StatusCode::CONFLICT,
+        "a revoked endpoint identifier cannot be re-registered");
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/ai-phone/{phone_2_id}/presence"),
+        &token_2,
+        None,
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    let presence: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(presence["presence_state"], "REVOKED",
+        "presence must expose the terminal revoked state");
+
     let revoked_endpoint = Uuid::new_v4();
     let (status, _) = call(
         &app,
