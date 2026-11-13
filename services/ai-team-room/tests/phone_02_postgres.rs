@@ -504,15 +504,17 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .await;
     assert_eq!(
         status,
-        StatusCode::PRECONDITION_FAILED,
-        "Phone #2 cannot ACK an offline message before delivery"
+        StatusCode::UNAUTHORIZED,
+        "AI bearer without an attached endpoint credential cannot ACK mailbox messages"
     );
 
-    let (status, body) = call(
+    let (status, body) = call_with_headers(
         &app,
         "POST",
         "/ai-phone/attach",
         &token_2,
+        Some(&endpoint_2_credential),
+        None,
         Some(serde_json::json!({
             "endpoint_id": endpoint_2,
             "endpoint_type": "TEST",
@@ -528,43 +530,31 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let initial_attachment: Value = serde_json::from_slice(&body).unwrap();
     let initial_fence = initial_attachment["endpoint_fence"].as_i64().unwrap();
 
-    let (status, body) = call(
-        &app,
-        "GET",
-        &format!("/ai-phone/{phone_2_id}/messages"),
-        &token_2,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "AI #2 reads its own durable mailbox");
+    let (status, body) = call_with_headers(
+        &app,"GET",&format!("/ai-phone/{phone_2_id}/messages"),&token_2,
+        Some(&endpoint_2_credential),None,None
+    ).await;
+    assert_eq!(status, StatusCode::OK, "AI #2 endpoint reads its own durable mailbox");
     let inbox: Vec<Value> = serde_json::from_slice(&body).unwrap();
     assert!(
         inbox.iter().any(|message| message["message_id"] == first_message_id.to_string()),
         "the persisted offline/sent message is available to Phone #2"
     );
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),
-        &token_1,
-        None,
-    )
-    .await;
+    let (status, _) = call_with_headers(
+        &app,"POST",&format!("/ai-phone/{phone_2_id}/messages/{first_message_id}/ack"),&token_1,
+        Some(&endpoint_1_credential),None,None
+    ).await;
     assert_eq!(
         status,
-        StatusCode::PRECONDITION_FAILED,
-        "AI #1 cannot ACK a message delivered to Phone #2"
+        StatusCode::UNAUTHORIZED,
+        "AI #1 endpoint credential cannot ACK a message delivered to Phone #2"
     );
 
-    let (status, _) = call(
-        &app,
-        "POST",
-        &format!("/ai-phone/{phone_2_id}/messages/{second_message_id}/ack"),
-        &token_2,
-        None,
-    )
-    .await;
+    let (status, _) = call_with_headers(
+        &app,"POST",&format!("/ai-phone/{phone_2_id}/messages/{second_message_id}/ack"),&token_2,
+        Some(&endpoint_2_credential),None,None
+    ).await;
     assert_eq!(
         status,
         StatusCode::NO_CONTENT,
@@ -648,7 +638,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         StatusCode::FORBIDDEN,
         "AI #1 cannot link AI #2-owned task to Phone #1"
     );
-    let (status, body) = call(&app, "GET", "/ai-phone/me", &token_2, None).await;
+    let (status, body) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
+        Some(&endpoint_2_credential),None,None).await;
     assert_eq!(status, StatusCode::OK);
     let linked_phone_2: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(linked_phone_2["phone"]["current_task_id"], ai_2_task.to_string());
@@ -664,14 +655,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "current Phone #2 endpoint heartbeat succeeds");
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/ai-phone/detach",
-        &token_2,
-        Some(serde_json::json!({"endpoint_fence": initial_fence})),
-    )
-    .await;
+    let (status, _) = call_with_headers(&app,"POST","/ai-phone/detach",&token_2,
+        Some(&endpoint_2_credential),None,Some(serde_json::json!({"endpoint_fence":initial_fence}))).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "Phone #2 endpoint detaches");
     let (status, _) = call(
         &app,
@@ -683,8 +668,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .await;
     assert_eq!(
         status,
-        StatusCode::PRECONDITION_FAILED,
-        "detached Phone #2 endpoint cannot heartbeat with stale fence"
+        StatusCode::UNAUTHORIZED,
+        "detached endpoint credential is revoked and cannot heartbeat"
     );
 
     let (status, body) = call(
