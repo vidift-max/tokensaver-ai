@@ -116,6 +116,16 @@ jobs:
               db = json.load(f)
 
           expected_app = os.environ["APP_NAME"]
+          def valid_system_identifier(value):
+              if not isinstance(value, str) or not re.fullmatch(r"-?[0-9]{1,19}", value):
+                  return False
+              number = int(value)
+              return (
+                  number != 0
+                  and -(2**63) <= number <= (2**63 - 1)
+                  and str(number) == value
+              )
+
           required = {
               "database_name": db.get("database_name") == "attestation",
               "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
@@ -130,8 +140,8 @@ jobs:
               "server_addr": db.get("server_addr") == "127.0.0.1",
               "server_port": db.get("server_port") == 5432,
               "postmaster_start_time": bool(db.get("postmaster_start_time")),
-              "system_identifier_present": isinstance(db.get("system_identifier"), str) and bool(re.fullmatch(r"[1-9][0-9]{0,18}", db.get("system_identifier", ""))) and int(db.get("system_identifier", "0")) <= 9223372036854775807,
-              "system_identifier_repeat_present": isinstance(db.get("system_identifier_repeat"), str) and bool(re.fullmatch(r"[1-9][0-9]{0,18}", db.get("system_identifier_repeat", ""))) and int(db.get("system_identifier_repeat", "0")) <= 9223372036854775807,
+              "system_identifier_present": valid_system_identifier(db.get("system_identifier")),
+              "system_identifier_repeat_present": valid_system_identifier(db.get("system_identifier_repeat")),
               "system_identifier_method": db.get("system_identifier_method") == "pg_control_system() -> system_identifier (PostgreSQL control-file metadata)",
               "system_identifier_same_session_consistency": db.get("system_identifier") == db.get("system_identifier_repeat"),
           }
