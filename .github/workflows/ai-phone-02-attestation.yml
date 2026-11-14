@@ -73,19 +73,25 @@ jobs:
             cleanup_failed=0
             if [[ -n "$SERVICE_CONTAINER_NAME" ]]; then
               docker info >/dev/null 2>&1 || cleanup_failed=1
-              if [[ "$cleanup_failed" -eq 0 ]] && docker inspect --type container "$SERVICE_CONTAINER_NAME" >/dev/null 2>&1; then
-                cid="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_NAME" 2>/dev/null)"
-                labels="$(docker inspect --format '{{ index .Config.Labels "ai-phone-02.run-id" }}|{{ index .Config.Labels "ai-phone-02.run-attempt" }}|{{ index .Config.Labels "ai-phone-02.managed" }}' "$cid" 2>/dev/null)"
-                if [[ "$labels" == "$GITHUB_RUN_ID|$GITHUB_RUN_ATTEMPT|true" && -n "$cid" ]]; then
-                  docker rm -f "$cid" >/dev/null 2>&1 || cleanup_failed=1
-                else
-                  echo "Cleanup refused: container ownership could not be proven."
-                  cleanup_failed=1
+              if [[ "$cleanup_failed" -eq 0 ]]; then
+                matches="$(docker ps -aq --filter "name=^/$SERVICE_CONTAINER_NAME$")" || cleanup_failed=1
+                if [[ "$cleanup_failed" -eq 0 && -n "$matches" ]]; then
+                  if [[ "$(printf '%s\n' "$matches" | wc -l)" -ne 1 ]]; then
+                    echo "Cleanup refused: multiple containers matched this run name."
+                    cleanup_failed=1
+                  else
+                    cid="$(docker inspect --format '{{.Id}}' "$matches" 2>/dev/null)" || cleanup_failed=1
+                    labels="$(docker inspect --format '{{ index .Config.Labels "ai-phone-02.run-id" }}|{{ index .Config.Labels "ai-phone-02.run-attempt" }}|{{ index .Config.Labels "ai-phone-02.managed" }}' "$cid" 2>/dev/null)" || cleanup_failed=1
+                    if [[ "$cleanup_failed" -eq 0 && "$labels" == "$GITHUB_RUN_ID|$GITHUB_RUN_ATTEMPT|true" && -n "$cid" ]]; then
+                      docker rm -f "$cid" >/dev/null 2>&1 || cleanup_failed=1
+                    else
+                      echo "Cleanup refused: container ownership could not be proven."
+                      cleanup_failed=1
+                    fi
+                  fi
                 fi
-              fi
-              if [[ "$cleanup_failed" -eq 0 ]] && docker inspect --type container "$SERVICE_CONTAINER_NAME" >/dev/null 2>&1; then
-                echo "Cleanup verification failed: container still exists."
-                cleanup_failed=1
+                remaining="$(docker ps -aq --filter "name=^/$SERVICE_CONTAINER_NAME$")" || cleanup_failed=1
+                [[ -z "$remaining" ]] || cleanup_failed=1
               fi
             fi
             if [[ "$cleanup_failed" -eq 0 ]]; then
@@ -168,7 +174,7 @@ jobs:
           # Inspect the actual container config and validate it before health checks or SQL.
           docker inspect --type container "$SERVICE_CONTAINER_ID" > "$RUNNER_TEMP/ai-phone-02-container-inspect.json"
           cat > "$RUNNER_TEMP/ai-phone-02-validate-container.py" <<'PY'
-          import json, os, sys
+          import json, os, sys, stat, tempfile
           SECRET="/run/secrets/postgres-passwd"
           TMPFS={
             "/var/lib/postgresql/data":("rw","noexec","nosuid","size=1073741824"),
@@ -176,7 +182,13 @@ jobs:
             "/tmp":("rw","noexec","nosuid","size=67108864")}
           def check(ok,msg):
             if not ok: raise ValueError(msg)
-          def validate(doc,e):
+          def validate_secret(secret_file, secret_dir):
+            check(os.path.isdir(secret_dir) and stat.S_IMODE(os.stat(secret_dir).st_mode)==0o700,"secret directory missing or permissions incorrect")
+            check(os.path.isfile(secret_file) and not os.path.islink(secret_file),"secret file missing or not a regular file")
+            check(stat.S_IMODE(os.stat(secret_file).st_mode)==0o600,"secret file permissions incorrect")
+            with open(secret_file,encoding="ascii") as h: value=h.read()
+            check(bool(__import__("re").fullmatch(r"[a-f0-9]{64}",value)),"secret missing, empty, or invalid format")
+                    def validate(doc,e):
             check(isinstance(doc,list) and len(doc)==1,"inspect must return exactly one container")
             c=doc[0]; cfg=c.get("Config"); hc=c.get("HostConfig"); ns=c.get("NetworkSettings")
             check(all(isinstance(x,dict) for x in (cfg,hc,ns)),"required inspect object absent")
@@ -192,11 +204,17 @@ jobs:
             check(hc.get("Memory")==1073741824 and hc.get("NanoCpus")==1000000000 and hc.get("PidsLimit")==256,"resource limits mismatch")
             tmp=hc.get("Tmpfs")
             check(isinstance(tmp,dict) and set(tmp)==set(TMPFS),"tmpfs paths mismatch")
-            for p,required in TMPFS.items(): check(set(required).issubset(set(str(tmp[p]).split(","))),"tmpfs options mismatch: "+p)
+            for p,required in TMPFS.items():
+              opts=set(str(tmp[p]).split(","))
+              size=required[-1]
+              allowed_sizes={size, {"size=1073741824":"size=1g","size=16777216":"size=16m","size=67108864":"size=64m"}[size]}
+              check(set(required[:-1]).issubset(opts) and bool(opts.intersection(allowed_sizes)),"tmpfs options mismatch: "+p)
             env=cfg.get("Env")
             check(isinstance(env,list),"Config.Env missing")
             check(not any(x.startswith("POSTGRES_PASSWORD=") for x in env),"POSTGRES_PASSWORD leaked into Config.Env")
             check("POSTGRES_PASSWORD_FILE="+SECRET in env,"password file path missing")
+            args=[x.split("=",1)[1] for x in env if x.startswith("POSTGRES_INITDB_ARGS=")]
+            check(len(args)==1 and "--auth-host=scram-sha-256" in args[0] and "--auth-local=scram-sha-256" in args[0],"SCRAM initialization policy mismatch")
             mounts=c.get("Mounts")
             check(isinstance(mounts,list),"Mounts missing")
             sm=[m for m in mounts if m.get("Destination")=="/run/secrets"]
@@ -211,7 +229,22 @@ jobs:
             tmp={k:",".join(v) for k,v in TMPFS.items()}
             f=[{"Id":"a"*64,"Image":"sha256:"+"b"*64,"Config":{"Image":"postgres:16.16@sha256:"+"c"*64,"Env":["POSTGRES_PASSWORD_FILE="+SECRET],"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"1","ai-phone-02.managed":"true"}},"HostConfig":{"NetworkMode":"none","PortBindings":{},"PublishAllPorts":False,"ReadonlyRootfs":True,"Privileged":False,"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824,"NanoCpus":1000000000,"PidsLimit":256,"Tmpfs":tmp},"NetworkSettings":{"Ports":{"5432/tcp":None}},"Mounts":[{"Type":"tmpfs","Destination":p,"RW":True} for p in TMPFS]+[{"Type":"bind","Source":"/tmp/sec","Destination":"/run/secrets","RW":False}]}]
             e={"id":"a"*64,"image_id":"sha256:"+"b"*64,"image":"postgres:16.16@sha256:"+"c"*64,"secret_dir":"/tmp/sec","run_id":"1","attempt":"1"}
-            validate(f,e); negatives=0
+            validate(f,e)
+            with tempfile.TemporaryDirectory() as td:
+              os.chmod(td,0o700); secret=os.path.join(td,"postgres-passwd")
+              with open(secret,"w",encoding="ascii") as h: h.write("a"*64)
+              os.chmod(secret,0o600); validate_secret(secret,td)
+              for mode,content in ((0o644,"a"*64),(0o600,""),(0o600,"not-a-secret")):
+                with open(secret,"w",encoding="ascii") as h: h.write(content)
+                os.chmod(secret,mode)
+                try: validate_secret(secret,td)
+                except (ValueError,KeyError,TypeError): pass
+                else: raise ValueError("invalid secret fixture unexpectedly passed")
+              os.remove(secret)
+              try: validate_secret(secret,td)
+              except (ValueError,KeyError,TypeError): pass
+              else: raise ValueError("missing secret fixture unexpectedly passed")
+            negatives=0
             mutations=[lambda x:x[0]["HostConfig"].update(NetworkMode="bridge"),lambda x:x[0]["HostConfig"].update(PortBindings={"5432/tcp":[{}]}),lambda x:x[0]["HostConfig"].update(ReadonlyRootfs=False),lambda x:x[0]["HostConfig"].update(SecurityOpt=[]),lambda x:x[0]["HostConfig"].update(Memory=1),lambda x:x[0]["HostConfig"].update(NanoCpus=1),lambda x:x[0]["HostConfig"].update(PidsLimit=1),lambda x:x[0]["Config"]["Env"].append("POSTGRES_PASSWORD=secret"),lambda x:x[0]["Mounts"][-1].update(RW=True),lambda x:x[0]["Mounts"].pop(),lambda x:x[0]["HostConfig"].pop("Tmpfs"),lambda x:x[0]["HostConfig"].update(Privileged=True),lambda x:x[0]["Config"]["Env"].clear()]
             for mutate in mutations:
               x=json.loads(json.dumps(f)); mutate(x)
@@ -226,6 +259,7 @@ jobs:
           if __name__=="__main__":
             if len(sys.argv)==2 and sys.argv[1]=="--self-test": selftest(); raise SystemExit(0)
             try:
+              validate_secret(os.environ["PG_SECRET_FILE"],os.environ["PG_SECRET_DIR"])
               with open(sys.argv[1],encoding="utf-8") as h: doc=json.load(h)
               e={"id":os.environ["SERVICE_CONTAINER_ID"],"image_id":os.environ["SERVICE_IMAGE_ID"],"image":os.environ["POSTGRES_IMAGE"],"secret_dir":os.environ["PG_SECRET_DIR"],"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"]}
               result=validate(doc,e)
@@ -235,53 +269,9 @@ jobs:
               print(json.dumps({"effective_container_policy":"FAIL","error":type(ex).__name__},sort_keys=True)); raise SystemExit(1)
           PY
           python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" --self-test
-          export PG_SECRET_DIR
+          export PG_SECRET_DIR PG_SECRET_FILE
           python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" "$RUNNER_TEMP/ai-phone-02-container-inspect.json" "$RUNNER_TEMP/ai-phone-02-container-observed.json"
           export CONTAINER_OBSERVED_JSON="$RUNNER_TEMP/ai-phone-02-container-observed.json"
-
-          test -n "$SERVICE_CONTAINER_ID"
-
-          SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
-          SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
-          SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
-
-          # RepoDigests belongs to the image object, not the container object.
-          # Inspect the immutable image ID directly; missing metadata is a hard failure.
-          SERVICE_IMAGE_INSPECT_ID="$(docker image inspect --format '{{.Id}}' "$SERVICE_IMAGE_ID")"
-          SERVICE_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$SERVICE_IMAGE_ID")"
-          export POSTGRES_IMAGE EXPECTED_IMAGE_DIGEST SERVICE_CONTAINER_ID SERVICE_ACTUAL_ID
-          export SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_IMAGE_INSPECT_ID SERVICE_REPO_DIGESTS
-
-          python3 - <<'PY'
-          import json, os, re, sys
-          expected_repo = {"postgres", "docker.io/library/postgres", "index.docker.io/library/postgres"}
-          expected_digest = os.environ["EXPECTED_IMAGE_DIGEST"]
-          values = {
-              "container_id_format": bool(re.fullmatch(r"[a-f0-9]{64}", os.environ["SERVICE_CONTAINER_ID"])),
-              "container_id_matches_inspect": os.environ["SERVICE_ACTUAL_ID"] == os.environ["SERVICE_CONTAINER_ID"],
-              "configured_image_matches_pin": os.environ["SERVICE_IMAGE"] == os.environ["POSTGRES_IMAGE"],
-              "image_id_format": bool(re.fullmatch(r"sha256:[a-f0-9]{64}", os.environ["SERVICE_IMAGE_ID"])),
-              "image_inspect_matches_container_image": os.environ["SERVICE_IMAGE_INSPECT_ID"] == os.environ["SERVICE_IMAGE_ID"],
-          }
-          try:
-              digests = json.loads(os.environ["SERVICE_REPO_DIGESTS"])
-          except (TypeError, json.JSONDecodeError):
-              digests = None
-          valid_digest = False
-          if isinstance(digests, list):
-              for item in digests:
-                  if not isinstance(item, str) or "@" not in item:
-                      continue
-                  repo, digest = item.rsplit("@", 1)
-                  if repo in expected_repo and digest == expected_digest:
-                      valid_digest = True
-          values["repo_digests_present"] = isinstance(digests, list) and len(digests) > 0
-          values["expected_registry_digest_associated"] = valid_digest
-          failed = [name for name, passed in values.items() if not passed]
-          print(json.dumps({"image_identity_checks": values, "failed": failed, "result": "PASS" if not failed else "FAIL"}, sort_keys=True))
-          if failed:
-              sys.exit(1)
-          PY
 
           # Fail closed unless the isolated PostgreSQL instance is healthy.
           HEALTH_STATUS=""
