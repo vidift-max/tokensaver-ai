@@ -117,14 +117,10 @@ jobs:
 
           expected_app = os.environ["APP_NAME"]
           def valid_system_identifier(value):
-              if not isinstance(value, str) or not re.fullmatch(r"-?[0-9]{1,19}", value):
+              if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,19}", value):
                   return False
               number = int(value)
-              return (
-                  number != 0
-                  and -(2**63) <= number <= (2**63 - 1)
-                  and str(number) == value
-              )
+              return number > 0 and number <= (2**63 - 1) and str(number) == value
 
           required = {
               "database_name": db.get("database_name") == "attestation",
@@ -156,7 +152,7 @@ jobs:
           }
           checks = {"database": required, "provenance": provenance}
           failed = [f"{group}.{name}" for group, values in checks.items() for name, ok in values.items() if not ok]
-          print(json.dumps({"checks": checks, "failed": failed, "result": "FAIL" if failed else "LOCAL_CONTROLS_PASS"}, sort_keys=True))
+          print(json.dumps({"checks": checks, "failed": failed, "result": "FAIL" if failed else "LOCAL_CONTROLS_VALIDATED"}, sort_keys=True))
           if failed:
               sys.exit(1)
           PY
@@ -234,8 +230,8 @@ jobs:
                   "started_at": os.environ["STARTED_AT"],
                   "collected_at": os.environ["COLLECTED_AT"]
               },
-              "result": "LOCAL_CONTROLS_PASS",
-              "local_controls": "PASS",
+              "result": "LOCAL_CONTROLS_VALIDATED_PENDING_PACKAGE_INTEGRITY",
+              "local_controls": "VALIDATED_PENDING_PACKAGE_INTEGRITY",
               "external_attestation": "NOT_VALIDATED",
               "provider_side_correlation": "PENDING_FUTURE_AUTHORIZED_EXECUTION",
               "limitations": [
@@ -259,15 +255,15 @@ jobs:
               f.write("\n")
           PY
 
-          (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
-          (cd attestation-evidence && sha256sum --check SHA256SUMS)
           test -s attestation-evidence/attestation.json
           test -s attestation-evidence/database-session.json
+          (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
           test -s attestation-evidence/SHA256SUMS
-          echo "Local controls passed; external attestation remains NOT_VALIDATED."
+          (cd attestation-evidence && sha256sum --check SHA256SUMS)
+          echo "LOCAL_CONTROLS_PASS: all local controls and package integrity verified; external attestation remains NOT_VALIDATED."
 
       - name: Upload read-only attestation evidence
-        if: success()
+        if: success() && steps.collect.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ai-phone-02-attestation-${{ github.run_id }}-${{ github.run_attempt }}
