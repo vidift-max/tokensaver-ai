@@ -180,9 +180,21 @@ PY
           import json, os, sys, stat, tempfile
           SECRET="/run/secrets/postgres-passwd"
           TMPFS={
-            "/var/lib/postgresql/data":("rw","noexec","nosuid","size=1073741824"),
-            "/var/run/postgresql":("rw","noexec","nosuid","size=16777216"),
-            "/tmp":("rw","noexec","nosuid","size=67108864")}
+            "/var/lib/postgresql/data":("rw","noexec","nosuid","size=1g"),
+            "/var/run/postgresql":("rw","noexec","nosuid","size=16m"),
+            "/tmp":("rw","noexec","nosuid","size=64m")}
+          def unique_object(pairs):
+            out={}
+            for key,value in pairs:
+              if key in out: raise ValueError("duplicate JSON key: "+key)
+              out[key]=value
+            return out
+          def require(obj,key,typ,allow_none=False):
+            if not isinstance(obj,dict) or key not in obj: raise ValueError("required field absent: "+key)
+            value=obj[key]
+            if value is None and allow_none: return value
+            if type(value) is not typ: raise ValueError("wrong type/null: "+key)
+            return value
           def check(ok,msg):
             if not ok: raise ValueError(msg)
           def validate_secret(secret_file, secret_dir):
@@ -193,40 +205,45 @@ PY
             check(bool(__import__("re").fullmatch(r"[a-f0-9]{64}",value)),"secret missing, empty, or invalid format")
           def validate(doc,e):
             check(isinstance(doc,list) and len(doc)==1,"inspect must return exactly one container")
-            c=doc[0]; cfg=c.get("Config"); hc=c.get("HostConfig"); ns=c.get("NetworkSettings")
-            check(all(isinstance(x,dict) for x in (cfg,hc,ns)),"required inspect object absent")
-            check(c.get("Id")==e["id"] and c.get("Image")==e["image_id"] and cfg.get("Image")==e["image"],"container/image identity mismatch")
-            check(hc.get("NetworkMode")=="none","network mode mismatch")
-            check(hc.get("PortBindings") in (None,{}),"host ports published")
-            check(hc.get("PublishAllPorts") is False,"PublishAllPorts mismatch")
-            ports=ns.get("Ports")
+            c=doc[0]; check(type(c) is dict,"container inspect object invalid")
+            cfg=require(c,"Config",dict); hc=require(c,"HostConfig",dict); ns=require(c,"NetworkSettings",dict)
+            mounts=require(c,"Mounts",list)
+            check(require(c,"Id",str)==e["id"] and require(c,"Image",str)==e["image_id"] and require(cfg,"Image",str)==e["image"],"container/image identity mismatch")
+            check(require(hc,"NetworkMode",str)=="none","network mode mismatch")
+            bindings=require(hc,"PortBindings",dict,allow_none=True)
+            check(bindings is None or bindings=={},"host ports published")
+            check(require(hc,"PublishAllPorts",bool) is False,"PublishAllPorts mismatch")
+            ports=require(ns,"Ports",dict)
             check(isinstance(ports,dict) and all(v in (None,[]) for v in ports.values()),"effective host port binding found or ports unavailable")
-            check(hc.get("ReadonlyRootfs") is True and hc.get("Privileged") is False,"rootfs/privileged policy mismatch")
-            sec=hc.get("SecurityOpt")
-            check(isinstance(sec,list) and "no-new-privileges:true" in sec,"no-new-privileges missing")
-            check(hc.get("Memory")==1073741824 and hc.get("NanoCpus")==1000000000 and hc.get("PidsLimit")==256,"resource limits mismatch")
-            tmp=hc.get("Tmpfs")
+            check(require(hc,"ReadonlyRootfs",bool) is True and require(hc,"Privileged",bool) is False,"rootfs/privileged policy mismatch")
+            sec=require(hc,"SecurityOpt",list)
+            check(sec==["no-new-privileges:true"],"SecurityOpt must exactly match allowlist")
+            check(require(hc,"Memory",int)==1073741824 and require(hc,"NanoCpus",int)==1000000000 and require(hc,"PidsLimit",int)==256,"resource limits mismatch")
+            tmp=require(hc,"Tmpfs",dict)
             check(isinstance(tmp,dict) and set(tmp)==set(TMPFS),"tmpfs paths mismatch")
-            for p,required in TMPFS.items():
-              opts=set(str(tmp[p]).split(","))
-              size=required[-1]
-              allowed_sizes={size, {"size=1073741824":"size=1g","size=16777216":"size=16m","size=67108864":"size=64m"}[size]}
-              check(set(required[:-1]).issubset(opts) and bool(opts.intersection(allowed_sizes)),"tmpfs options mismatch: "+p)
-            env=cfg.get("Env")
-            check(isinstance(env,list),"Config.Env missing")
+            for p,required_options in TMPFS.items():
+              raw=tmp[p]
+              check(type(raw) is str,"tmpfs option value type mismatch: "+p)
+              tokens=raw.split(",")
+              check(len(tokens)==len(set(tokens)),"duplicate tmpfs option: "+p)
+              flags={x for x in tokens if not x.startswith("size=")}
+              sizes=[x for x in tokens if x.startswith("size=")]
+              check(flags==set(required_options[:-1]) and sizes==[required_options[-1],"size="+str({"size=1g":1073741824,"size=16m":16777216,"size=64m":67108864}[required_options[-1]])],"tmpfs options/size must match exactly: "+p)
+            env=require(cfg,"Env",list)
+            check(all(type(x) is str and "=" in x for x in env),"Config.Env malformed")
+            names=[x.split("=",1)[0] for x in env]
+            check(len(names)==len(set(names)),"duplicate Config.Env variable")
             check(not any(x.startswith("POSTGRES_PASSWORD=") for x in env),"POSTGRES_PASSWORD leaked into Config.Env")
             check(sum(x.startswith("POSTGRES_PASSWORD_FILE=") for x in env)==1 and "POSTGRES_PASSWORD_FILE="+SECRET in env,"password file path missing, duplicated, or incorrect")
             args=[x.split("=",1)[1] for x in env if x.startswith("POSTGRES_INITDB_ARGS=")]
-            check(len(args)==1 and "--auth-host=scram-sha-256" in args[0] and "--auth-local=scram-sha-256" in args[0],"SCRAM initialization policy mismatch")
-            mounts=c.get("Mounts")
-            check(isinstance(mounts,list),"Mounts missing")
+            check(args==["--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"SCRAM initialization args must exactly match policy")
             sm=[m for m in mounts if m.get("Destination")=="/run/secrets"]
             check(len(sm)==1 and sm[0].get("Type")=="bind" and sm[0].get("RW") is False and sm[0].get("Source")==e["secret_dir"],"secret mount absent/writable/unexpected")
             check({m.get("Destination") for m in mounts}==set(TMPFS)|{"/run/secrets"},"unexpected or missing mounts")
             for m in mounts:
               if m.get("Destination") in TMPFS: check(m.get("Type")=="tmpfs" and m.get("RW") is True,"tmpfs mount mismatch")
-            labels=cfg.get("Labels")
-            check(isinstance(labels,dict) and labels.get("ai-phone-02.run-id")==e["run_id"] and labels.get("ai-phone-02.run-attempt")==e["attempt"] and labels.get("ai-phone-02.managed")=="true","run ownership labels mismatch")
+            labels=require(cfg,"Labels",dict)
+            check(labels=={"ai-phone-02.run-id":e["run_id"],"ai-phone-02.run-attempt":e["attempt"],"ai-phone-02.managed":"true"},"run ownership labels absent, extra, or mismatched")
             return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"mounts":[{"type":m.get("Type"),"destination":m.get("Destination"),"rw":m.get("RW")} for m in mounts],"secret_value_in_config_env":False,"expected_policy":{"network_mode":"none","published_host_ports":False,"publish_all_ports":False,"readonly_rootfs":True,"required_security_opt":"no-new-privileges:true","memory_bytes":1073741824,"nano_cpus":1000000000,"pids_limit":256,"tmpfs_paths":sorted(TMPFS),"secret_mount":{"type":"bind","destination":"/run/secrets","rw":False},"postgres_password_env":"absent","postgres_password_file_env":SECRET,"host_auth_method":"scram-sha-256","local_auth_method":"scram-sha-256"},"policy_validation":"PASS","trust_limitation":"Observed values are reported by the Docker daemon; they do not prove host integrity or protect against a privileged daemon administrator."}
           def selftest():
             tmp={k:",".join(v) for k,v in TMPFS.items()}
@@ -263,7 +280,7 @@ PY
             if len(sys.argv)==2 and sys.argv[1]=="--self-test": selftest(); raise SystemExit(0)
             try:
               validate_secret(os.environ["PG_SECRET_FILE"],os.environ["PG_SECRET_DIR"])
-              with open(sys.argv[1],encoding="utf-8") as h: doc=json.load(h)
+              with open(sys.argv[1],encoding="utf-8") as h: doc=json.load(h,object_pairs_hook=unique_object)
               e={"id":os.environ["SERVICE_CONTAINER_ID"],"image_id":os.environ["SERVICE_IMAGE_ID"],"image":os.environ["POSTGRES_IMAGE"],"secret_dir":os.environ["PG_SECRET_DIR"],"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"]}
               result=validate(doc,e)
               with open(sys.argv[2],"w",encoding="utf-8") as h: json.dump(result,h,indent=2,sort_keys=True); h.write("\n")
@@ -460,11 +477,19 @@ PY
                   "Container and image identity checks are completed before any PostgreSQL connection or identity collection."
               ],
               "safety": {
-                  "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
-                  "database_role_is_superuser": database["is_superuser"] == "on",
-                  "migrations_executed": False,
-                  "schema_modified": False,
-                  "data_modified": False,
+                  "disposable_postgres_bootstrap": {
+                      "performed_by_official_image_entrypoint": True,
+                      "may_run_initdb": True,
+                      "may_create_database": True,
+                      "may_create_or_modify_bootstrap_schema_and_roles": True,
+                      "scope": "ephemeral job-local container only"
+                  },
+                  "evidence_collection": {
+                      "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
+                      "read_only_transaction_required": True,
+                      "migrations_executed_by_collector": False,
+                      "schema_or_data_mutation_by_collector": False
+                  },
                   "production_access": False,
                   "permanent_credentials_used": False
               }
