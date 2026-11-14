@@ -181,6 +181,9 @@ PY
               echo "Secret retained until ephemeral runner teardown because container removal/ownership was not verified."
             fi
             if [[ "$cleanup_failed" -ne 0 ]]; then echo "Run-scoped cleanup failed verification."; rc=1; fi
+            if [[ "${ATTESTATION_FINALIZING:-0}" == "1" && "$cleanup_failed" -eq 0 && "$rc" -eq 0 ]]; then
+              echo "LOCAL_CONTROLS_PASS: controls, package integrity, and run-scoped cleanup verified; external attestation remains NOT_VALIDATED."
+            fi
             exit "$rc"
           }
           cleanup_run_resources_selftest() {
@@ -241,6 +244,7 @@ PY
             echo "cleanup_run_resources_integration_selftest=PASS; success_and_secret_deletion=PASS; id_mismatch=FAIL_CLOSED; labels_missing=FAIL_CLOSED; rm_failure=FAIL_CLOSED; absence_confirmation_failure=FAIL_CLOSED; secret_deletion_failure=RETAINED; missing_captured_id=FAIL_CLOSED"
           }
           cleanup_run_resources_selftest
+          ATTESTATION_FINALIZING=1
           trap cleanup_run_resources EXIT
 
           umask 077
@@ -692,7 +696,7 @@ PY
           (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
           test -s attestation-evidence/SHA256SUMS
           (cd attestation-evidence && sha256sum --check SHA256SUMS)
-          echo "LOCAL_CONTROLS_PASS: all local controls and package integrity verified; external attestation remains NOT_VALIDATED."
+
 
       - name: Upload read-only attestation evidence
         if: success() && steps.collect.outcome == 'success'
