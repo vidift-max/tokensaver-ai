@@ -21,19 +21,6 @@ jobs:
     name: Read-only PostgreSQL identity attestation
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87
-        env:
-          POSTGRES_USER: attestation
-          POSTGRES_DB: attestation
-          POSTGRES_HOST_AUTH_METHOD: trust
-        options: >-
-          --health-cmd "pg_isready -U attestation -d attestation"
-          --health-interval 3s
-          --health-timeout 3s
-          --health-retries 20
-
     steps:
       - name: Checkout immutable AI-PHONE-02 TARGET
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -52,7 +39,6 @@ jobs:
           WORKFLOW_SHA: ${{ job.workflow_sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}
           JOB_KEY: ${{ github.job }}
-          SERVICE_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
           mkdir -p attestation-evidence
@@ -66,26 +52,533 @@ jobs:
           test "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
           [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]
           test -n "$JOB_KEY"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           CHECKOUT_SHA="$(git rev-parse HEAD)"
           test "$CHECKOUT_SHA" = "$TARGET_SHA"
+
+          # Start a job-local PostgreSQL instance with an ephemeral SCRAM credential.
+          # No host port is published and the container has no external network.
+          POSTGRES_IMAGE="postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          EXPECTED_IMAGE_DIGEST="sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          # Run-scoped resources; install cleanup before creating any temporary resource.
+          SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          SERVICE_CONTAINER_ID=""
+          SERVICE_CONTAINER_CREATION_ATTEMPTED=0
+          PG_SECRET_DIR=""
+          PG_SECRET_FILE=""
+          remove_secret_file_verified() {
+            rm -f -- "$1" || return 1
+            [[ ! -e "$1" && ! -L "$1" ]]
+          }
+          remove_secret_dir_verified() {
+            rmdir -- "$1" 2>/dev/null || return 1
+            [[ ! -e "$1" && ! -L "$1" ]]
+          }
+          cleanup_shell_selftest() {
+            test_dir="$(mktemp -d)"
+            mkdir "$test_dir/not-a-file"
+            if remove_secret_file_verified "$test_dir/not-a-file"; then echo "secret deletion negative test failed"; return 1; fi
+            rmdir "$test_dir/not-a-file"
+            touch "$test_dir/secret"
+            remove_secret_file_verified "$test_dir/secret" || return 1
+            remove_secret_dir_verified "$test_dir" || return 1
+            test ! -e "$test_dir"
+            echo "cleanup_secret_selftest=PASS"
+          }
+          cleanup_shell_selftest
+          cleanup_container_by_id() {
+            cid="$1"
+            [[ "$cid" =~ ^[a-f0-9]{64}$ ]] || return 1
+            inspect_json="$(docker inspect --type container "$cid" 2>/dev/null)"
+            inspect_rc=$?
+            if [[ "$inspect_rc" -ne 0 ]]; then
+              remaining="$(docker ps -aq --no-trunc --filter "id=$cid" 2>/dev/null)" || return 1
+              [[ -z "$remaining" ]] && return 0
+              return 1
+            fi
+            python3 - "$inspect_json" "$cid" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'PY' || return 1
+import json,sys
+def unique(pairs):
+ d={}
+ for k,v in pairs:
+  if k in d: raise ValueError("duplicate key")
+  d[k]=v
+ return d
+def verify_owned(doc,cid,run_id,attempt):
+ assert type(doc) is list and len(doc)==1
+ c=doc[0]; assert type(c) is dict and c.get("Id")==cid
+ cfg=c.get("Config"); assert type(cfg) is dict
+ labels=cfg.get("Labels"); assert type(labels) is dict
+ assert labels=={"ai-phone-02.run-id":run_id,"ai-phone-02.run-attempt":attempt,"ai-phone-02.managed":"true"}
+def selftest():
+ cid="a"*64; labels={"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}
+ verify_owned([{"Id":cid,"Name":"/renamed","Config":{"Labels":labels}}],cid,"1","2")
+ for bad in ([{"Id":"b"*64,"Config":{"Labels":labels}}],[{"Id":cid,"Config":{"Labels":{}}}]):
+  try: verify_owned(bad,cid,"1","2")
+  except AssertionError: pass
+  else: raise AssertionError("ownership negative test passed unexpectedly")
+ print("cleanup_identity_validator=PASS")
+selftest()
+doc=json.loads(sys.argv[1],object_pairs_hook=unique)
+verify_owned(doc,sys.argv[2],sys.argv[3],sys.argv[4])
+PY
+            docker rm -f "$cid" >/dev/null 2>&1 || return 1
+            if docker inspect --type container "$cid" >/dev/null 2>&1; then return 1; fi
+            remaining="$(docker ps -aq --no-trunc --filter "id=$cid" 2>/dev/null)" || return 1
+            [[ -z "$remaining" ]]
+          }
+          cleanup_container_selftest() {
+            (
+              GITHUB_RUN_ID=1; GITHUB_RUN_ATTEMPT=2
+              test_id="$(printf 'a%.0s' {1..64})"
+              MOCK_VALID='[{"Id":"'"$test_id"'","Name":"/renamed","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_MISMATCH='[{"Id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_LABELS='[{"Id":"'"$test_id"'","Config":{"Labels":{}}}]'
+              docker() {
+                case "$1" in
+                  inspect)
+                    MOCK_INSPECT_COUNT=$((MOCK_INSPECT_COUNT+1))
+                    if [[ "$MOCK_CASE" == "absent" || ( "$MOCK_CASE" == "renamed" && "$MOCK_INSPECT_COUNT" -gt 1 ) ]]; then return 1; fi
+                    case "$MOCK_CASE" in renamed|rmfail) printf '%s' "$MOCK_VALID";; mismatch) printf '%s' "$MOCK_MISMATCH";; labels) printf '%s' "$MOCK_LABELS";; esac
+                    return 0 ;;
+                  ps) printf ''; return 0 ;;
+                  rm) MOCK_RM_COUNT=$((MOCK_RM_COUNT+1)); [[ "$MOCK_CASE" != "rmfail" ]]; return $? ;;
+                  *) return 1 ;;
+                esac
+              }
+              MOCK_CASE=renamed; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+              cleanup_container_by_id "$test_id" || exit 1
+              [[ "$MOCK_RM_COUNT" -eq 1 ]] || exit 1
+              for scenario in mismatch labels rmfail; do
+                MOCK_CASE="$scenario"; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+                if cleanup_container_by_id "$test_id"; then exit 1; fi
+                [[ "$MOCK_RM_COUNT" -eq 0 || "$scenario" == "rmfail" ]] || exit 1
+              done
+              MOCK_CASE=absent; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+              cleanup_container_by_id "$test_id" || exit 1
+            )
+            echo "cleanup_container_selftest=PASS; renamed=PASS; id_mismatch=REJECTED; labels_missing=REJECTED; rm_failure=REJECTED; absence_by_id=PASS"
+          }
+          cleanup_container_selftest
+          cleanup_run_resources() {
+            rc=$?
+            trap - EXIT
+            set +e
+            cleanup_failed=0
+            if [[ "$SERVICE_CONTAINER_CREATION_ATTEMPTED" -eq 1 && -z "$SERVICE_CONTAINER_ID" ]]; then
+              echo "Container creation was attempted but no immutable container ID was captured."
+              cleanup_failed=1
+            fi
+            if [[ -n "$SERVICE_CONTAINER_ID" ]]; then
+              docker info >/dev/null 2>&1 || cleanup_failed=1
+              if [[ "$cleanup_failed" -eq 0 ]]; then cleanup_container_by_id "$SERVICE_CONTAINER_ID" || cleanup_failed=1; fi
+            fi
+            if [[ "$cleanup_failed" -eq 0 ]]; then
+              if [[ -n "$PG_SECRET_FILE" ]]; then remove_secret_file_verified "$PG_SECRET_FILE" || cleanup_failed=1; fi
+              if [[ -n "$PG_SECRET_DIR" ]]; then remove_secret_dir_verified "$PG_SECRET_DIR" || cleanup_failed=1; fi
+            else
+              echo "Secret retained until ephemeral runner teardown because container removal/ownership was not verified."
+            fi
+            if [[ "$cleanup_failed" -ne 0 ]]; then echo "Run-scoped cleanup failed verification."; rc=1; fi
+            if [[ "${ATTESTATION_FINALIZING:-0}" == "1" && "$cleanup_failed" -eq 0 && "$rc" -eq 0 ]]; then
+              echo "LOCAL_CONTROLS_PASS: controls, package integrity, and run-scoped cleanup verified; external attestation remains NOT_VALIDATED."
+            fi
+            exit "$rc"
+          }
+          cleanup_run_resources_selftest() {
+            run_case() (
+              scenario="$1"; case_dir="$2"
+              test_id="$(printf 'a%.0s' {1..64})"
+              SERVICE_CONTAINER_CREATION_ATTEMPTED=1
+              SERVICE_CONTAINER_ID="$test_id"
+              PG_SECRET_DIR="$case_dir/secret-dir"
+              PG_SECRET_FILE="$PG_SECRET_DIR/postgres-passwd"
+              GITHUB_RUN_ID=1; GITHUB_RUN_ATTEMPT=2
+              mkdir -m 700 "$PG_SECRET_DIR"
+              printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$PG_SECRET_FILE"
+              chmod 600 "$PG_SECRET_FILE"
+              MOCK_CASE="$scenario"; MOCK_REMOVED=0
+              MOCK_VALID='[{"Id":"'$test_id'","Name":"/renamed","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_MISMATCH='[{"Id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_LABELS='[{"Id":"'$test_id'","Name":"/renamed","Config":{"Labels":{}}}]'
+              docker() {
+                case "$1" in
+                  info) return 0 ;;
+                  inspect)
+                    [[ "$MOCK_REMOVED" -eq 0 ]] || return 1
+                    case "$MOCK_CASE" in
+                      mismatch) printf '%s' "$MOCK_MISMATCH" ;;
+                      labels) printf '%s' "$MOCK_LABELS" ;;
+                      *) printf '%s' "$MOCK_VALID" ;;
+                    esac
+                    return 0 ;;
+                  rm)
+                    [[ "$MOCK_CASE" != "rmfail" ]] || return 1
+                    MOCK_REMOVED=1
+                    return 0 ;;
+                  ps)
+                    if [[ "$MOCK_CASE" == "confirmfail" ]]; then printf '%s\\n' "$test_id"; else printf ''; fi
+                    return 0 ;;
+                  *) return 1 ;;
+                esac
+              }
+              if [[ "$MOCK_CASE" == "secretfail" ]]; then
+                remove_secret_file_verified() { return 1; }
+              fi
+              if [[ "$MOCK_CASE" == "noid" ]]; then SERVICE_CONTAINER_ID=""; fi
+              trap cleanup_run_resources EXIT
+              exit 0
+            )
+            for scenario in success mismatch labels rmfail confirmfail secretfail noid; do
+              case_dir="$(mktemp -d)"
+              if run_case "$scenario" "$case_dir"; then rc=0; else rc=$?; fi
+              case "$scenario" in
+                success)
+                  [[ "$rc" -eq 0 && ! -e "$case_dir/secret-dir" ]] || { echo "cleanup integration success case failed"; return 1; } ;;
+                mismatch|labels|rmfail|confirmfail|secretfail|noid)
+                  [[ "$rc" -ne 0 && -f "$case_dir/secret-dir/postgres-passwd" ]] || { echo "cleanup integration fail-closed case failed: $scenario"; return 1; } ;;
+              esac
+              rm -rf -- "$case_dir"
+            done
+            echo "cleanup_run_resources_integration_selftest=PASS; success_and_secret_deletion=PASS; id_mismatch=FAIL_CLOSED; labels_missing=FAIL_CLOSED; rm_failure=FAIL_CLOSED; absence_confirmation_failure=FAIL_CLOSED; secret_deletion_failure=RETAINED; missing_captured_id=FAIL_CLOSED"
+          }
+          cleanup_run_resources_selftest
+          ATTESTATION_FINALIZING=1
+          trap cleanup_run_resources EXIT
+
+          umask 077
+          PG_SECRET_DIR="$(mktemp -d "$RUNNER_TEMP/ai-phone-02-secret.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.XXXXXX")"
+          chmod 0700 "$PG_SECRET_DIR"
+          PG_SECRET_FILE="$PG_SECRET_DIR/postgres-passwd"
+          PG_PASSWORD="$(openssl rand -hex 32)"
+          [[ "$PG_PASSWORD" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s' "$PG_PASSWORD" > "$PG_SECRET_FILE"
+          chmod 0600 "$PG_SECRET_FILE"
+          test "$(stat -c '%a' "$PG_SECRET_DIR")" = "700"
+          test "$(stat -c '%a' "$PG_SECRET_FILE")" = "600"
+          test -s "$PG_SECRET_FILE"
+
+          SERVICE_CONTAINER_CREATION_ATTEMPTED=1
+          SERVICE_CONTAINER_ID="$(docker run --detach --name "$SERVICE_CONTAINER_NAME" \
+            --label "ai-phone-02.run-id=$GITHUB_RUN_ID" \
+            --label "ai-phone-02.run-attempt=$GITHUB_RUN_ATTEMPT" \
+            --label "ai-phone-02.managed=true" \
+            --network none --read-only --security-opt=no-new-privileges \
+            --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=1g \
+            --tmpfs /var/run/postgresql:rw,noexec,nosuid,size=16m \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --mount "type=bind,src=$PG_SECRET_DIR,dst=/run/secrets,readonly,bind-propagation=rprivate" \
+            --pids-limit 256 --memory 1g --cpus 1 \
+            --health-cmd='pg_isready -U attestation -d attestation' \
+            --health-interval=3s --health-timeout=3s --health-retries=20 \
+            --env POSTGRES_USER=attestation \
+            --env POSTGRES_DB=attestation \
+            --env POSTGRES_PASSWORD_FILE=/run/secrets/postgres-passwd \
+            --env 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256' \
+            "$POSTGRES_IMAGE")"
           test -n "$SERVICE_CONTAINER_ID"
 
           SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
-          SERVICE_REPO_DIGESTS="$(docker inspect --format '{{json .RepoDigests}}' "$SERVICE_CONTAINER_ID")"
-          test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
-          test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
-          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
+          SERVICE_IMAGE_INSPECT_ID="$(docker image inspect --format '{{.Id}}' "$SERVICE_IMAGE_ID")"
+          SERVICE_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$SERVICE_IMAGE_ID")"
+          export POSTGRES_IMAGE EXPECTED_IMAGE_DIGEST SERVICE_CONTAINER_ID SERVICE_ACTUAL_ID
+          export SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_IMAGE_INSPECT_ID SERVICE_REPO_DIGESTS
+
+          python3 - <<'PY'
+          import json, os, re, sys
+          repos={"postgres","docker.io/library/postgres","index.docker.io/library/postgres"}
+          vals={
+            "container_id_format":bool(re.fullmatch(r"[a-f0-9]{64}",os.environ["SERVICE_CONTAINER_ID"])),
+            "container_id_matches":os.environ["SERVICE_ACTUAL_ID"]==os.environ["SERVICE_CONTAINER_ID"],
+            "configured_image_matches":os.environ["SERVICE_IMAGE"]==os.environ["POSTGRES_IMAGE"],
+            "image_id_format":bool(re.fullmatch(r"sha256:[a-f0-9]{64}",os.environ["SERVICE_IMAGE_ID"])),
+            "image_inspect_matches":os.environ["SERVICE_IMAGE_INSPECT_ID"]==os.environ["SERVICE_IMAGE_ID"]}
+          try: ds=json.loads(os.environ["SERVICE_REPO_DIGESTS"])
+          except Exception: ds=None
+          vals["expected_digest_present"]=isinstance(ds,list) and any(isinstance(x,str) and "@" in x and x.rsplit("@",1)[0] in repos and x.rsplit("@",1)[1]==os.environ["EXPECTED_IMAGE_DIGEST"] for x in ds)
+          vals["repo_digests_present"]=isinstance(ds,list) and bool(ds)
+          failed=[k for k,v in vals.items() if not v]
+          print(json.dumps({"image_identity_checks":vals,"failed":failed,"result":"PASS" if not failed else "FAIL"},sort_keys=True))
+          if failed: sys.exit(1)
+          PY
+
+          # Inspect the actual container config and validate it before health checks or SQL.
+          docker inspect --type container "$SERVICE_CONTAINER_ID" > "$RUNNER_TEMP/ai-phone-02-container-inspect.json"
+          cat > "$RUNNER_TEMP/ai-phone-02-validate-container.py" <<'PY'
+          import json, os, sys, stat, tempfile
+          SECRET="/run/secrets/postgres-passwd"
+          TMPFS={
+            "/var/lib/postgresql/data":("rw","noexec","nosuid","size=1g"),
+            "/var/run/postgresql":("rw","noexec","nosuid","size=16m"),
+            "/tmp":("rw","noexec","nosuid","size=64m")}
+          def unique_object(pairs):
+            out={}
+            for key,value in pairs:
+              if key in out: raise ValueError("duplicate JSON key: "+key)
+              out[key]=value
+            return out
+          def require(obj,key,typ,allow_none=False):
+            if not isinstance(obj,dict) or key not in obj: raise ValueError("required field absent: "+key)
+            value=obj[key]
+            if value is None and allow_none: return value
+            if type(value) is not typ: raise ValueError("wrong type/null: "+key)
+            return value
+          def check(ok,msg):
+            if not ok: raise ValueError(msg)
+          def validate_secret(secret_file, secret_dir):
+            check(os.path.isdir(secret_dir) and not os.path.islink(secret_dir) and stat.S_IMODE(os.stat(secret_dir).st_mode)==0o700,"secret directory missing, symlinked, or permissions incorrect")
+            check(os.path.isfile(secret_file) and not os.path.islink(secret_file),"secret file missing or not a regular file")
+            check(stat.S_IMODE(os.stat(secret_file).st_mode)==0o600,"secret file permissions incorrect")
+            with open(secret_file,encoding="ascii") as h: value=h.read()
+            check(bool(__import__("re").fullmatch(r"[a-f0-9]{64}",value)),"secret missing, empty, or invalid format")
+          def validate(doc,e):
+            check(isinstance(doc,list) and len(doc)==1,"inspect must return exactly one container")
+            c=doc[0]; check(type(c) is dict,"container inspect object invalid")
+            cfg=require(c,"Config",dict); hc=require(c,"HostConfig",dict); ns=require(c,"NetworkSettings",dict)
+            mounts=require(c,"Mounts",list)
+            check(require(c,"Id",str)==e["id"] and require(c,"Image",str)==e["image_id"] and require(cfg,"Image",str)==e["image"],"container/image identity mismatch")
+            check(require(hc,"NetworkMode",str)=="none","network mode mismatch")
+            bindings=require(hc,"PortBindings",dict,allow_none=True)
+            check(bindings is None or bindings=={},"host ports published")
+            check(require(hc,"PublishAllPorts",bool) is False,"PublishAllPorts mismatch")
+            ports=require(ns,"Ports",dict)
+            check(set(ports)=={"5432/tcp"} and ports["5432/tcp"] in (None,[]),"effective host port binding found or port map incomplete")
+            check(require(hc,"ReadonlyRootfs",bool) is True and require(hc,"Privileged",bool) is False,"rootfs/privileged policy mismatch")
+            # Docker inspect reports null for unset list-valued privilege grants.
+            # Null is the only permitted representation; empty lists and all non-empty
+            # values fail closed so daemon/API representation drift cannot be mistaken
+            # for an attested default.
+            for key in ("CapAdd","CapDrop","Devices","DeviceRequests"):
+              check(require(hc,key,list,allow_none=True) is None,"unauthorized or non-canonical HostConfig field: "+key)
+            # No device-cgroup rules are requested. Docker's canonical inspect
+            # representation for an unset field is null; missing, [], and explicit
+            # rules are distinct and rejected.
+            device_cgroup_rules=require(hc,"DeviceCgroupRules",list,allow_none=True)
+            check(device_cgroup_rules is None,"DeviceCgroupRules must be present and null; device access rules are forbidden")
+            # Empty PidMode/UTSMode means Docker's isolated default namespace, not "host".
+            # Empty UsernsMode delegates to daemon defaults: remapping may be disabled,
+            # enabled with userns-remap, or supplied by a rootless daemon. Inspect
+            # alone cannot distinguish or attest these daemon-level modes.
+            namespace_policy={"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"}
+            namespace_observed={}
+            for key,expected in namespace_policy.items():
+              actual=require(hc,key,str)
+              check(actual==expected,"namespace mode mismatch: "+key)
+              namespace_observed[key]=actual
+            # Additional HostConfig surfaces that can widen device, group, sysctl,
+            # cgroup-parent, or runtime privileges are pinned to the expected inspect
+            # representation. Unknown daemon versions fail closed.
+            for key in ("GroupAdd","VolumesFrom","Binds"):
+              check(require(hc,key,list,allow_none=True) is None,"unexpected HostConfig grant: "+key)
+            check(require(hc,"Sysctls",dict,allow_none=True) is None,"unexpected HostConfig sysctl grant")
+            check(require(hc,"CgroupParent",str)=="","unexpected cgroup parent")
+            check(require(hc,"Runtime",str)=="runc","unexpected container runtime")
+            check(require(hc,"OomKillDisable",bool,allow_none=True) is None,"unexpected OOM kill policy")
+            sec=require(hc,"SecurityOpt",list)
+            check(sec==["no-new-privileges:true"],"SecurityOpt must exactly match allowlist")
+            check(require(hc,"Memory",int)==1073741824 and require(hc,"NanoCpus",int)==1000000000 and require(hc,"PidsLimit",int)==256,"resource limits mismatch")
+            tmp=require(hc,"Tmpfs",dict)
+            check(isinstance(tmp,dict) and set(tmp)==set(TMPFS),"tmpfs paths mismatch")
+            for p,required_options in TMPFS.items():
+              raw=tmp[p]
+              check(type(raw) is str,"tmpfs option value type mismatch: "+p)
+              tokens=raw.split(",")
+              check(len(tokens)==len(set(tokens)),"duplicate tmpfs option: "+p)
+              flags={x for x in tokens if not x.startswith("size=")}
+              sizes=[x for x in tokens if x.startswith("size=")]
+              decimal_size="size="+str({"size=1g":1073741824,"size=16m":16777216,"size=64m":67108864}[required_options[-1]])
+              check(flags==set(required_options[:-1]) and len(sizes)==1 and sizes[0] in {required_options[-1],decimal_size},"tmpfs options/size must match exactly: "+p)
+            env=require(cfg,"Env",list)
+            check(all(type(x) is str and "=" in x for x in env),"Config.Env malformed")
+            names=[x.split("=",1)[0] for x in env]
+            check(len(names)==len(set(names)),"duplicate Config.Env variable")
+            check(not any(x.startswith("POSTGRES_PASSWORD=") for x in env),"POSTGRES_PASSWORD leaked into Config.Env")
+            check(sum(x.startswith("POSTGRES_PASSWORD_FILE=") for x in env)==1 and "POSTGRES_PASSWORD_FILE="+SECRET in env,"password file path missing, duplicated, or incorrect")
+            args=[x.split("=",1)[1] for x in env if x.startswith("POSTGRES_INITDB_ARGS=")]
+            check(args==["--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"SCRAM initialization args must exactly match policy")
+            expected_mounts={p:("tmpfs",True,None) for p in TMPFS}
+            expected_mounts["/run/secrets"]=("bind",False,e["secret_dir"])
+            destinations=[]
+            for m in mounts:
+              check(type(m) is dict,"mount entry malformed")
+              destinations.append(require(m,"Destination",str))
+            check(len(destinations)==len(set(destinations)) and set(destinations)==set(expected_mounts),"mount destinations duplicated, missing, or unexpected")
+            for m in mounts:
+              dest=m["Destination"]; typ,rw,source=expected_mounts[dest]
+              check(require(m,"Type",str)==typ and require(m,"RW",bool) is rw,"mount type/read-write mismatch: "+dest)
+              if source is not None:
+                check(require(m,"Source",str)==source,"secret mount source mismatch")
+                check(require(m,"Propagation",str)=="rprivate","secret bind mount propagation must be explicitly rprivate")
+              else:
+                check(require(m,"Propagation",str)=="","non-bind mount propagation must be empty")
+            # Validate HostConfig.Mounts independently, then cross-check it against
+            # Docker's effective top-level Mounts array.
+            requested_mounts=require(hc,"Mounts",list)
+            check(len(requested_mounts)==1,"HostConfig.Mounts contains missing or additional mounts")
+            requested=requested_mounts[0]
+            check(type(requested) is dict,"HostConfig.Mounts entry malformed")
+            check(require(requested,"Type",str)=="bind","HostConfig mount type mismatch")
+            check(require(requested,"Source",str)==e["secret_dir"],"HostConfig mount source mismatch")
+            check(require(requested,"Target",str)=="/run/secrets","HostConfig mount target mismatch")
+            check(require(requested,"ReadOnly",bool) is True,"HostConfig secret mount must be read-only")
+            bind_options=require(requested,"BindOptions",dict)
+            check(require(bind_options,"Propagation",str)=="rprivate","HostConfig bind propagation must be rprivate")
+            check(set(bind_options)=={"Propagation"},"unexpected HostConfig bind options")
+            allowed_mount_keys={"Type","Source","Target","ReadOnly","BindOptions","VolumeOptions","TmpfsOptions","Consistency"}
+            check(set(requested).issubset(allowed_mount_keys),"unexpected HostConfig mount option key")
+            for key in ("VolumeOptions","TmpfsOptions","Consistency"):
+              if key in requested: check(requested[key] in (None,""),"unexpected HostConfig mount option: "+key)
+            effective_secret=[m for m in mounts if m.get("Destination")=="/run/secrets"]
+            check(len(effective_secret)==1,"effective secret mount missing or duplicated")
+            em=effective_secret[0]
+            check(em["Type"]=="bind" and em["Source"]==requested["Source"] and em["Destination"]==requested["Target"] and em["RW"] is False and em["Propagation"]=="rprivate","requested/effective secret mount mismatch")
+            labels=require(cfg,"Labels",dict)
+            check(labels=={"ai-phone-02.run-id":e["run_id"],"ai-phone-02.run-attempt":e["attempt"],"ai-phone-02.managed":"true"},"run ownership labels absent, extra, or mismatched")
+            return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"cap_add":hc["CapAdd"],"cap_drop":hc["CapDrop"],"devices":hc["Devices"],"device_requests":hc["DeviceRequests"],"device_cgroup_rules":device_cgroup_rules,"namespaces":namespace_observed,"group_add":hc["GroupAdd"],"sysctls":hc["Sysctls"],"volumes_from":hc["VolumesFrom"],"binds":hc["Binds"],"cgroup_parent":hc["CgroupParent"],"runtime":hc["Runtime"],"oom_kill_disable":hc["OomKillDisable"],"mounts":[{"type":m.get("Type"),"source":m.get("Source"),"destination":m.get("Destination"),"rw":m.get("RW"),"propagation":m.get("Propagation")} for m in mounts],"host_config_mounts":[{"type":m.get("Type"),"source":m.get("Source"),"target":m.get("Target"),"read_only":m.get("ReadOnly"),"bind_options":m.get("BindOptions")} for m in requested_mounts],"secret_value_in_config_env":False,"expected_policy":{"network_mode":"none","published_host_ports":False,"publish_all_ports":False,"readonly_rootfs":True,"privileged":False,"cap_add":None,"cap_drop":None,"devices":None,"device_requests":None,"device_cgroup_rules":None,"namespaces":{"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"},"group_add":None,"sysctls":None,"volumes_from":None,"binds":None,"cgroup_parent":"","runtime":"runc","oom_kill_disable":None,"security_opt":["no-new-privileges:true"],"memory_bytes":1073741824,"nano_cpus":1000000000,"pids_limit":256,"tmpfs":TMPFS,"mount_destinations":sorted(set(TMPFS)|{"/run/secrets"}),"secret_mount":{"type":"bind","source":e["secret_dir"],"destination":"/run/secrets","rw":False,"propagation":"rprivate"},"host_config_secret_mount":{"type":"bind","source":e["secret_dir"],"target":"/run/secrets","read_only":True,"propagation":"rprivate"},"postgres_password_env":"absent","postgres_password_file_env":SECRET,"postgres_initdb_args":"--auth-host=scram-sha-256 --auth-local=scram-sha-256"},"policy_validation":"PASS","trust_limitation":"Observed values are reported by the Docker daemon; they do not prove host integrity or protect against a privileged daemon administrator."}
+          def selftest():
+            tmp={k:",".join(v) for k,v in TMPFS.items()}
+            f=[{"Id":"a"*64,"Image":"sha256:"+"b"*64,"Config":{"Image":"postgres:16.16@sha256:"+"c"*64,"Env":["POSTGRES_PASSWORD_FILE="+SECRET,"POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"1","ai-phone-02.managed":"true"}},"HostConfig":{"NetworkMode":"none","PortBindings":{},"PublishAllPorts":False,"ReadonlyRootfs":True,"Privileged":False,"CapAdd":None,"CapDrop":None,"Devices":None,"DeviceRequests":None,"DeviceCgroupRules":None,"Mounts":[{"Type":"bind","Source":"/tmp/sec","Target":"/run/secrets","ReadOnly":True,"BindOptions":{"Propagation":"rprivate"}}],"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private","GroupAdd":None,"Sysctls":None,"VolumesFrom":None,"Binds":None,"CgroupParent":"","Runtime":"runc","OomKillDisable":None,"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824,"NanoCpus":1000000000,"PidsLimit":256,"Tmpfs":tmp},"NetworkSettings":{"Ports":{"5432/tcp":None}},"Mounts":[{"Type":"tmpfs","Destination":p,"RW":True,"Propagation":""} for p in TMPFS]+[{"Type":"bind","Source":"/tmp/sec","Destination":"/run/secrets","RW":False,"Propagation":"rprivate"}]}]
+            e={"id":"a"*64,"image_id":"sha256:"+"b"*64,"image":"postgres:16.16@sha256:"+"c"*64,"secret_dir":"/tmp/sec","run_id":"1","attempt":"1"}
+            validate(f,e)
+            with tempfile.TemporaryDirectory() as td:
+              os.chmod(td,0o700); secret=os.path.join(td,"postgres-passwd")
+              with open(secret,"w",encoding="ascii") as h: h.write("a"*64)
+              os.chmod(secret,0o600); validate_secret(secret,td)
+              for mode,content in ((0o644,"a"*64),(0o600,""),(0o600,"not-a-secret")):
+                with open(secret,"w",encoding="ascii") as h: h.write(content)
+                os.chmod(secret,mode)
+                try: validate_secret(secret,td)
+                except (ValueError,KeyError,TypeError): pass
+                else: raise ValueError("invalid secret fixture unexpectedly passed")
+              os.remove(secret)
+              try: validate_secret(secret,td)
+              except (ValueError,KeyError,TypeError): pass
+              else: raise ValueError("missing secret fixture unexpectedly passed")
+            negatives=0
+            mutations=[lambda x:x[0]["HostConfig"].update(NetworkMode="bridge"),lambda x:x[0]["HostConfig"].pop("NetworkMode"),lambda x:x[0]["HostConfig"].pop("PortBindings"),lambda x:x[0]["HostConfig"].update(PortBindings={"5432/tcp":[{}]}),lambda x:x[0]["HostConfig"].update(PortBindings=""),lambda x:x[0]["HostConfig"].pop("PublishAllPorts"),lambda x:x[0]["HostConfig"].update(PublishAllPorts=True),lambda x:x[0]["HostConfig"].update(ReadonlyRootfs=False),lambda x:x[0]["HostConfig"].pop("ReadonlyRootfs"),lambda x:x[0]["HostConfig"].update(SecurityOpt=["no-new-privileges:true","seccomp=unconfined"]),lambda x:x[0]["HostConfig"].pop("SecurityOpt"),lambda x:x[0]["HostConfig"].update(Memory=1),lambda x:x[0]["HostConfig"].pop("Memory"),lambda x:x[0]["HostConfig"].update(NanoCpus=1),lambda x:x[0]["HostConfig"].pop("NanoCpus"),lambda x:x[0]["HostConfig"].update(PidsLimit=1),lambda x:x[0]["HostConfig"].pop("PidsLimit"),lambda x:x[0]["Config"]["Env"].append("POSTGRES_PASSWORD=secret"),lambda x:x[0]["Config"].pop("Env"),lambda x:x[0]["Mounts"][-1].update(RW=True),lambda x:x[0]["Mounts"].pop(),lambda x:x[0]["Mounts"].append({"Type":"bind","Source":"/unexpected","Destination":"/unexpected","RW":False}),lambda x:x[0]["HostConfig"]["Tmpfs"].update({"/tmp":"rw,noexec,nosuid,exec,size=64m"}),lambda x:x[0]["HostConfig"].pop("Tmpfs"),lambda x:x[0]["HostConfig"].update(Privileged=True),lambda x:x[0]["HostConfig"].pop("Privileged"),lambda x:x[0]["Config"]["Env"].append("POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256 --auth=trust"),lambda x:x[0]["Config"]["Env"].append("POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256"),lambda x:x[0]["Config"]["Env"].clear(),lambda x:x[0]["Config"].pop("Labels"),lambda x:x[0]["Config"]["Labels"].update({"unexpected":"true"}),lambda x:x[0].pop("Mounts"),lambda x:x[0]["NetworkSettings"].pop("Ports")]
+            # Privilege, device and namespace mutations hit the production validate().
+            privilege_mutations=[
+              lambda x:x[0]["HostConfig"].update(CapAdd=["SYS_ADMIN"]),
+              lambda x:x[0]["HostConfig"].update(CapAdd=["NET_ADMIN"]),
+              lambda x:x[0]["HostConfig"].update(CapDrop=["ALL"]),
+              lambda x:x[0]["HostConfig"].update(Devices=[{"PathOnHost":"/dev/kvm","PathInContainer":"/dev/kvm","CgroupPermissions":"rwm"}]),
+              lambda x:x[0]["HostConfig"].update(DeviceRequests=[{"Driver":"nvidia","Count":-1,"DeviceIDs":[],"Capabilities":[["gpu"]],"Options":{}}]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c *:* rwm"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 42:* rwm"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 42:7 rw"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=[]),
+              lambda x:x[0]["HostConfig"].pop("DeviceCgroupRules"),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules="c 42:7 r"),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 042:007 r"]),
+              lambda x:x[0]["Mounts"][-1].update(Propagation="rshared"),
+              lambda x:x[0]["Mounts"][-1].update(Propagation="rslave"),
+              lambda x:x[0]["Mounts"][-1].pop("Propagation"),
+              lambda x:x[0]["Mounts"][-1].update(Source="/unexpected"),
+              lambda x:x[0]["Mounts"][-1].update(Destination="/unexpected"),
+              lambda x:x[0]["Mounts"][-1].update(RW=True),
+              lambda x:x[0]["Mounts"].append({"Type":"bind","Source":"/extra","Destination":"/extra","RW":False,"Propagation":"rprivate"}),
+              lambda x:x[0]["HostConfig"].update(Mounts=[]),
+              lambda x:x[0]["HostConfig"].pop("Mounts"),
+              lambda x:x[0]["HostConfig"].update(Mounts="invalid"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Type="volume"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Source="/unexpected"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Target="/unexpected"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(ReadOnly=False),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(BindOptions=[]),
+              lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Propagation="rshared"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Unexpected=True),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(UnexpectedOption=True),
+              lambda x:x[0]["HostConfig"]["Mounts"].append({"Type":"bind","Source":"/extra","Target":"/extra","ReadOnly":True,"BindOptions":{"Propagation":"rprivate"}}),
+              lambda x:x[0]["HostConfig"].update(PidMode="host"),
+              lambda x:x[0]["HostConfig"].update(IpcMode="host"),
+              lambda x:x[0]["HostConfig"].update(UTSMode="host"),
+              lambda x:x[0]["HostConfig"].update(UsernsMode="host"),
+              lambda x:x[0]["HostConfig"].update(CgroupnsMode="host"),
+              lambda x:x[0]["HostConfig"].pop("CapAdd"),
+              lambda x:x[0]["HostConfig"].pop("CapDrop"),
+              lambda x:x[0]["HostConfig"].pop("Devices"),
+              lambda x:x[0]["HostConfig"].pop("DeviceRequests"),
+              lambda x:x[0]["HostConfig"].pop("PidMode"),
+              lambda x:x[0]["HostConfig"].pop("IpcMode"),
+              lambda x:x[0]["HostConfig"].pop("UTSMode"),
+              lambda x:x[0]["HostConfig"].pop("UsernsMode"),
+              lambda x:x[0]["HostConfig"].pop("CgroupnsMode"),
+              lambda x:x[0]["HostConfig"].update(CapAdd="SYS_ADMIN"),
+              lambda x:x[0]["HostConfig"].update(CapDrop="ALL"),
+              lambda x:x[0]["HostConfig"].update(Devices="/dev/kvm"),
+              lambda x:x[0]["HostConfig"].update(DeviceRequests="gpu"),
+              lambda x:x[0]["HostConfig"].update(PidMode=7),
+              lambda x:x[0]["HostConfig"].update(IpcMode=7),
+              lambda x:x[0]["HostConfig"].update(UTSMode=7),
+              lambda x:x[0]["HostConfig"].update(UsernsMode=7),
+              lambda x:x[0]["HostConfig"].update(CgroupnsMode=7),
+              lambda x:x[0]["HostConfig"].update(CapAdd=[]),
+              lambda x:x[0]["HostConfig"].update(CapDrop=[]),
+              lambda x:x[0]["HostConfig"].update(Devices=[]),
+              lambda x:x[0]["HostConfig"].update(DeviceRequests=[]),
+              lambda x:x[0]["HostConfig"].update(IpcMode=None),
+              lambda x:x[0]["HostConfig"].update(UTSMode=7),
+              lambda x:x[0]["HostConfig"].update(UsernsMode="private"),
+              lambda x:x[0]["HostConfig"].update(CgroupnsMode=""),
+            ]
+            for mutate in privilege_mutations:
+              x=json.loads(json.dumps(f)); mutate(x)
+              try: validate(x,e)
+              except (ValueError,KeyError,TypeError): negatives+=1
+              else: raise ValueError("privilege/namespace negative fixture unexpectedly passed")
+            for mutate in mutations:
+              x=json.loads(json.dumps(f)); mutate(x)
+              try: validate(x,e)
+              except (ValueError,KeyError,TypeError): negatives+=1
+              else: raise ValueError("negative fixture unexpectedly passed")
+            for x in (None,{},[],f+f,[{"Config":{}}]):
+              try: validate(x,e)
+              except (ValueError,KeyError,TypeError): negatives+=1
+              else: raise ValueError("malformed fixture unexpectedly passed")
+            duplicate_cases=['{"root":1,"root":2}','{"HostConfig":{"x":1,"x":2}}','{"Config":{"x":1,"x":2}}','{invalid','']
+            for raw in duplicate_cases:
+              try: json.loads(raw,object_pairs_hook=unique_object)
+              except (ValueError,TypeError): negatives+=1
+              else: raise ValueError("duplicate/malformed JSON unexpectedly passed")
+            print(json.dumps({"validator_self_tests":"PASS","positive":1,"negative":negatives,"duplicate_malformed_json":len(duplicate_cases)}))
+          if __name__=="__main__":
+            if len(sys.argv)==2 and sys.argv[1]=="--self-test": selftest(); raise SystemExit(0)
+            try:
+              validate_secret(os.environ["PG_SECRET_FILE"],os.environ["PG_SECRET_DIR"])
+              with open(sys.argv[1],encoding="utf-8") as h: doc=json.load(h,object_pairs_hook=unique_object)
+              e={"id":os.environ["SERVICE_CONTAINER_ID"],"image_id":os.environ["SERVICE_IMAGE_ID"],"image":os.environ["POSTGRES_IMAGE"],"secret_dir":os.environ["PG_SECRET_DIR"],"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"]}
+              result=validate(doc,e)
+              with open(sys.argv[2],"w",encoding="utf-8") as h: json.dump(result,h,indent=2,sort_keys=True); h.write("\n")
+              print('{"effective_container_policy":"PASS"}')
+            except Exception as ex:
+              print(json.dumps({"effective_container_policy":"FAIL","error":type(ex).__name__},sort_keys=True)); raise SystemExit(1)
+          PY
+          python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" --self-test
+          export PG_SECRET_DIR PG_SECRET_FILE
+          python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" "$RUNNER_TEMP/ai-phone-02-container-inspect.json" "$RUNNER_TEMP/ai-phone-02-container-observed.json"
+          export CONTAINER_OBSERVED_JSON="$RUNNER_TEMP/ai-phone-02-container-observed.json"
+
+          # Fail closed unless the isolated PostgreSQL instance is healthy.
+          HEALTH_STATUS=""
+          for attempt in $(seq 1 60); do
+            HEALTH_STATUS="$(docker inspect --format '{{.State.Health.Status}}' "$SERVICE_CONTAINER_ID")"
+            [[ "$HEALTH_STATUS" == "healthy" ]] && break
+            [[ "$HEALTH_STATUS" == "unhealthy" ]] && { echo "PostgreSQL health check failed."; exit 1; }
+            sleep 1
+          done
+          test "$HEALTH_STATUS" = "healthy"
 
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
           test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
           APP_NAME="ai-phone-02-$NONCE"
-          export NONCE APP_NAME SERVICE_ACTUAL_ID SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_REPO_DIGESTS CHECKOUT_SHA STARTED_AT
+          export NONCE APP_NAME CHECKOUT_SHA STARTED_AT
 
           # TCP loopback is confined to the service container; no host port is published.
-          docker exec -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
-            psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
+          docker exec -i -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
+            sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 "$@"' psql \
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
               'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
@@ -95,6 +588,7 @@ jobs:
               'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
               'role', current_user,
               'session_user', session_user,
+              'is_superuser', current_setting('is_superuser'),
               'backend_pid', pg_backend_pid(),
               'backend_start', (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()),
               'application_name', current_setting('application_name'),
@@ -105,11 +599,10 @@ jobs:
               'server_port', inet_server_port(),
               'postmaster_start_time', pg_postmaster_start_time()
             )::text" \
-            -c "COMMIT" > attestation-evidence/database-session.json
+            -c "COMMIT" <<< "$PG_PASSWORD" > attestation-evidence/database-session.json
 
+          unset PG_PASSWORD
           export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
-          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
-          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           python3 - <<'PY'
           import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
@@ -127,6 +620,7 @@ jobs:
               "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
               "role": db.get("role") == "attestation",
               "session_user": db.get("session_user") == "attestation",
+              "bootstrap_role_superuser": db.get("is_superuser") == "on",
               "backend_pid": isinstance(db.get("backend_pid"), int) and db["backend_pid"] > 0,
               "backend_start": bool(db.get("backend_start")),
               "application_name_nonce": db.get("application_name") == expected_app,
@@ -183,6 +677,7 @@ jobs:
                   "target_sha": os.environ["TARGET_SHA"],
                   "checked_out_sha": os.environ["CHECKOUT_SHA"]
               },
+              "user_namespace_attestation": {"status":"NOT_ATTESTED","reason":"Container UsernsMode is empty and daemon-level rootless/userns-remap mode plus effective UID/GID maps were not collected or independently validated."},
               "executor": {
                   "runner_name": os.environ.get("RUNNER_NAME"),
                   "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
@@ -196,12 +691,19 @@ jobs:
                   "identity_limitations": "Runner instance identity must be independently correlated from GitHub provider-side job metadata."
               },
               "postgres": {
-                  "service_id_from_job_context": os.environ["SERVICE_CONTAINER_ID"],
+                  "service_container_id_from_docker_run": os.environ["SERVICE_CONTAINER_ID"],
                   "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
                   "configured_image": os.environ["SERVICE_IMAGE"],
                   "image_id": os.environ["SERVICE_IMAGE_ID"],
+                  "image_inspect_id": os.environ["SERVICE_IMAGE_INSPECT_ID"],
+                  "expected_registry_digest": os.environ["EXPECTED_IMAGE_DIGEST"],
                   "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
-                  "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
+                  "image_digest_validation": "passed against docker image inspect of the immutable image ID",
+                  "container_configuration": json.load(open(os.environ["CONTAINER_OBSERVED_JSON"], encoding="utf-8")),
+                  "host_auth_method": "scram-sha-256",
+                  "local_auth_method": "scram-sha-256",
+                  "credential": "random per-run 256-bit password supplied through POSTGRES_PASSWORD_FILE; secret file retained until verified container removal and excluded from artifact",
+                  "scope": "Docker container created within this GitHub-hosted job; TCP connection is loopback inside that container"
               },
               "cluster_identity": {
                   "system_identifier": database["system_identifier"],
@@ -239,13 +741,27 @@ jobs:
                   "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
                   "Provider-side correlation remains pending until a future separately authorized execution and independent review.",
                   "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
-                  "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
+                  "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
+                  "Both host and local connections require SCRAM-SHA-256 password authentication.",
+                  "Container and image identity checks are completed before any PostgreSQL connection or identity collection.",
+                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, Runtime=runc, DeviceCgroupRules=null, and HostConfig.Mounts with the single read-only secret bind using rprivate propagation; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS.",
+                  "The daemon-level user namespace mode is NOT_ATTESTED; no rootless or userns-remap isolation claim is made.",
+                  "UsernsMode is empty in container inspect and delegates to daemon policy; this does not prove that user namespace remapping is enabled. Rootless mode runs the daemon and containers inside a user namespace, while userns-remap runs a rootful daemon with remapped container identities. A non-destructive future check may collect docker info SecurityOptions (which can identify rootless or userns) and effective container/host UID and GID maps, but no such runtime evidence was collected here. This workflow does not independently validate daemon mode, subordinate UID/GID ranges, or effective mappings. User namespace isolation remains NOT_ATTESTED (UNKNOWN)."
               ],
               "safety": {
-                  "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
-                  "migrations_executed": False,
-                  "schema_modified": False,
-                  "data_modified": False,
+                  "disposable_postgres_bootstrap": {
+                      "performed_by_official_image_entrypoint": True,
+                      "may_run_initdb": True,
+                      "may_create_database": True,
+                      "may_create_or_modify_bootstrap_schema_and_roles": True,
+                      "scope": "ephemeral job-local container only"
+                  },
+                  "evidence_collection": {
+                      "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
+                      "read_only_transaction_required": True,
+                      "migrations_executed_by_collector": False,
+                      "schema_or_data_mutation_by_collector": False
+                  },
                   "production_access": False,
                   "permanent_credentials_used": False
               }
@@ -260,7 +776,7 @@ jobs:
           (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
           test -s attestation-evidence/SHA256SUMS
           (cd attestation-evidence && sha256sum --check SHA256SUMS)
-          echo "LOCAL_CONTROLS_PASS: all local controls and package integrity verified; external attestation remains NOT_VALIDATED."
+
 
       - name: Upload read-only attestation evidence
         if: success() && steps.collect.outcome == 'success'
