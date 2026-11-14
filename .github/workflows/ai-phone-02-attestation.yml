@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87
         env:
           POSTGRES_USER: attestation
           POSTGRES_DB: attestation
@@ -62,8 +62,8 @@ jobs:
           SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_REPO_DIGESTS="$(docker inspect --format '{{json .RepoDigests}}' "$SERVICE_CONTAINER_ID")"
           test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
-          test "$SERVICE_IMAGE" = "postgres:16"
-          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Eq 'sha256:[a-f0-9]{64}'
+          test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
 
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
           test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
@@ -169,7 +169,7 @@ jobs:
               "limitations": [
                   "This artifact is declarative evidence produced by the workflow; independently retrieve and correlate run, attempt, job, logs, artifact metadata, and digest through GitHub.",
                   "The hosted runner has no immutable executor instance identifier exposed to this workflow.",
-                  "The postgres:16 tag is mutable; the exact pulled image ID and repository digest are recorded for this execution and must be independently checked."
+                  "The PostgreSQL service is pinned to the official linux/amd64 manifest digest; the runtime image ID and repository digest are recorded and must be independently checked."
               ],
               "safety": {
                   "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
