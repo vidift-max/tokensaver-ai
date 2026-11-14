@@ -52,6 +52,8 @@ jobs:
           test "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
           [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]
           test -n "$JOB_KEY"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           CHECKOUT_SHA="$(git rev-parse HEAD)"
           test "$CHECKOUT_SHA" = "$TARGET_SHA"
 
@@ -148,6 +150,7 @@ jobs:
               'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
               'role', current_user,
               'session_user', session_user,
+              'is_superuser', current_setting('is_superuser'),
               'backend_pid', pg_backend_pid(),
               'backend_start', (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()),
               'application_name', current_setting('application_name'),
@@ -162,8 +165,6 @@ jobs:
 
           unset PG_PASSWORD
           export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
-          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
-          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           python3 - <<'PY'
           import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
@@ -181,6 +182,7 @@ jobs:
               "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
               "role": db.get("role") == "attestation",
               "session_user": db.get("session_user") == "attestation",
+              "bootstrap_role_superuser": db.get("is_superuser") == "on",
               "backend_pid": isinstance(db.get("backend_pid"), int) and db["backend_pid"] > 0,
               "backend_start": bool(db.get("backend_start")),
               "application_name_nonce": db.get("application_name") == expected_app,
@@ -262,7 +264,7 @@ jobs:
                   "host_ports_published": False,
                   "host_auth_method": "scram-sha-256",
                   "credential": "random per-run 256-bit password; not persisted in artifact",
-                  "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
+                  "scope": "Docker container created within this GitHub-hosted job; TCP connection is loopback inside that container"
               },
               "cluster_identity": {
                   "system_identifier": database["system_identifier"],
@@ -306,6 +308,7 @@ jobs:
               ],
               "safety": {
                   "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
+                  "database_role_is_superuser": database["is_superuser"] == "on",
                   "migrations_executed": False,
                   "schema_modified": False,
                   "data_modified": False,
