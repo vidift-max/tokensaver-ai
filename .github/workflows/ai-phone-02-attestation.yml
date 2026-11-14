@@ -66,6 +66,26 @@ jobs:
           SERVICE_CONTAINER_ID=""
           PG_SECRET_DIR=""
           PG_SECRET_FILE=""
+          remove_secret_file_verified() {
+            rm -f -- "$1" || return 1
+            [[ ! -e "$1" && ! -L "$1" ]]
+          }
+          remove_secret_dir_verified() {
+            rmdir -- "$1" 2>/dev/null || return 1
+            [[ ! -e "$1" && ! -L "$1" ]]
+          }
+          cleanup_shell_selftest() {
+            test_dir="$(mktemp -d)"
+            mkdir "$test_dir/not-a-file"
+            if remove_secret_file_verified "$test_dir/not-a-file"; then echo "secret deletion negative test failed"; return 1; fi
+            rmdir "$test_dir/not-a-file"
+            touch "$test_dir/secret"
+            remove_secret_file_verified "$test_dir/secret" || return 1
+            remove_secret_dir_verified "$test_dir" || return 1
+            test ! -e "$test_dir"
+            echo "cleanup_secret_selftest=PASS"
+          }
+          cleanup_shell_selftest
           cleanup_run_resources() {
             rc=$?
             trap - EXIT
@@ -85,12 +105,23 @@ def unique(pairs):
   if k in d: raise ValueError("duplicate key")
   d[k]=v
  return d
+def verify_owned(doc,cid,run_id,attempt):
+ assert type(doc) is list and len(doc)==1
+ c=doc[0]; assert type(c) is dict and c.get("Id")==cid
+ cfg=c.get("Config"); assert type(cfg) is dict
+ labels=cfg.get("Labels"); assert type(labels) is dict
+ assert labels=={"ai-phone-02.run-id":run_id,"ai-phone-02.run-attempt":attempt,"ai-phone-02.managed":"true"}
+def selftest():
+ cid="a"*64; labels={"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}
+ verify_owned([{"Id":cid,"Name":"/renamed","Config":{"Labels":labels}}],cid,"1","2")
+ for bad in ([{"Id":"b"*64,"Config":{"Labels":labels}}],[{"Id":cid,"Config":{"Labels":{}}}]):
+  try: verify_owned(bad,cid,"1","2")
+  except AssertionError: pass
+  else: raise AssertionError("ownership negative test passed unexpectedly")
+ print("cleanup_identity_selftest=PASS; renamed_id=PASS; id_mismatch=REJECTED; missing_labels=REJECTED")
+selftest()
 doc=json.loads(sys.argv[1],object_pairs_hook=unique)
-assert type(doc) is list and len(doc)==1
-c=doc[0]; assert type(c) is dict and c.get("Id")==sys.argv[2]
-cfg=c.get("Config"); assert type(cfg) is dict
-labels=cfg.get("Labels"); assert type(labels) is dict
-assert labels=={"ai-phone-02.run-id":sys.argv[3],"ai-phone-02.run-attempt":sys.argv[4],"ai-phone-02.managed":"true"}
+verify_owned(doc,sys.argv[2],sys.argv[3],sys.argv[4])
 PY
                   if [[ "$cleanup_failed" -eq 0 ]]; then
                     docker rm -f "$SERVICE_CONTAINER_ID" >/dev/null 2>&1 || cleanup_failed=1
@@ -107,8 +138,8 @@ PY
               fi
             fi
             if [[ "$cleanup_failed" -eq 0 ]]; then
-              if [[ -n "$PG_SECRET_FILE" ]]; then rm -f -- "$PG_SECRET_FILE" || cleanup_failed=1; [[ ! -e "$PG_SECRET_FILE" ]] || cleanup_failed=1; fi
-              if [[ -n "$PG_SECRET_DIR" ]]; then rmdir -- "$PG_SECRET_DIR" 2>/dev/null || cleanup_failed=1; [[ ! -e "$PG_SECRET_DIR" ]] || cleanup_failed=1; fi
+              if [[ -n "$PG_SECRET_FILE" ]]; then remove_secret_file_verified "$PG_SECRET_FILE" || cleanup_failed=1; fi
+              if [[ -n "$PG_SECRET_DIR" ]]; then remove_secret_dir_verified "$PG_SECRET_DIR" || cleanup_failed=1; fi
             else
               echo "Secret retained until ephemeral runner teardown because container removal/ownership was not verified."
             fi
