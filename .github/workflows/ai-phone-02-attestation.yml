@@ -63,7 +63,7 @@ jobs:
           [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           test -n "$WORKFLOW_REF"
-          test "$WORKFLOW_REF" = ".github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha" -o "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
+          test "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
           [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]
           test -n "$JOB_KEY"
           CHECKOUT_SHA="$(git rev-parse HEAD)"
@@ -89,7 +89,7 @@ jobs:
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
               'system_identifier', 'UNAVAILABLE',
-              'system_identifier_reason', 'Not queried: avoiding dependence on superuser-only cluster-control access in this attestation query.',
+              'system_identifier_reason', 'UNAVAILABLE by design: this query does not invoke cluster-control functions. The bootstrap session is superuser, but this field is not collected or used as a PASS condition.',
               'database_name', current_database(),
               'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
               'role', current_user,
@@ -209,7 +209,7 @@ jobs:
               "limitations": [
                   "This manifest is workflow-produced evidence, not an independently validated attestation.",
                   "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
-                  "system_identifier is explicitly UNAVAILABLE because this workflow does not query cluster-control identity using superuser-only access.",
+                  "system_identifier is explicitly UNAVAILABLE because this workflow does not invoke cluster-control functions; the bootstrap session is superuser, but this field is not collected or used as a PASS condition.",
                   "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
               ],
               "safety": {
