@@ -1,3 +1,5 @@
+# Deliberately manual-only: no push, pull_request, schedule, or reusable-workflow trigger.
+# Dispatch is intended only after this file has been reviewed and merged to the default branch.
 name: AI-PHONE-02 Read-only Attestation Channel
 
 on:
