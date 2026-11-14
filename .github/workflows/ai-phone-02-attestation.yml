@@ -61,24 +61,184 @@ jobs:
           # No host port is published and the container has no external network.
           POSTGRES_IMAGE="postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
           EXPECTED_IMAGE_DIGEST="sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          # Run-scoped resources; install cleanup before creating any temporary resource.
+          SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          SERVICE_CONTAINER_ID=""
+          PG_SECRET_DIR=""
+          PG_SECRET_FILE=""
+          cleanup_run_resources() {
+            rc=$?
+            trap - EXIT
+            set +e
+            cleanup_failed=0
+            if [[ -n "$SERVICE_CONTAINER_NAME" ]]; then
+              docker info >/dev/null 2>&1 || cleanup_failed=1
+              if [[ "$cleanup_failed" -eq 0 ]] && docker inspect --type container "$SERVICE_CONTAINER_NAME" >/dev/null 2>&1; then
+                cid="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_NAME" 2>/dev/null)"
+                labels="$(docker inspect --format '{{ index .Config.Labels "ai-phone-02.run-id" }}|{{ index .Config.Labels "ai-phone-02.run-attempt" }}|{{ index .Config.Labels "ai-phone-02.managed" }}' "$cid" 2>/dev/null)"
+                if [[ "$labels" == "$GITHUB_RUN_ID|$GITHUB_RUN_ATTEMPT|true" && -n "$cid" ]]; then
+                  docker rm -f "$cid" >/dev/null 2>&1 || cleanup_failed=1
+                else
+                  echo "Cleanup refused: container ownership could not be proven."
+                  cleanup_failed=1
+                fi
+              fi
+              if [[ "$cleanup_failed" -eq 0 ]] && docker inspect --type container "$SERVICE_CONTAINER_NAME" >/dev/null 2>&1; then
+                echo "Cleanup verification failed: container still exists."
+                cleanup_failed=1
+              fi
+            fi
+            if [[ "$cleanup_failed" -eq 0 ]]; then
+              if [[ -n "$PG_SECRET_FILE" ]]; then
+                rm -f -- "$PG_SECRET_FILE" || cleanup_failed=1
+                [[ ! -e "$PG_SECRET_FILE" ]] || cleanup_failed=1
+              fi
+              if [[ -n "$PG_SECRET_DIR" ]]; then
+                rmdir -- "$PG_SECRET_DIR" 2>/dev/null || cleanup_failed=1
+                [[ ! -e "$PG_SECRET_DIR" ]] || cleanup_failed=1
+              fi
+            else
+              echo "Secret retained until ephemeral runner teardown because container removal was not verified."
+            fi
+            if [[ "$cleanup_failed" -ne 0 ]]; then
+              echo "Run-scoped cleanup failed verification."
+              rc=1
+            fi
+            exit "$rc"
+          }
+          trap cleanup_run_resources EXIT
+
+          umask 077
+          PG_SECRET_DIR="$(mktemp -d "$RUNNER_TEMP/ai-phone-02-secret.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.XXXXXX")"
+          chmod 0700 "$PG_SECRET_DIR"
+          PG_SECRET_FILE="$PG_SECRET_DIR/postgres-passwd"
           PG_PASSWORD="$(openssl rand -hex 32)"
           [[ "$PG_PASSWORD" =~ ^[a-f0-9]{64}$ ]]
-          umask 077
-          PG_ENV_FILE="$(mktemp)"
-          trap '[[ -z "${PG_ENV_FILE:-}" ]] || rm -f "$PG_ENV_FILE"' EXIT
-          printf 'POSTGRES_USER=attestation\nPOSTGRES_DB=attestation\nPOSTGRES_PASSWORD=%s\nPOSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256\n' "$PG_PASSWORD" > "$PG_ENV_FILE"
-          SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '%s' "$PG_PASSWORD" > "$PG_SECRET_FILE"
+          chmod 0600 "$PG_SECRET_FILE"
+          test "$(stat -c '%a' "$PG_SECRET_DIR")" = "700"
+          test "$(stat -c '%a' "$PG_SECRET_FILE")" = "600"
+          test -s "$PG_SECRET_FILE"
+
           SERVICE_CONTAINER_ID="$(docker run --detach --name "$SERVICE_CONTAINER_NAME" \
+            --label "ai-phone-02.run-id=$GITHUB_RUN_ID" \
+            --label "ai-phone-02.run-attempt=$GITHUB_RUN_ATTEMPT" \
+            --label "ai-phone-02.managed=true" \
             --network none --read-only --security-opt=no-new-privileges \
             --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=1g \
             --tmpfs /var/run/postgresql:rw,noexec,nosuid,size=16m \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --mount "type=bind,src=$PG_SECRET_DIR,dst=/run/secrets,readonly" \
             --pids-limit 256 --memory 1g --cpus 1 \
             --health-cmd='pg_isready -U attestation -d attestation' \
             --health-interval=3s --health-timeout=3s --health-retries=20 \
-            --env-file "$PG_ENV_FILE" "$POSTGRES_IMAGE")"
-          rm -f "$PG_ENV_FILE"
-          PG_ENV_FILE=""
+            --env POSTGRES_USER=attestation \
+            --env POSTGRES_DB=attestation \
+            --env POSTGRES_PASSWORD_FILE=/run/secrets/postgres-passwd \
+            --env 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256' \
+            "$POSTGRES_IMAGE")"
+          test -n "$SERVICE_CONTAINER_ID"
+
+          SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_IMAGE_INSPECT_ID="$(docker image inspect --format '{{.Id}}' "$SERVICE_IMAGE_ID")"
+          SERVICE_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$SERVICE_IMAGE_ID")"
+          export POSTGRES_IMAGE EXPECTED_IMAGE_DIGEST SERVICE_CONTAINER_ID SERVICE_ACTUAL_ID
+          export SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_IMAGE_INSPECT_ID SERVICE_REPO_DIGESTS
+
+          python3 - <<'PY'
+          import json, os, re, sys
+          repos={"postgres","docker.io/library/postgres","index.docker.io/library/postgres"}
+          vals={
+            "container_id_format":bool(re.fullmatch(r"[a-f0-9]{64}",os.environ["SERVICE_CONTAINER_ID"])),
+            "container_id_matches":os.environ["SERVICE_ACTUAL_ID"]==os.environ["SERVICE_CONTAINER_ID"],
+            "configured_image_matches":os.environ["SERVICE_IMAGE"]==os.environ["POSTGRES_IMAGE"],
+            "image_id_format":bool(re.fullmatch(r"sha256:[a-f0-9]{64}",os.environ["SERVICE_IMAGE_ID"])),
+            "image_inspect_matches":os.environ["SERVICE_IMAGE_INSPECT_ID"]==os.environ["SERVICE_IMAGE_ID"]}
+          try: ds=json.loads(os.environ["SERVICE_REPO_DIGESTS"])
+          except Exception: ds=None
+          vals["expected_digest_present"]=isinstance(ds,list) and any(isinstance(x,str) and "@" in x and x.rsplit("@",1)[0] in repos and x.rsplit("@",1)[1]==os.environ["EXPECTED_IMAGE_DIGEST"] for x in ds)
+          vals["repo_digests_present"]=isinstance(ds,list) and bool(ds)
+          failed=[k for k,v in vals.items() if not v]
+          print(json.dumps({"image_identity_checks":vals,"failed":failed,"result":"PASS" if not failed else "FAIL"},sort_keys=True))
+          if failed: sys.exit(1)
+          PY
+
+          # Inspect the actual container config and validate it before health checks or SQL.
+          docker inspect --type container "$SERVICE_CONTAINER_ID" > "$RUNNER_TEMP/ai-phone-02-container-inspect.json"
+          cat > "$RUNNER_TEMP/ai-phone-02-validate-container.py" <<'PY'
+          import json, os, sys
+          SECRET="/run/secrets/postgres-passwd"
+          TMPFS={
+            "/var/lib/postgresql/data":("rw","noexec","nosuid","size=1073741824"),
+            "/var/run/postgresql":("rw","noexec","nosuid","size=16777216"),
+            "/tmp":("rw","noexec","nosuid","size=67108864")}
+          def check(ok,msg):
+            if not ok: raise ValueError(msg)
+          def validate(doc,e):
+            check(isinstance(doc,list) and len(doc)==1,"inspect must return exactly one container")
+            c=doc[0]; cfg=c.get("Config"); hc=c.get("HostConfig"); ns=c.get("NetworkSettings")
+            check(all(isinstance(x,dict) for x in (cfg,hc,ns)),"required inspect object absent")
+            check(c.get("Id")==e["id"] and c.get("Image")==e["image_id"] and cfg.get("Image")==e["image"],"container/image identity mismatch")
+            check(hc.get("NetworkMode")=="none","network mode mismatch")
+            check(hc.get("PortBindings") in (None,{}),"host ports published")
+            check(hc.get("PublishAllPorts") is False,"PublishAllPorts mismatch")
+            ports=ns.get("Ports")
+            check(isinstance(ports,dict) and all(v in (None,[]) for v in ports.values()),"effective host port binding found or ports unavailable")
+            check(hc.get("ReadonlyRootfs") is True and hc.get("Privileged") is False,"rootfs/privileged policy mismatch")
+            sec=hc.get("SecurityOpt")
+            check(isinstance(sec,list) and "no-new-privileges:true" in sec,"no-new-privileges missing")
+            check(hc.get("Memory")==1073741824 and hc.get("NanoCpus")==1000000000 and hc.get("PidsLimit")==256,"resource limits mismatch")
+            tmp=hc.get("Tmpfs")
+            check(isinstance(tmp,dict) and set(tmp)==set(TMPFS),"tmpfs paths mismatch")
+            for p,required in TMPFS.items(): check(set(required).issubset(set(str(tmp[p]).split(","))),"tmpfs options mismatch: "+p)
+            env=cfg.get("Env")
+            check(isinstance(env,list),"Config.Env missing")
+            check(not any(x.startswith("POSTGRES_PASSWORD=") for x in env),"POSTGRES_PASSWORD leaked into Config.Env")
+            check("POSTGRES_PASSWORD_FILE="+SECRET in env,"password file path missing")
+            mounts=c.get("Mounts")
+            check(isinstance(mounts,list),"Mounts missing")
+            sm=[m for m in mounts if m.get("Destination")=="/run/secrets"]
+            check(len(sm)==1 and sm[0].get("Type")=="bind" and sm[0].get("RW") is False and sm[0].get("Source")==e["secret_dir"],"secret mount absent/writable/unexpected")
+            check({m.get("Destination") for m in mounts}==set(TMPFS)|{"/run/secrets"},"unexpected or missing mounts")
+            for m in mounts:
+              if m.get("Destination") in TMPFS: check(m.get("Type")=="tmpfs" and m.get("RW") is True,"tmpfs mount mismatch")
+            labels=cfg.get("Labels")
+            check(isinstance(labels,dict) and labels.get("ai-phone-02.run-id")==e["run_id"] and labels.get("ai-phone-02.run-attempt")==e["attempt"] and labels.get("ai-phone-02.managed")=="true","run ownership labels mismatch")
+            return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"mounts":[{"type":m.get("Type"),"destination":m.get("Destination"),"rw":m.get("RW")} for m in mounts],"secret_value_in_config_env":False,"policy_validation":"PASS","trust_limitation":"Docker daemon-reported configuration; does not prove host integrity or protect against a privileged daemon administrator."}
+          def selftest():
+            tmp={k:",".join(v) for k,v in TMPFS.items()}
+            f=[{"Id":"a"*64,"Image":"sha256:"+"b"*64,"Config":{"Image":"postgres:16.16@sha256:"+"c"*64,"Env":["POSTGRES_PASSWORD_FILE="+SECRET],"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"1","ai-phone-02.managed":"true"}},"HostConfig":{"NetworkMode":"none","PortBindings":{},"PublishAllPorts":False,"ReadonlyRootfs":True,"Privileged":False,"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824,"NanoCpus":1000000000,"PidsLimit":256,"Tmpfs":tmp},"NetworkSettings":{"Ports":{"5432/tcp":None}},"Mounts":[{"Type":"tmpfs","Destination":p,"RW":True} for p in TMPFS]+[{"Type":"bind","Source":"/tmp/sec","Destination":"/run/secrets","RW":False}]}]
+            e={"id":"a"*64,"image_id":"sha256:"+"b"*64,"image":"postgres:16.16@sha256:"+"c"*64,"secret_dir":"/tmp/sec","run_id":"1","attempt":"1"}
+            validate(f,e); negatives=0
+            mutations=[lambda x:x[0]["HostConfig"].update(NetworkMode="bridge"),lambda x:x[0]["HostConfig"].update(PortBindings={"5432/tcp":[{}]}),lambda x:x[0]["HostConfig"].update(ReadonlyRootfs=False),lambda x:x[0]["HostConfig"].update(SecurityOpt=[]),lambda x:x[0]["HostConfig"].update(Memory=1),lambda x:x[0]["HostConfig"].update(NanoCpus=1),lambda x:x[0]["HostConfig"].update(PidsLimit=1),lambda x:x[0]["Config"]["Env"].append("POSTGRES_PASSWORD=secret"),lambda x:x[0]["Mounts"][-1].update(RW=True),lambda x:x[0]["Mounts"].pop(),lambda x:x[0]["HostConfig"].pop("Tmpfs"),lambda x:x[0]["HostConfig"].update(Privileged=True),lambda x:x[0]["Config"]["Env"].clear()]
+            for mutate in mutations:
+              x=json.loads(json.dumps(f)); mutate(x)
+              try: validate(x,e)
+              except (ValueError,KeyError,TypeError): negatives+=1
+              else: raise ValueError("negative fixture unexpectedly passed")
+            for x in (None,{},[],f+f,[{"Config":{}}]):
+              try: validate(x,e)
+              except (ValueError,KeyError,TypeError): negatives+=1
+              else: raise ValueError("malformed fixture unexpectedly passed")
+            print(json.dumps({"validator_self_tests":"PASS","positive":1,"negative":negatives}))
+          if __name__=="__main__":
+            if len(sys.argv)==2 and sys.argv[1]=="--self-test": selftest(); raise SystemExit(0)
+            try:
+              with open(sys.argv[1],encoding="utf-8") as h: doc=json.load(h)
+              e={"id":os.environ["SERVICE_CONTAINER_ID"],"image_id":os.environ["SERVICE_IMAGE_ID"],"image":os.environ["POSTGRES_IMAGE"],"secret_dir":os.environ["PG_SECRET_DIR"],"run_id":os.environ["GITHUB_RUN_ID"],"attempt":os.environ["GITHUB_RUN_ATTEMPT"]}
+              result=validate(doc,e)
+              with open(sys.argv[2],"w",encoding="utf-8") as h: json.dump(result,h,indent=2,sort_keys=True); h.write("\n")
+              print('{"effective_container_policy":"PASS"}')
+            except Exception as ex:
+              print(json.dumps({"effective_container_policy":"FAIL","error":type(ex).__name__},sort_keys=True)); raise SystemExit(1)
+          PY
+          python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" --self-test
+          export PG_SECRET_DIR
+          python3 "$RUNNER_TEMP/ai-phone-02-validate-container.py" "$RUNNER_TEMP/ai-phone-02-container-inspect.json" "$RUNNER_TEMP/ai-phone-02-container-observed.json"
+          export CONTAINER_OBSERVED_JSON="$RUNNER_TEMP/ai-phone-02-container-observed.json"
+
           test -n "$SERVICE_CONTAINER_ID"
 
           SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
@@ -260,11 +420,10 @@ jobs:
                   "expected_registry_digest": os.environ["EXPECTED_IMAGE_DIGEST"],
                   "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
                   "image_digest_validation": "passed against docker image inspect of the immutable image ID",
-                  "network_mode": "none",
-                  "host_ports_published": False,
+                  "container_configuration": json.load(open(os.environ["CONTAINER_OBSERVED_JSON"], encoding="utf-8")),
                   "host_auth_method": "scram-sha-256",
                   "local_auth_method": "scram-sha-256",
-                  "credential": "random per-run 256-bit password; not persisted in artifact",
+                  "credential": "random per-run 256-bit password supplied through POSTGRES_PASSWORD_FILE; secret file retained until verified container removal and excluded from artifact",
                   "scope": "Docker container created within this GitHub-hosted job; TCP connection is loopback inside that container"
               },
               "cluster_identity": {
