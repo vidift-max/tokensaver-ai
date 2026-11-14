@@ -362,8 +362,9 @@ PY
             # Additional HostConfig surfaces that can widen device, group, sysctl,
             # cgroup-parent, or runtime privileges are pinned to the expected inspect
             # representation. Unknown daemon versions fail closed.
-            for key in ("GroupAdd","Sysctls","VolumesFrom","Binds"):
+            for key in ("GroupAdd","VolumesFrom","Binds"):
               check(require(hc,key,list,allow_none=True) is None,"unexpected HostConfig grant: "+key)
+            check(require(hc,"Sysctls",dict,allow_none=True) is None,"unexpected HostConfig sysctl grant")
             check(require(hc,"CgroupParent",str)=="","unexpected cgroup parent")
             check(require(hc,"Runtime",str)=="runc","unexpected container runtime")
             check(require(hc,"OomKillDisable",bool,allow_none=True) is None,"unexpected OOM kill policy")
@@ -681,7 +682,8 @@ PY
                   "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
                   "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
                   "Both host and local connections require SCRAM-SHA-256 password authentication.",
-                  "Container and image identity checks are completed before any PostgreSQL connection or identity collection."
+                  "Container and image identity checks are completed before any PostgreSQL connection or identity collection.",
+                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, and Runtime=runc; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS."
               ],
               "safety": {
                   "disposable_postgres_bootstrap": {
