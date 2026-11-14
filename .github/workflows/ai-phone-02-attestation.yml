@@ -426,6 +426,8 @@ PY
             bind_options=require(requested,"BindOptions",dict)
             check(require(bind_options,"Propagation",str)=="rprivate","HostConfig bind propagation must be rprivate")
             check(set(bind_options)=={"Propagation"},"unexpected HostConfig bind options")
+            allowed_mount_keys={"Type","Source","Target","ReadOnly","BindOptions","VolumeOptions","TmpfsOptions","Consistency"}
+            check(set(requested).issubset(allowed_mount_keys),"unexpected HostConfig mount option key")
             for key in ("VolumeOptions","TmpfsOptions","Consistency"):
               if key in requested: check(requested[key] in (None,""),"unexpected HostConfig mount option: "+key)
             effective_secret=[m for m in mounts if m.get("Destination")=="/run/secrets"]
@@ -478,12 +480,16 @@ PY
               lambda x:x[0]["Mounts"][-1].update(RW=True),
               lambda x:x[0]["Mounts"].append({"Type":"bind","Source":"/extra","Destination":"/extra","RW":False,"Propagation":"rprivate"}),
               lambda x:x[0]["HostConfig"].update(Mounts=[]),
+              lambda x:x[0]["HostConfig"].pop("Mounts"),
+              lambda x:x[0]["HostConfig"].update(Mounts="invalid"),
               lambda x:x[0]["HostConfig"]["Mounts"][0].update(Type="volume"),
               lambda x:x[0]["HostConfig"]["Mounts"][0].update(Source="/unexpected"),
               lambda x:x[0]["HostConfig"]["Mounts"][0].update(Target="/unexpected"),
               lambda x:x[0]["HostConfig"]["Mounts"][0].update(ReadOnly=False),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(BindOptions=[]),
               lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Propagation="rshared"),
               lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Unexpected=True),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(UnexpectedOption=True),
               lambda x:x[0]["HostConfig"]["Mounts"].append({"Type":"bind","Source":"/extra","Target":"/extra","ReadOnly":True,"BindOptions":{"Propagation":"rprivate"}}),
               lambda x:x[0]["HostConfig"].update(PidMode="host"),
               lambda x:x[0]["HostConfig"].update(IpcMode="host"),
