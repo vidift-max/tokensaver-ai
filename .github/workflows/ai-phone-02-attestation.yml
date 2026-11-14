@@ -353,6 +353,9 @@ PY
             # for an attested default.
             for key in ("CapAdd","CapDrop","Devices","DeviceRequests"):
               check(require(hc,key,list,allow_none=True) is None,"unauthorized or non-canonical HostConfig field: "+key)
+            # Empty PidMode/UTSMode means Docker's isolated default namespace, not "host".
+            # Empty UsernsMode delegates to the daemon's userns-remap default; inspect alone
+            # cannot attest that daemon-level setting, so the manifest records this limitation.
             namespace_policy={"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"}
             namespace_observed={}
             for key,expected in namespace_policy.items():
@@ -683,7 +686,8 @@ PY
                   "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
                   "Both host and local connections require SCRAM-SHA-256 password authentication.",
                   "Container and image identity checks are completed before any PostgreSQL connection or identity collection.",
-                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, and Runtime=runc; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS."
+                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, and Runtime=runc; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS.",
+                  "An empty UsernsMode delegates to the Docker daemon's userns-remap default; container inspect does not attest daemon-level user namespace remapping, so this property remains outside the local container-config proof."
               ],
               "safety": {
                   "disposable_postgres_bootstrap": {
