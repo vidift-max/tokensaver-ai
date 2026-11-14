@@ -63,6 +63,7 @@ jobs:
           [[ "$PG_PASSWORD" =~ ^[a-f0-9]{64}$ ]]
           umask 077
           PG_ENV_FILE="$(mktemp)"
+          trap '[[ -z "${PG_ENV_FILE:-}" ]] || rm -f "$PG_ENV_FILE"' EXIT
           printf 'POSTGRES_USER=attestation\nPOSTGRES_DB=attestation\nPOSTGRES_PASSWORD=%s\nPOSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=trust\n' "$PG_PASSWORD" > "$PG_ENV_FILE"
           SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           SERVICE_CONTAINER_ID="$(docker run --detach --name "$SERVICE_CONTAINER_NAME" \
@@ -75,6 +76,7 @@ jobs:
             --health-interval=3s --health-timeout=3s --health-retries=20 \
             --env-file "$PG_ENV_FILE" "$POSTGRES_IMAGE")"
           rm -f "$PG_ENV_FILE"
+          PG_ENV_FILE=""
           test -n "$SERVICE_CONTAINER_ID"
 
           SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
@@ -136,8 +138,7 @@ jobs:
 
           # TCP loopback is confined to the service container; no host port is published.
           docker exec -i -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
-            sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1' \
-            <<< "$PG_PASSWORD" \
+            sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 "$@"' psql \
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
               'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
@@ -157,7 +158,7 @@ jobs:
               'server_port', inet_server_port(),
               'postmaster_start_time', pg_postmaster_start_time()
             )::text" \
-            -c "COMMIT" > attestation-evidence/database-session.json
+            -c "COMMIT" <<< "$PG_PASSWORD" > attestation-evidence/database-session.json
 
           unset PG_PASSWORD
           export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
@@ -253,6 +254,8 @@ jobs:
                   "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
                   "configured_image": os.environ["SERVICE_IMAGE"],
                   "image_id": os.environ["SERVICE_IMAGE_ID"],
+                  "image_inspect_id": os.environ["SERVICE_IMAGE_INSPECT_ID"],
+                  "expected_registry_digest": os.environ["EXPECTED_IMAGE_DIGEST"],
                   "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
                   "image_digest_validation": "passed against docker image inspect of the immutable image ID",
                   "network_mode": "none",
