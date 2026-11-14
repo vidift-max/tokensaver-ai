@@ -66,7 +66,7 @@ jobs:
           umask 077
           PG_ENV_FILE="$(mktemp)"
           trap '[[ -z "${PG_ENV_FILE:-}" ]] || rm -f "$PG_ENV_FILE"' EXIT
-          printf 'POSTGRES_USER=attestation\nPOSTGRES_DB=attestation\nPOSTGRES_PASSWORD=%s\nPOSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=trust\n' "$PG_PASSWORD" > "$PG_ENV_FILE"
+          printf 'POSTGRES_USER=attestation\nPOSTGRES_DB=attestation\nPOSTGRES_PASSWORD=%s\nPOSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256\n' "$PG_PASSWORD" > "$PG_ENV_FILE"
           SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           SERVICE_CONTAINER_ID="$(docker run --detach --name "$SERVICE_CONTAINER_NAME" \
             --network none --read-only --security-opt=no-new-privileges \
@@ -263,6 +263,7 @@ jobs:
                   "network_mode": "none",
                   "host_ports_published": False,
                   "host_auth_method": "scram-sha-256",
+                  "local_auth_method": "scram-sha-256",
                   "credential": "random per-run 256-bit password; not persisted in artifact",
                   "scope": "Docker container created within this GitHub-hosted job; TCP connection is loopback inside that container"
               },
@@ -303,7 +304,7 @@ jobs:
                   "Provider-side correlation remains pending until a future separately authorized execution and independent review.",
                   "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
                   "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
-                  "Host connections require SCRAM-SHA-256; trust is limited to local Unix-socket initialization/health checks inside the isolated container.",
+                  "Both host and local connections require SCRAM-SHA-256 password authentication.",
                   "Container and image identity checks are completed before any PostgreSQL connection or identity collection."
               ],
               "safety": {
