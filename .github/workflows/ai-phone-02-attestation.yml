@@ -14,7 +14,7 @@ concurrency:
 
 env:
   TARGET_SHA: ebb8eeecfea087443c5f3eba7021e96cb5302fe7
-  ATTESTATION_FORMAT_VERSION: "1"
+  ATTESTATION_FORMAT_VERSION: "2"
 
 jobs:
   ai-phone-02-attestation:
@@ -46,15 +46,26 @@ jobs:
         id: collect
         shell: bash
         env:
-          JOB_ID: ${{ github.job }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          JOB_KEY: ${{ github.job }}
           SERVICE_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
           mkdir -p attestation-evidence
 
           STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          test "$GITHUB_REF" = "refs/heads/v2-saas-alpha"
+          test "$EVENT_REF" = "refs/heads/v2-saas-alpha"
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test -n "$WORKFLOW_REF"
+          test "$WORKFLOW_REF" = ".github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha" -o "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
+          [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]
+          test -n "$JOB_KEY"
           CHECKOUT_SHA="$(git rev-parse HEAD)"
           test "$CHECKOUT_SHA" = "$TARGET_SHA"
           test -n "$SERVICE_CONTAINER_ID"
@@ -72,11 +83,13 @@ jobs:
           APP_NAME="ai-phone-02-$NONCE"
           export NONCE APP_NAME SERVICE_ACTUAL_ID SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_REPO_DIGESTS CHECKOUT_SHA STARTED_AT
 
+          # TCP loopback is confined to the service container; no host port is published.
           docker exec -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
-            psql -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
+            psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
-              'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
+              'system_identifier', 'UNAVAILABLE',
+              'system_identifier_reason', 'Not queried: avoiding dependence on superuser-only cluster-control access in this attestation query.',
               'database_name', current_database(),
               'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
               'role', current_user,
@@ -93,28 +106,49 @@ jobs:
             )::text" \
             -c "COMMIT" > attestation-evidence/database-session.json
 
+          export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
           python3 - <<'PY'
-          import json, os, sys
+          import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
               db = json.load(f)
-          expected = os.environ["APP_NAME"]
-          checks = {
-              "application_name_matches_nonce": db.get("application_name") == expected,
-              "transaction_is_read_only": db.get("transaction_read_only") == "on",
-              "system_identifier_available": bool(db.get("system_identifier")),
-              "database_oid_available": bool(db.get("database_oid")),
-              "session_pid_available": bool(db.get("backend_pid")),
+
+          expected_app = os.environ["APP_NAME"]
+          required = {
+              "database_name": db.get("database_name") == "attestation",
+              "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
+              "role": db.get("role") == "attestation",
+              "session_user": db.get("session_user") == "attestation",
+              "backend_pid": isinstance(db.get("backend_pid"), int) and db["backend_pid"] > 0,
+              "backend_start": bool(db.get("backend_start")),
+              "application_name_nonce": db.get("application_name") == expected_app,
+              "transaction_read_only": db.get("transaction_read_only") == "on",
+              "server_version": bool(db.get("server_version")),
+              "server_version_num": bool(re.fullmatch(r"[0-9]+", str(db.get("server_version_num", "")))),
+              "server_addr": db.get("server_addr") == "127.0.0.1",
+              "server_port": db.get("server_port") == 5432,
+              "postmaster_start_time": bool(db.get("postmaster_start_time")),
+              "system_identifier_explicitly_unavailable": db.get("system_identifier") == "UNAVAILABLE" and bool(db.get("system_identifier_reason")),
           }
-          if not all(checks.values()):
-              print(json.dumps({"checks": checks, "result": "FAIL"}, sort_keys=True))
+          provenance = {
+              "event_sha": bool(re.fullmatch(r"[a-f0-9]{40}", os.environ["EVENT_SHA"])),
+              "event_ref": os.environ["EVENT_REF"] == "refs/heads/v2-saas-alpha",
+              "workflow_ref": bool(os.environ["WORKFLOW_REF"]),
+              "workflow_sha": bool(re.fullmatch(r"[a-f0-9]{40}", os.environ["WORKFLOW_SHA"])),
+              "check_run_id": bool(re.fullmatch(r"[0-9]+", os.environ["CHECK_RUN_ID"])),
+              "job_key": bool(os.environ["JOB_KEY"]),
+              "target_sha": os.environ["CHECKOUT_SHA"] == os.environ["TARGET_SHA"],
+          }
+          checks = {"database": required, "provenance": provenance}
+          failed = [f"{group}.{name}" for group, values in checks.items() for name, ok in values.items() if not ok]
+          print(json.dumps({"checks": checks, "failed": failed, "result": "FAIL" if failed else "LOCAL_CONTROLS_PASS"}, sort_keys=True))
+          if failed:
               sys.exit(1)
-          print(json.dumps({"checks": checks, "result": "PASS"}, sort_keys=True))
           PY
 
           COLLECTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           export COLLECTED_AT
           python3 - <<'PY'
-          import datetime, json, os, platform, socket
+          import json, os, platform, socket
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
               database = json.load(f)
           evidence = {
@@ -122,16 +156,20 @@ jobs:
               "format_version": int(os.environ["ATTESTATION_FORMAT_VERSION"]),
               "workflow": {
                   "name": os.environ.get("GITHUB_WORKFLOW"),
-                  "workflow_source_sha": os.environ.get("GITHUB_SHA"),
-                  "workflow_ref": os.environ.get("GITHUB_REF"),
+                  "event_sha": os.environ["EVENT_SHA"],
+                  "event_ref": os.environ["EVENT_REF"],
+                  "workflow_ref": os.environ["WORKFLOW_REF"],
+                  "workflow_sha": os.environ["WORKFLOW_SHA"],
                   "run_id": os.environ.get("GITHUB_RUN_ID"),
                   "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                   "repository": os.environ.get("GITHUB_REPOSITORY"),
                   "event": os.environ.get("GITHUB_EVENT_NAME"),
-                  "job_id": os.environ.get("JOB_ID"),
-                  "target_sha": os.environ.get("TARGET_SHA"),
-                  "checked_out_sha": os.environ.get("CHECKOUT_SHA"),
-                  "workflow_version": "1"
+                  "job_key": os.environ["JOB_KEY"],
+                  "check_run_id": os.environ["CHECK_RUN_ID"],
+                  "job_id": "UNAVAILABLE_PENDING_EXTERNAL_CORRELATION",
+                  "job_id_source": "external_github_metadata",
+                  "target_sha": os.environ["TARGET_SHA"],
+                  "checked_out_sha": os.environ["CHECKOUT_SHA"]
               },
               "executor": {
                   "runner_name": os.environ.get("RUNNER_NAME"),
@@ -143,16 +181,15 @@ jobs:
                   "image_os": os.environ.get("ImageOS", "UNAVAILABLE"),
                   "image_version": os.environ.get("ImageVersion", "UNAVAILABLE"),
                   "executor_instance_id": "UNAVAILABLE",
-                  "identity_limitations": "Runner name and host metadata are declarative job observations; provider-side job metadata must independently corroborate them. No immutable hosted-runner instance ID is exposed to this workflow."
+                  "identity_limitations": "Runner instance identity must be independently correlated from GitHub provider-side job metadata."
               },
               "postgres": {
-                  "service_id_from_job_context": os.environ.get("SERVICE_CONTAINER_ID"),
-                  "service_container_id": os.environ.get("SERVICE_ACTUAL_ID"),
-                  "configured_image": os.environ.get("SERVICE_IMAGE"),
-                  "image_id": os.environ.get("SERVICE_IMAGE_ID"),
-                  "repo_digests": json.loads(os.environ.get("SERVICE_REPO_DIGESTS", "[]")),
-                  "provisioning_job_id": os.environ.get("JOB_ID"),
-                  "scope": "GitHub Actions service container scoped to this job"
+                  "service_id_from_job_context": os.environ["SERVICE_CONTAINER_ID"],
+                  "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
+                  "configured_image": os.environ["SERVICE_IMAGE"],
+                  "image_id": os.environ["SERVICE_IMAGE_ID"],
+                  "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
+                  "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
               },
               "database_session": database,
               "nonce": {
@@ -160,18 +197,20 @@ jobs:
                   "bits": 256,
                   "encoding": "base64url-without-padding",
                   "expected_application_name": os.environ["APP_NAME"],
-                  "observed_application_name": database.get("application_name"),
-                  "session_binding_verified": database.get("application_name") == os.environ["APP_NAME"]
+                  "observed_application_name": database["application_name"],
+                  "session_binding_verified": database["application_name"] == os.environ["APP_NAME"]
               },
               "timestamps_utc": {
                   "started_at": os.environ["STARTED_AT"],
                   "collected_at": os.environ["COLLECTED_AT"]
               },
-              "result": "PASS",
+              "result": "LOCAL_CONTROLS_PASS",
+              "external_attestation": "NOT_VALIDATED",
               "limitations": [
-                  "This artifact is declarative evidence produced by the workflow; independently retrieve and correlate run, attempt, job, logs, artifact metadata, and digest through GitHub.",
-                  "The hosted runner has no immutable executor instance identifier exposed to this workflow.",
-                  "The PostgreSQL service is pinned to the official linux/amd64 manifest digest; the runtime image ID and repository digest are recorded and must be independently checked."
+                  "This manifest is workflow-produced evidence, not an independently validated attestation.",
+                  "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
+                  "system_identifier is explicitly UNAVAILABLE because this workflow does not query cluster-control identity using superuser-only access.",
+                  "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
               ],
               "safety": {
                   "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
@@ -188,15 +227,17 @@ jobs:
           PY
 
           (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
-          echo "Read-only identity checks passed; evidence generated."
-          echo "Evidence files:"
-          find attestation-evidence -maxdepth 1 -type f -printf '%f\n' | sort
+          (cd attestation-evidence && sha256sum --check SHA256SUMS)
+          test -s attestation-evidence/attestation.json
+          test -s attestation-evidence/database-session.json
+          test -s attestation-evidence/SHA256SUMS
+          echo "Local controls passed; external attestation remains NOT_VALIDATED."
 
       - name: Upload read-only attestation evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ai-phone-02-attestation-${{ github.run_id }}-${{ github.run_attempt }}
           path: attestation-evidence/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
