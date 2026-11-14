@@ -21,19 +21,6 @@ jobs:
     name: Read-only PostgreSQL identity attestation
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87
-        env:
-          POSTGRES_USER: attestation
-          POSTGRES_DB: attestation
-          POSTGRES_HOST_AUTH_METHOD: trust
-        options: >-
-          --health-cmd "pg_isready -U attestation -d attestation"
-          --health-interval 3s
-          --health-timeout 3s
-          --health-retries 20
-
     steps:
       - name: Checkout immutable AI-PHONE-02 TARGET
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -52,7 +39,6 @@ jobs:
           WORKFLOW_SHA: ${{ job.workflow_sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}
           JOB_KEY: ${{ github.job }}
-          SERVICE_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
           mkdir -p attestation-evidence
@@ -68,24 +54,90 @@ jobs:
           test -n "$JOB_KEY"
           CHECKOUT_SHA="$(git rev-parse HEAD)"
           test "$CHECKOUT_SHA" = "$TARGET_SHA"
+
+          # Start a job-local PostgreSQL instance with an ephemeral SCRAM credential.
+          # No host port is published and the container has no external network.
+          POSTGRES_IMAGE="postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          EXPECTED_IMAGE_DIGEST="sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          PG_PASSWORD="$(openssl rand -hex 32)"
+          [[ "$PG_PASSWORD" =~ ^[a-f0-9]{64}$ ]]
+          umask 077
+          PG_ENV_FILE="$(mktemp)"
+          printf 'POSTGRES_USER=attestation\nPOSTGRES_DB=attestation\nPOSTGRES_PASSWORD=%s\nPOSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=trust\n' "$PG_PASSWORD" > "$PG_ENV_FILE"
+          SERVICE_CONTAINER_NAME="ai-phone-02-postgres-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          SERVICE_CONTAINER_ID="$(docker run --detach --name "$SERVICE_CONTAINER_NAME" \
+            --network none --read-only --security-opt=no-new-privileges \
+            --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=1g \
+            --tmpfs /var/run/postgresql:rw,noexec,nosuid,size=16m \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --pids-limit 256 --memory 1g --cpus 1 \
+            --health-cmd='pg_isready -U attestation -d attestation' \
+            --health-interval=3s --health-timeout=3s --health-retries=20 \
+            --env-file "$PG_ENV_FILE" "$POSTGRES_IMAGE")"
+          rm -f "$PG_ENV_FILE"
           test -n "$SERVICE_CONTAINER_ID"
 
           SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
-          SERVICE_REPO_DIGESTS="$(docker inspect --format '{{json .RepoDigests}}' "$SERVICE_CONTAINER_ID")"
-          test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
-          test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
-          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
+
+          # RepoDigests belongs to the image object, not the container object.
+          # Inspect the immutable image ID directly; missing metadata is a hard failure.
+          SERVICE_IMAGE_INSPECT_ID="$(docker image inspect --format '{{.Id}}' "$SERVICE_IMAGE_ID")"
+          SERVICE_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$SERVICE_IMAGE_ID")"
+          export POSTGRES_IMAGE EXPECTED_IMAGE_DIGEST SERVICE_CONTAINER_ID SERVICE_ACTUAL_ID
+          export SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_IMAGE_INSPECT_ID SERVICE_REPO_DIGESTS
+
+          python3 - <<'PY'
+          import json, os, re, sys
+          expected_repo = {"postgres", "docker.io/library/postgres", "index.docker.io/library/postgres"}
+          expected_digest = os.environ["EXPECTED_IMAGE_DIGEST"]
+          values = {
+              "container_id_format": bool(re.fullmatch(r"[a-f0-9]{64}", os.environ["SERVICE_CONTAINER_ID"])),
+              "container_id_matches_inspect": os.environ["SERVICE_ACTUAL_ID"] == os.environ["SERVICE_CONTAINER_ID"],
+              "configured_image_matches_pin": os.environ["SERVICE_IMAGE"] == os.environ["POSTGRES_IMAGE"],
+              "image_id_format": bool(re.fullmatch(r"sha256:[a-f0-9]{64}", os.environ["SERVICE_IMAGE_ID"])),
+              "image_inspect_matches_container_image": os.environ["SERVICE_IMAGE_INSPECT_ID"] == os.environ["SERVICE_IMAGE_ID"],
+          }
+          try:
+              digests = json.loads(os.environ["SERVICE_REPO_DIGESTS"])
+          except (TypeError, json.JSONDecodeError):
+              digests = None
+          valid_digest = False
+          if isinstance(digests, list):
+              for item in digests:
+                  if not isinstance(item, str) or "@" not in item:
+                      continue
+                  repo, digest = item.rsplit("@", 1)
+                  if repo in expected_repo and digest == expected_digest:
+                      valid_digest = True
+          values["repo_digests_present"] = isinstance(digests, list) and len(digests) > 0
+          values["expected_registry_digest_associated"] = valid_digest
+          failed = [name for name, passed in values.items() if not passed]
+          print(json.dumps({"image_identity_checks": values, "failed": failed, "result": "PASS" if not failed else "FAIL"}, sort_keys=True))
+          if failed:
+              sys.exit(1)
+          PY
+
+          # Fail closed unless the isolated PostgreSQL instance is healthy.
+          HEALTH_STATUS=""
+          for attempt in $(seq 1 60); do
+            HEALTH_STATUS="$(docker inspect --format '{{.State.Health.Status}}' "$SERVICE_CONTAINER_ID")"
+            [[ "$HEALTH_STATUS" == "healthy" ]] && break
+            [[ "$HEALTH_STATUS" == "unhealthy" ]] && { echo "PostgreSQL health check failed."; exit 1; }
+            sleep 1
+          done
+          test "$HEALTH_STATUS" = "healthy"
 
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
           test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
           APP_NAME="ai-phone-02-$NONCE"
-          export NONCE APP_NAME SERVICE_ACTUAL_ID SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_REPO_DIGESTS CHECKOUT_SHA STARTED_AT
+          export NONCE APP_NAME CHECKOUT_SHA STARTED_AT
 
           # TCP loopback is confined to the service container; no host port is published.
-          docker exec -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
-            psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
+          docker exec -i -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
+            sh -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1' \
+            <<< "$PG_PASSWORD" \
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
               'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
@@ -107,6 +159,7 @@ jobs:
             )::text" \
             -c "COMMIT" > attestation-evidence/database-session.json
 
+          unset PG_PASSWORD
           export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
           [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
@@ -196,11 +249,16 @@ jobs:
                   "identity_limitations": "Runner instance identity must be independently correlated from GitHub provider-side job metadata."
               },
               "postgres": {
-                  "service_id_from_job_context": os.environ["SERVICE_CONTAINER_ID"],
+                  "service_container_id_from_docker_run": os.environ["SERVICE_CONTAINER_ID"],
                   "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
                   "configured_image": os.environ["SERVICE_IMAGE"],
                   "image_id": os.environ["SERVICE_IMAGE_ID"],
                   "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
+                  "image_digest_validation": "passed against docker image inspect of the immutable image ID",
+                  "network_mode": "none",
+                  "host_ports_published": False,
+                  "host_auth_method": "scram-sha-256",
+                  "credential": "random per-run 256-bit password; not persisted in artifact",
                   "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
               },
               "cluster_identity": {
@@ -239,7 +297,9 @@ jobs:
                   "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
                   "Provider-side correlation remains pending until a future separately authorized execution and independent review.",
                   "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
-                  "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
+                  "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
+                  "Host connections require SCRAM-SHA-256; trust is limited to local Unix-socket initialization/health checks inside the isolated container.",
+                  "Container and image identity checks are completed before any PostgreSQL connection or identity collection."
               ],
               "safety": {
                   "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
