@@ -268,7 +268,7 @@ PY
             --tmpfs /var/lib/postgresql/data:rw,noexec,nosuid,size=1g \
             --tmpfs /var/run/postgresql:rw,noexec,nosuid,size=16m \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-            --mount "type=bind,src=$PG_SECRET_DIR,dst=/run/secrets,readonly" \
+            --mount "type=bind,src=$PG_SECRET_DIR,dst=/run/secrets,readonly,bind-propagation=rprivate" \
             --pids-limit 256 --memory 1g --cpus 1 \
             --health-cmd='pg_isready -U attestation -d attestation' \
             --health-interval=3s --health-timeout=3s --health-retries=20 \
@@ -353,6 +353,11 @@ PY
             # for an attested default.
             for key in ("CapAdd","CapDrop","Devices","DeviceRequests"):
               check(require(hc,key,list,allow_none=True) is None,"unauthorized or non-canonical HostConfig field: "+key)
+            # No device-cgroup rules are requested. Docker's canonical inspect
+            # representation for an unset field is null; missing, [], and explicit
+            # rules are distinct and rejected.
+            device_cgroup_rules=require(hc,"DeviceCgroupRules",list,allow_none=True)
+            check(device_cgroup_rules is None,"DeviceCgroupRules must be present and null; device access rules are forbidden")
             # Empty PidMode/UTSMode means Docker's isolated default namespace, not "host".
             # Empty UsernsMode delegates to the daemon's userns-remap default; inspect alone
             # cannot attest that daemon-level setting, so the manifest records this limitation.
@@ -403,13 +408,36 @@ PY
             for m in mounts:
               dest=m["Destination"]; typ,rw,source=expected_mounts[dest]
               check(require(m,"Type",str)==typ and require(m,"RW",bool) is rw,"mount type/read-write mismatch: "+dest)
-              if source is not None: check(require(m,"Source",str)==source,"secret mount source mismatch")
+              if source is not None:
+                check(require(m,"Source",str)==source,"secret mount source mismatch")
+                check(require(m,"Propagation",str)=="rprivate","secret bind mount propagation must be explicitly rprivate")
+              else:
+                check(require(m,"Propagation",str)=="","non-bind mount propagation must be empty")
+            # Validate HostConfig.Mounts independently, then cross-check it against
+            # Docker's effective top-level Mounts array.
+            requested_mounts=require(hc,"Mounts",list)
+            check(len(requested_mounts)==1,"HostConfig.Mounts contains missing or additional mounts")
+            requested=requested_mounts[0]
+            check(type(requested) is dict,"HostConfig.Mounts entry malformed")
+            check(require(requested,"Type",str)=="bind","HostConfig mount type mismatch")
+            check(require(requested,"Source",str)==e["secret_dir"],"HostConfig mount source mismatch")
+            check(require(requested,"Target",str)=="/run/secrets","HostConfig mount target mismatch")
+            check(require(requested,"ReadOnly",bool) is True,"HostConfig secret mount must be read-only")
+            bind_options=require(requested,"BindOptions",dict)
+            check(require(bind_options,"Propagation",str)=="rprivate","HostConfig bind propagation must be rprivate")
+            check(set(bind_options)=={"Propagation"},"unexpected HostConfig bind options")
+            for key in ("VolumeOptions","TmpfsOptions","Consistency"):
+              if key in requested: check(requested[key] in (None,""),"unexpected HostConfig mount option: "+key)
+            effective_secret=[m for m in mounts if m.get("Destination")=="/run/secrets"]
+            check(len(effective_secret)==1,"effective secret mount missing or duplicated")
+            em=effective_secret[0]
+            check(em["Type"]=="bind" and em["Source"]==requested["Source"] and em["Destination"]==requested["Target"] and em["RW"] is False and em["Propagation"]=="rprivate","requested/effective secret mount mismatch")
             labels=require(cfg,"Labels",dict)
             check(labels=={"ai-phone-02.run-id":e["run_id"],"ai-phone-02.run-attempt":e["attempt"],"ai-phone-02.managed":"true"},"run ownership labels absent, extra, or mismatched")
-            return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"cap_add":hc["CapAdd"],"cap_drop":hc["CapDrop"],"devices":hc["Devices"],"device_requests":hc["DeviceRequests"],"namespaces":namespace_observed,"group_add":hc["GroupAdd"],"sysctls":hc["Sysctls"],"volumes_from":hc["VolumesFrom"],"binds":hc["Binds"],"cgroup_parent":hc["CgroupParent"],"runtime":hc["Runtime"],"oom_kill_disable":hc["OomKillDisable"],"mounts":[{"type":m.get("Type"),"destination":m.get("Destination"),"rw":m.get("RW")} for m in mounts],"secret_value_in_config_env":False,"expected_policy":{"network_mode":"none","published_host_ports":False,"publish_all_ports":False,"readonly_rootfs":True,"privileged":False,"cap_add":None,"cap_drop":None,"devices":None,"device_requests":None,"namespaces":{"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"},"group_add":None,"sysctls":None,"volumes_from":None,"binds":None,"cgroup_parent":"","runtime":"runc","oom_kill_disable":None,"security_opt":["no-new-privileges:true"],"memory_bytes":1073741824,"nano_cpus":1000000000,"pids_limit":256,"tmpfs":TMPFS,"mount_destinations":sorted(set(TMPFS)|{"/run/secrets"}),"secret_mount":{"type":"bind","destination":"/run/secrets","rw":False},"postgres_password_env":"absent","postgres_password_file_env":SECRET,"postgres_initdb_args":"--auth-host=scram-sha-256 --auth-local=scram-sha-256"},"policy_validation":"PASS","trust_limitation":"Observed values are reported by the Docker daemon; they do not prove host integrity or protect against a privileged daemon administrator."}
+            return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"cap_add":hc["CapAdd"],"cap_drop":hc["CapDrop"],"devices":hc["Devices"],"device_requests":hc["DeviceRequests"],"device_cgroup_rules":device_cgroup_rules,"namespaces":namespace_observed,"group_add":hc["GroupAdd"],"sysctls":hc["Sysctls"],"volumes_from":hc["VolumesFrom"],"binds":hc["Binds"],"cgroup_parent":hc["CgroupParent"],"runtime":hc["Runtime"],"oom_kill_disable":hc["OomKillDisable"],"mounts":[{"type":m.get("Type"),"source":m.get("Source"),"destination":m.get("Destination"),"rw":m.get("RW"),"propagation":m.get("Propagation")} for m in mounts],"host_config_mounts":[{"type":m.get("Type"),"source":m.get("Source"),"target":m.get("Target"),"read_only":m.get("ReadOnly"),"bind_options":m.get("BindOptions")} for m in requested_mounts],"secret_value_in_config_env":False,"expected_policy":{"network_mode":"none","published_host_ports":False,"publish_all_ports":False,"readonly_rootfs":True,"privileged":False,"cap_add":None,"cap_drop":None,"devices":None,"device_requests":None,"device_cgroup_rules":None,"namespaces":{"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"},"group_add":None,"sysctls":None,"volumes_from":None,"binds":None,"cgroup_parent":"","runtime":"runc","oom_kill_disable":None,"security_opt":["no-new-privileges:true"],"memory_bytes":1073741824,"nano_cpus":1000000000,"pids_limit":256,"tmpfs":TMPFS,"mount_destinations":sorted(set(TMPFS)|{"/run/secrets"}),"secret_mount":{"type":"bind","source":e["secret_dir"],"destination":"/run/secrets","rw":False,"propagation":"rprivate"},"host_config_secret_mount":{"type":"bind","source":e["secret_dir"],"target":"/run/secrets","read_only":True,"propagation":"rprivate"},"postgres_password_env":"absent","postgres_password_file_env":SECRET,"postgres_initdb_args":"--auth-host=scram-sha-256 --auth-local=scram-sha-256"},"policy_validation":"PASS","trust_limitation":"Observed values are reported by the Docker daemon; they do not prove host integrity or protect against a privileged daemon administrator."}
           def selftest():
             tmp={k:",".join(v) for k,v in TMPFS.items()}
-            f=[{"Id":"a"*64,"Image":"sha256:"+"b"*64,"Config":{"Image":"postgres:16.16@sha256:"+"c"*64,"Env":["POSTGRES_PASSWORD_FILE="+SECRET,"POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"1","ai-phone-02.managed":"true"}},"HostConfig":{"NetworkMode":"none","PortBindings":{},"PublishAllPorts":False,"ReadonlyRootfs":True,"Privileged":False,"CapAdd":None,"CapDrop":None,"Devices":None,"DeviceRequests":None,"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private","GroupAdd":None,"Sysctls":None,"VolumesFrom":None,"Binds":None,"CgroupParent":"","Runtime":"runc","OomKillDisable":None,"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824,"NanoCpus":1000000000,"PidsLimit":256,"Tmpfs":tmp},"NetworkSettings":{"Ports":{"5432/tcp":None}},"Mounts":[{"Type":"tmpfs","Destination":p,"RW":True} for p in TMPFS]+[{"Type":"bind","Source":"/tmp/sec","Destination":"/run/secrets","RW":False}]}]
+            f=[{"Id":"a"*64,"Image":"sha256:"+"b"*64,"Config":{"Image":"postgres:16.16@sha256:"+"c"*64,"Env":["POSTGRES_PASSWORD_FILE="+SECRET,"POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"1","ai-phone-02.managed":"true"}},"HostConfig":{"NetworkMode":"none","PortBindings":{},"PublishAllPorts":False,"ReadonlyRootfs":True,"Privileged":False,"CapAdd":None,"CapDrop":None,"Devices":None,"DeviceRequests":None,"DeviceCgroupRules":None,"Mounts":[{"Type":"bind","Source":"/tmp/sec","Target":"/run/secrets","ReadOnly":True,"BindOptions":{"Propagation":"rprivate"}}],"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private","GroupAdd":None,"Sysctls":None,"VolumesFrom":None,"Binds":None,"CgroupParent":"","Runtime":"runc","OomKillDisable":None,"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824,"NanoCpus":1000000000,"PidsLimit":256,"Tmpfs":tmp},"NetworkSettings":{"Ports":{"5432/tcp":None}},"Mounts":[{"Type":"tmpfs","Destination":p,"RW":True,"Propagation":""} for p in TMPFS]+[{"Type":"bind","Source":"/tmp/sec","Destination":"/run/secrets","RW":False,"Propagation":"rprivate"}]}]
             e={"id":"a"*64,"image_id":"sha256:"+"b"*64,"image":"postgres:16.16@sha256:"+"c"*64,"secret_dir":"/tmp/sec","run_id":"1","attempt":"1"}
             validate(f,e)
             with tempfile.TemporaryDirectory() as td:
@@ -435,6 +463,28 @@ PY
               lambda x:x[0]["HostConfig"].update(CapDrop=["ALL"]),
               lambda x:x[0]["HostConfig"].update(Devices=[{"PathOnHost":"/dev/kvm","PathInContainer":"/dev/kvm","CgroupPermissions":"rwm"}]),
               lambda x:x[0]["HostConfig"].update(DeviceRequests=[{"Driver":"nvidia","Count":-1,"DeviceIDs":[],"Capabilities":[["gpu"]],"Options":{}}]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c *:* rwm"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 42:* rwm"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 42:7 rw"]),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=[]),
+              lambda x:x[0]["HostConfig"].pop("DeviceCgroupRules"),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules="c 42:7 r"),
+              lambda x:x[0]["HostConfig"].update(DeviceCgroupRules=["c 042:007 r"]),
+              lambda x:x[0]["Mounts"][-1].update(Propagation="rshared"),
+              lambda x:x[0]["Mounts"][-1].update(Propagation="rslave"),
+              lambda x:x[0]["Mounts"][-1].pop("Propagation"),
+              lambda x:x[0]["Mounts"][-1].update(Source="/unexpected"),
+              lambda x:x[0]["Mounts"][-1].update(Destination="/unexpected"),
+              lambda x:x[0]["Mounts"][-1].update(RW=True),
+              lambda x:x[0]["Mounts"].append({"Type":"bind","Source":"/extra","Destination":"/extra","RW":False,"Propagation":"rprivate"}),
+              lambda x:x[0]["HostConfig"].update(Mounts=[]),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Type="volume"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Source="/unexpected"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(Target="/unexpected"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0].update(ReadOnly=False),
+              lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Propagation="rshared"),
+              lambda x:x[0]["HostConfig"]["Mounts"][0]["BindOptions"].update(Unexpected=True),
+              lambda x:x[0]["HostConfig"]["Mounts"].append({"Type":"bind","Source":"/extra","Target":"/extra","ReadOnly":True,"BindOptions":{"Propagation":"rprivate"}}),
               lambda x:x[0]["HostConfig"].update(PidMode="host"),
               lambda x:x[0]["HostConfig"].update(IpcMode="host"),
               lambda x:x[0]["HostConfig"].update(UTSMode="host"),
@@ -686,8 +736,9 @@ PY
                   "The disposable PostgreSQL bootstrap role is a superuser because pg_control_system() requires privileged access; the instance is job-local, network-isolated, has no published ports, uses a per-run random password and is not connected to production.",
                   "Both host and local connections require SCRAM-SHA-256 password authentication.",
                   "Container and image identity checks are completed before any PostgreSQL connection or identity collection.",
-                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, and Runtime=runc; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS.",
-                  "An empty UsernsMode delegates to the Docker daemon's userns-remap default; container inspect does not attest daemon-level user namespace remapping, so this property remains outside the local container-config proof."
+                  "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, Runtime=runc, DeviceCgroupRules=null, and HostConfig.Mounts with the single read-only secret bind using rprivate propagation; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS.",
+                  "The daemon-level user namespace mode is NOT_ATTESTED; no rootless or userns-remap isolation claim is made.",
+                  "UsernsMode is empty in container inspect and delegates to daemon policy. This workflow does not independently validate daemon rootless mode, userns-remap configuration, subordinate UID/GID mappings, or effective daemon user-namespace mappings. Rootless and userns-remap are distinct modes; docker info/security options alone are not treated as sufficient proof. User namespace isolation remains NOT_ATTESTED (UNKNOWN)."
               ],
               "safety": {
                   "disposable_postgres_bootstrap": {
