@@ -228,7 +228,8 @@ PY
               check(len(tokens)==len(set(tokens)),"duplicate tmpfs option: "+p)
               flags={x for x in tokens if not x.startswith("size=")}
               sizes=[x for x in tokens if x.startswith("size=")]
-              check(flags==set(required_options[:-1]) and sizes==[required_options[-1],"size="+str({"size=1g":1073741824,"size=16m":16777216,"size=64m":67108864}[required_options[-1]])],"tmpfs options/size must match exactly: "+p)
+              decimal_size="size="+str({"size=1g":1073741824,"size=16m":16777216,"size=64m":67108864}[required_options[-1]])
+              check(flags==set(required_options[:-1]) and len(sizes)==1 and sizes[0] in {required_options[-1],decimal_size},"tmpfs options/size must match exactly: "+p)
             env=require(cfg,"Env",list)
             check(all(type(x) is str and "=" in x for x in env),"Config.Env malformed")
             names=[x.split("=",1)[0] for x in env]
@@ -237,11 +238,17 @@ PY
             check(sum(x.startswith("POSTGRES_PASSWORD_FILE=") for x in env)==1 and "POSTGRES_PASSWORD_FILE="+SECRET in env,"password file path missing, duplicated, or incorrect")
             args=[x.split("=",1)[1] for x in env if x.startswith("POSTGRES_INITDB_ARGS=")]
             check(args==["--auth-host=scram-sha-256 --auth-local=scram-sha-256"],"SCRAM initialization args must exactly match policy")
-            sm=[m for m in mounts if m.get("Destination")=="/run/secrets"]
-            check(len(sm)==1 and sm[0].get("Type")=="bind" and sm[0].get("RW") is False and sm[0].get("Source")==e["secret_dir"],"secret mount absent/writable/unexpected")
-            check({m.get("Destination") for m in mounts}==set(TMPFS)|{"/run/secrets"},"unexpected or missing mounts")
+            expected_mounts={p:("tmpfs",True,None) for p in TMPFS}
+            expected_mounts["/run/secrets"]=("bind",False,e["secret_dir"])
+            destinations=[]
             for m in mounts:
-              if m.get("Destination") in TMPFS: check(m.get("Type")=="tmpfs" and m.get("RW") is True,"tmpfs mount mismatch")
+              check(type(m) is dict,"mount entry malformed")
+              destinations.append(require(m,"Destination",str))
+            check(len(destinations)==len(set(destinations)) and set(destinations)==set(expected_mounts),"mount destinations duplicated, missing, or unexpected")
+            for m in mounts:
+              dest=m["Destination"]; typ,rw,source=expected_mounts[dest]
+              check(require(m,"Type",str)==typ and require(m,"RW",bool) is rw,"mount type/read-write mismatch: "+dest)
+              if source is not None: check(require(m,"Source",str)==source,"secret mount source mismatch")
             labels=require(cfg,"Labels",dict)
             check(labels=={"ai-phone-02.run-id":e["run_id"],"ai-phone-02.run-attempt":e["attempt"],"ai-phone-02.managed":"true"},"run ownership labels absent, extra, or mismatched")
             return {"observed_by":"docker_inspect","container_id":c["Id"],"image_id":c["Image"],"configured_image":cfg["Image"],"network_mode":hc["NetworkMode"],"port_bindings":hc["PortBindings"],"effective_network_ports":ports,"publish_all_ports":hc["PublishAllPorts"],"readonly_rootfs":hc["ReadonlyRootfs"],"security_opt":sec,"memory_bytes":hc["Memory"],"nano_cpus":hc["NanoCpus"],"pids_limit":hc["PidsLimit"],"tmpfs":tmp,"privileged":hc["Privileged"],"mounts":[{"type":m.get("Type"),"destination":m.get("Destination"),"rw":m.get("RW")} for m in mounts],"secret_value_in_config_env":False,"expected_policy":{"network_mode":"none","published_host_ports":False,"publish_all_ports":False,"readonly_rootfs":True,"required_security_opt":"no-new-privileges:true","memory_bytes":1073741824,"nano_cpus":1000000000,"pids_limit":256,"tmpfs_paths":sorted(TMPFS),"secret_mount":{"type":"bind","destination":"/run/secrets","rw":False},"postgres_password_env":"absent","postgres_password_file_env":SECRET,"host_auth_method":"scram-sha-256","local_auth_method":"scram-sha-256"},"policy_validation":"PASS","trust_limitation":"Observed values are reported by the Docker daemon; they do not prove host integrity or protect against a privileged daemon administrator."}
@@ -265,7 +272,7 @@ PY
               except (ValueError,KeyError,TypeError): pass
               else: raise ValueError("missing secret fixture unexpectedly passed")
             negatives=0
-            mutations=[lambda x:x[0]["HostConfig"].update(NetworkMode="bridge"),lambda x:x[0]["HostConfig"].update(PortBindings={"5432/tcp":[{}]}),lambda x:x[0]["HostConfig"].update(ReadonlyRootfs=False),lambda x:x[0]["HostConfig"].update(SecurityOpt=[]),lambda x:x[0]["HostConfig"].update(Memory=1),lambda x:x[0]["HostConfig"].update(NanoCpus=1),lambda x:x[0]["HostConfig"].update(PidsLimit=1),lambda x:x[0]["Config"]["Env"].append("POSTGRES_PASSWORD=secret"),lambda x:x[0]["Mounts"][-1].update(RW=True),lambda x:x[0]["Mounts"].pop(),lambda x:x[0]["HostConfig"].pop("Tmpfs"),lambda x:x[0]["HostConfig"].update(Privileged=True),lambda x:x[0]["Config"]["Env"].clear()]
+            mutations=[lambda x:x[0]["HostConfig"].update(NetworkMode="bridge"),lambda x:x[0]["HostConfig"].pop("PortBindings"),lambda x:x[0]["HostConfig"].update(PortBindings={"5432/tcp":[{}]}),lambda x:x[0]["HostConfig"].update(ReadonlyRootfs=False),lambda x:x[0]["HostConfig"].update(SecurityOpt=["no-new-privileges:true","seccomp=unconfined"]),lambda x:x[0]["HostConfig"].update(Memory=1),lambda x:x[0]["HostConfig"].update(NanoCpus=1),lambda x:x[0]["HostConfig"].update(PidsLimit=1),lambda x:x[0]["Config"]["Env"].append("POSTGRES_PASSWORD=secret"),lambda x:x[0]["Mounts"][-1].update(RW=True),lambda x:x[0]["Mounts"].pop(),lambda x:x[0]["Mounts"].append({"Type":"bind","Source":"/unexpected","Destination":"/unexpected","RW":False}),lambda x:x[0]["HostConfig"]["Tmpfs"].update({"/tmp":"rw,noexec,nosuid,exec,size=64m"}),lambda x:x[0]["HostConfig"].pop("Tmpfs"),lambda x:x[0]["HostConfig"].update(Privileged=True),lambda x:x[0]["Config"]["Env"].append("POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256 --auth=trust"),lambda x:x[0]["Config"]["Env"].append("POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256"),lambda x:x[0]["Config"]["Env"].clear()]
             for mutate in mutations:
               x=json.loads(json.dumps(f)); mutate(x)
               try: validate(x,e)
@@ -275,7 +282,12 @@ PY
               try: validate(x,e)
               except (ValueError,KeyError,TypeError): negatives+=1
               else: raise ValueError("malformed fixture unexpectedly passed")
-            print(json.dumps({"validator_self_tests":"PASS","positive":1,"negative":negatives}))
+            duplicate_cases=['{"root":1,"root":2}','{"HostConfig":{"x":1,"x":2}}','{"Config":{"x":1,"x":2}}','{invalid','']
+            for raw in duplicate_cases:
+              try: json.loads(raw,object_pairs_hook=unique_object)
+              except (ValueError,TypeError): negatives+=1
+              else: raise ValueError("duplicate/malformed JSON unexpectedly passed")
+            print(json.dumps({"validator_self_tests":"PASS","positive":1,"negative":negatives,"duplicate_malformed_json":len(duplicate_cases)}))
           if __name__=="__main__":
             if len(sys.argv)==2 and sys.argv[1]=="--self-test": selftest(); raise SystemExit(0)
             try:
