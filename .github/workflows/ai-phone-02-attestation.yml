@@ -188,7 +188,7 @@ jobs:
             check(stat.S_IMODE(os.stat(secret_file).st_mode)==0o600,"secret file permissions incorrect")
             with open(secret_file,encoding="ascii") as h: value=h.read()
             check(bool(__import__("re").fullmatch(r"[a-f0-9]{64}",value)),"secret missing, empty, or invalid format")
-                    def validate(doc,e):
+          def validate(doc,e):
             check(isinstance(doc,list) and len(doc)==1,"inspect must return exactly one container")
             c=doc[0]; cfg=c.get("Config"); hc=c.get("HostConfig"); ns=c.get("NetworkSettings")
             check(all(isinstance(x,dict) for x in (cfg,hc,ns)),"required inspect object absent")
