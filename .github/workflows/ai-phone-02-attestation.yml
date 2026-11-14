@@ -88,8 +88,9 @@ jobs:
             psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
             -c "BEGIN READ ONLY" \
             -c "SELECT json_build_object(
-              'system_identifier', 'UNAVAILABLE',
-              'system_identifier_reason', 'UNAVAILABLE by design: this query does not invoke cluster-control functions. The bootstrap session is superuser, but this field is not collected or used as a PASS condition.',
+              'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
+              'system_identifier_repeat', (SELECT system_identifier::text FROM pg_control_system()),
+              'system_identifier_method', 'pg_control_system() -> system_identifier (PostgreSQL control-file metadata)',
               'database_name', current_database(),
               'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
               'role', current_user,
@@ -107,6 +108,8 @@ jobs:
             -c "COMMIT" > attestation-evidence/database-session.json
 
           export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           python3 - <<'PY'
           import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
@@ -127,7 +130,10 @@ jobs:
               "server_addr": db.get("server_addr") == "127.0.0.1",
               "server_port": db.get("server_port") == 5432,
               "postmaster_start_time": bool(db.get("postmaster_start_time")),
-              "system_identifier_explicitly_unavailable": db.get("system_identifier") == "UNAVAILABLE" and bool(db.get("system_identifier_reason")),
+              "system_identifier_present": isinstance(db.get("system_identifier"), str) and bool(re.fullmatch(r"[1-9][0-9]{0,18}", db.get("system_identifier", ""))) and int(db.get("system_identifier", "0")) <= 9223372036854775807,
+              "system_identifier_repeat_present": isinstance(db.get("system_identifier_repeat"), str) and bool(re.fullmatch(r"[1-9][0-9]{0,18}", db.get("system_identifier_repeat", ""))) and int(db.get("system_identifier_repeat", "0")) <= 9223372036854775807,
+              "system_identifier_method": db.get("system_identifier_method") == "pg_control_system() -> system_identifier (PostgreSQL control-file metadata)",
+              "system_identifier_same_session_consistency": db.get("system_identifier") == db.get("system_identifier_repeat"),
           }
           provenance = {
               "event_sha": bool(re.fullmatch(r"[a-f0-9]{40}", os.environ["EVENT_SHA"])),
@@ -191,6 +197,20 @@ jobs:
                   "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
                   "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
               },
+              "cluster_identity": {
+                  "system_identifier": database["system_identifier"],
+                  "repeat_read": database["system_identifier_repeat"],
+                  "method": database["system_identifier_method"],
+                  "source": "pg_control_system() on the connected PostgreSQL server",
+                  "consistency_check": "Two pg_control_system() reads in the same psql TCP session and read-only transaction matched exactly",
+                  "database_name": database["database_name"],
+                  "database_oid": database["database_oid"],
+                  "server_address": database["server_addr"],
+                  "server_port": database["server_port"],
+                  "postmaster_start_time": database["postmaster_start_time"],
+                  "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
+                  "relationship": "The pg_control_system() result was returned by the same PostgreSQL backend session connected over 127.0.0.1:5432 inside this identified service container; database identity and backend identity are recorded in database_session."
+              },
               "database_session": database,
               "nonce": {
                   "value": os.environ["NONCE"],
@@ -205,11 +225,14 @@ jobs:
                   "collected_at": os.environ["COLLECTED_AT"]
               },
               "result": "LOCAL_CONTROLS_PASS",
+              "local_controls": "PASS",
               "external_attestation": "NOT_VALIDATED",
+              "provider_side_correlation": "PENDING_FUTURE_AUTHORIZED_EXECUTION",
               "limitations": [
                   "This manifest is workflow-produced evidence, not an independently validated attestation.",
                   "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
-                  "system_identifier is explicitly UNAVAILABLE because this workflow does not invoke cluster-control functions; the bootstrap session is superuser, but this field is not collected or used as a PASS condition.",
+                  "Provider-side correlation remains pending until a future separately authorized execution and independent review.",
+                  "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
                   "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
               ],
               "safety": {
