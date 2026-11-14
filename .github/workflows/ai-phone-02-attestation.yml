@@ -359,8 +359,9 @@ PY
             device_cgroup_rules=require(hc,"DeviceCgroupRules",list,allow_none=True)
             check(device_cgroup_rules is None,"DeviceCgroupRules must be present and null; device access rules are forbidden")
             # Empty PidMode/UTSMode means Docker's isolated default namespace, not "host".
-            # Empty UsernsMode delegates to the daemon's userns-remap default; inspect alone
-            # cannot attest that daemon-level setting, so the manifest records this limitation.
+            # Empty UsernsMode delegates to daemon defaults: remapping may be disabled,
+            # enabled with userns-remap, or supplied by a rootless daemon. Inspect
+            # alone cannot distinguish or attest these daemon-level modes.
             namespace_policy={"PidMode":"","IpcMode":"private","UTSMode":"","UsernsMode":"","CgroupnsMode":"private"}
             namespace_observed={}
             for key,expected in namespace_policy.items():
@@ -676,6 +677,7 @@ PY
                   "target_sha": os.environ["TARGET_SHA"],
                   "checked_out_sha": os.environ["CHECKOUT_SHA"]
               },
+              "user_namespace_attestation": {"status":"NOT_ATTESTED","reason":"Container UsernsMode is empty and daemon-level rootless/userns-remap mode plus effective UID/GID maps were not collected or independently validated."},
               "executor": {
                   "runner_name": os.environ.get("RUNNER_NAME"),
                   "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
@@ -744,7 +746,7 @@ PY
                   "Container and image identity checks are completed before any PostgreSQL connection or identity collection.",
                   "Effective HostConfig policy requires Docker inspect fields and canonical values including IpcMode=private, CgroupnsMode=private, Runtime=runc, DeviceCgroupRules=null, and HostConfig.Mounts with the single read-only secret bind using rprivate propagation; daemon/API versions that omit or serialize these fields differently fail closed before LOCAL_CONTROLS_PASS.",
                   "The daemon-level user namespace mode is NOT_ATTESTED; no rootless or userns-remap isolation claim is made.",
-                  "UsernsMode is empty in container inspect and delegates to daemon policy. This workflow does not independently validate daemon rootless mode, userns-remap configuration, subordinate UID/GID mappings, or effective daemon user-namespace mappings. Rootless and userns-remap are distinct modes; docker info/security options alone are not treated as sufficient proof. User namespace isolation remains NOT_ATTESTED (UNKNOWN)."
+                  "UsernsMode is empty in container inspect and delegates to daemon policy; this does not prove that user namespace remapping is enabled. Rootless mode runs the daemon and containers inside a user namespace, while userns-remap runs a rootful daemon with remapped container identities. A non-destructive future check may collect docker info SecurityOptions (which can identify rootless or userns) and effective container/host UID and GID maps, but no such runtime evidence was collected here. This workflow does not independently validate daemon mode, subordinate UID/GID ranges, or effective mappings. User namespace isolation remains NOT_ATTESTED (UNKNOWN)."
               ],
               "safety": {
                   "disposable_postgres_bootstrap": {
