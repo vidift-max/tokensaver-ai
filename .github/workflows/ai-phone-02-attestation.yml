@@ -1,0 +1,272 @@
+# Deliberately manual-only: no push, pull_request, schedule, or reusable-workflow trigger.
+# Dispatch is intended only after this file has been reviewed and merged to the default branch.
+name: AI-PHONE-02 Read-only Attestation Channel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-02-attestation-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: ebb8eeecfea087443c5f3eba7021e96cb5302fe7
+  ATTESTATION_FORMAT_VERSION: "2"
+
+jobs:
+  ai-phone-02-attestation:
+    name: Read-only PostgreSQL identity attestation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87
+        env:
+          POSTGRES_USER: attestation
+          POSTGRES_DB: attestation
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd "pg_isready -U attestation -d attestation"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Checkout immutable AI-PHONE-02 TARGET
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ebb8eeecfea087443c5f3eba7021e96cb5302fe7
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Collect read-only provenance and PostgreSQL attestation
+        id: collect
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          JOB_KEY: ${{ github.job }}
+          SERVICE_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p attestation-evidence
+
+          STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          test "$EVENT_REF" = "refs/heads/v2-saas-alpha"
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test -n "$WORKFLOW_REF"
+          test "$WORKFLOW_REF" = "vidift-max/tokensaver-ai/.github/workflows/ai-phone-02-attestation.yml@refs/heads/v2-saas-alpha"
+          [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]
+          test -n "$JOB_KEY"
+          CHECKOUT_SHA="$(git rev-parse HEAD)"
+          test "$CHECKOUT_SHA" = "$TARGET_SHA"
+          test -n "$SERVICE_CONTAINER_ID"
+
+          SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_REPO_DIGESTS="$(docker inspect --format '{{json .RepoDigests}}' "$SERVICE_CONTAINER_ID")"
+          test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
+          test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
+
+          NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+          test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
+          APP_NAME="ai-phone-02-$NONCE"
+          export NONCE APP_NAME SERVICE_ACTUAL_ID SERVICE_IMAGE SERVICE_IMAGE_ID SERVICE_REPO_DIGESTS CHECKOUT_SHA STARTED_AT
+
+          # TCP loopback is confined to the service container; no host port is published.
+          docker exec -e PGAPPNAME="$APP_NAME" "$SERVICE_CONTAINER_ID" \
+            psql -h 127.0.0.1 -p 5432 -U attestation -d attestation -X -qAt -v ON_ERROR_STOP=1 \
+            -c "BEGIN READ ONLY" \
+            -c "SELECT json_build_object(
+              'system_identifier', (SELECT system_identifier::text FROM pg_control_system()),
+              'system_identifier_repeat', (SELECT system_identifier::text FROM pg_control_system()),
+              'system_identifier_method', 'pg_control_system() -> system_identifier (PostgreSQL control-file metadata)',
+              'database_name', current_database(),
+              'database_oid', (SELECT oid::text FROM pg_database WHERE datname = current_database()),
+              'role', current_user,
+              'session_user', session_user,
+              'backend_pid', pg_backend_pid(),
+              'backend_start', (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()),
+              'application_name', current_setting('application_name'),
+              'transaction_read_only', current_setting('transaction_read_only'),
+              'server_version', version(),
+              'server_version_num', current_setting('server_version_num'),
+              'server_addr', inet_server_addr()::text,
+              'server_port', inet_server_port(),
+              'postmaster_start_time', pg_postmaster_start_time()
+            )::text" \
+            -c "COMMIT" > attestation-evidence/database-session.json
+
+          export EVENT_SHA EVENT_REF WORKFLOW_REF WORKFLOW_SHA CHECK_RUN_ID JOB_KEY
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          python3 - <<'PY'
+          import json, os, re, sys
+          with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
+              db = json.load(f)
+
+          expected_app = os.environ["APP_NAME"]
+          def valid_system_identifier(value):
+              if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,19}", value):
+                  return False
+              number = int(value)
+              return number > 0 and number <= (2**63 - 1) and str(number) == value
+
+          required = {
+              "database_name": db.get("database_name") == "attestation",
+              "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
+              "role": db.get("role") == "attestation",
+              "session_user": db.get("session_user") == "attestation",
+              "backend_pid": isinstance(db.get("backend_pid"), int) and db["backend_pid"] > 0,
+              "backend_start": bool(db.get("backend_start")),
+              "application_name_nonce": db.get("application_name") == expected_app,
+              "transaction_read_only": db.get("transaction_read_only") == "on",
+              "server_version": bool(db.get("server_version")),
+              "server_version_num": bool(re.fullmatch(r"[0-9]+", str(db.get("server_version_num", "")))),
+              "server_addr": db.get("server_addr") == "127.0.0.1",
+              "server_port": db.get("server_port") == 5432,
+              "postmaster_start_time": bool(db.get("postmaster_start_time")),
+              "system_identifier_present": valid_system_identifier(db.get("system_identifier")),
+              "system_identifier_repeat_present": valid_system_identifier(db.get("system_identifier_repeat")),
+              "system_identifier_method": db.get("system_identifier_method") == "pg_control_system() -> system_identifier (PostgreSQL control-file metadata)",
+              "system_identifier_same_session_consistency": db.get("system_identifier") == db.get("system_identifier_repeat"),
+          }
+          provenance = {
+              "event_sha": bool(re.fullmatch(r"[a-f0-9]{40}", os.environ["EVENT_SHA"])),
+              "event_ref": os.environ["EVENT_REF"] == "refs/heads/v2-saas-alpha",
+              "workflow_ref": bool(os.environ["WORKFLOW_REF"]),
+              "workflow_sha": bool(re.fullmatch(r"[a-f0-9]{40}", os.environ["WORKFLOW_SHA"])),
+              "check_run_id": bool(re.fullmatch(r"[0-9]+", os.environ["CHECK_RUN_ID"])),
+              "job_key": bool(os.environ["JOB_KEY"]),
+              "target_sha": os.environ["CHECKOUT_SHA"] == os.environ["TARGET_SHA"],
+          }
+          checks = {"database": required, "provenance": provenance}
+          failed = [f"{group}.{name}" for group, values in checks.items() for name, ok in values.items() if not ok]
+          print(json.dumps({"checks": checks, "failed": failed, "result": "FAIL" if failed else "LOCAL_CONTROLS_VALIDATED"}, sort_keys=True))
+          if failed:
+              sys.exit(1)
+          PY
+
+          COLLECTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          export COLLECTED_AT
+          python3 - <<'PY'
+          import json, os, platform, socket
+          with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
+              database = json.load(f)
+          evidence = {
+              "format": "ai-phone-02-read-only-attestation",
+              "format_version": int(os.environ["ATTESTATION_FORMAT_VERSION"]),
+              "workflow": {
+                  "name": os.environ.get("GITHUB_WORKFLOW"),
+                  "event_sha": os.environ["EVENT_SHA"],
+                  "event_ref": os.environ["EVENT_REF"],
+                  "workflow_ref": os.environ["WORKFLOW_REF"],
+                  "workflow_sha": os.environ["WORKFLOW_SHA"],
+                  "run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "repository": os.environ.get("GITHUB_REPOSITORY"),
+                  "event": os.environ.get("GITHUB_EVENT_NAME"),
+                  "job_key": os.environ["JOB_KEY"],
+                  "check_run_id": os.environ["CHECK_RUN_ID"],
+                  "job_id": "UNAVAILABLE_PENDING_EXTERNAL_CORRELATION",
+                  "job_id_source": "external_github_metadata",
+                  "target_sha": os.environ["TARGET_SHA"],
+                  "checked_out_sha": os.environ["CHECKOUT_SHA"]
+              },
+              "executor": {
+                  "runner_name": os.environ.get("RUNNER_NAME"),
+                  "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
+                  "runner_os": os.environ.get("RUNNER_OS"),
+                  "runner_arch": os.environ.get("RUNNER_ARCH"),
+                  "host_name": socket.gethostname(),
+                  "platform": platform.platform(),
+                  "image_os": os.environ.get("ImageOS", "UNAVAILABLE"),
+                  "image_version": os.environ.get("ImageVersion", "UNAVAILABLE"),
+                  "executor_instance_id": "UNAVAILABLE",
+                  "identity_limitations": "Runner instance identity must be independently correlated from GitHub provider-side job metadata."
+              },
+              "postgres": {
+                  "service_id_from_job_context": os.environ["SERVICE_CONTAINER_ID"],
+                  "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
+                  "configured_image": os.environ["SERVICE_IMAGE"],
+                  "image_id": os.environ["SERVICE_IMAGE_ID"],
+                  "repo_digests": json.loads(os.environ["SERVICE_REPO_DIGESTS"]),
+                  "scope": "GitHub Actions service container scoped to this job; TCP connection is loopback inside that container"
+              },
+              "cluster_identity": {
+                  "system_identifier": database["system_identifier"],
+                  "repeat_read": database["system_identifier_repeat"],
+                  "method": database["system_identifier_method"],
+                  "source": "pg_control_system() on the connected PostgreSQL server",
+                  "consistency_check": "Two pg_control_system() reads in the same psql TCP session and read-only transaction matched exactly",
+                  "database_name": database["database_name"],
+                  "database_oid": database["database_oid"],
+                  "server_address": database["server_addr"],
+                  "server_port": database["server_port"],
+                  "postmaster_start_time": database["postmaster_start_time"],
+                  "service_container_id": os.environ["SERVICE_ACTUAL_ID"],
+                  "relationship": "The pg_control_system() result was returned by the same PostgreSQL backend session connected over 127.0.0.1:5432 inside this identified service container; database identity and backend identity are recorded in database_session."
+              },
+              "database_session": database,
+              "nonce": {
+                  "value": os.environ["NONCE"],
+                  "bits": 256,
+                  "encoding": "base64url-without-padding",
+                  "expected_application_name": os.environ["APP_NAME"],
+                  "observed_application_name": database["application_name"],
+                  "session_binding_verified": database["application_name"] == os.environ["APP_NAME"]
+              },
+              "timestamps_utc": {
+                  "started_at": os.environ["STARTED_AT"],
+                  "collected_at": os.environ["COLLECTED_AT"]
+              },
+              "result": "LOCAL_CONTROLS_VALIDATED_PENDING_PACKAGE_INTEGRITY",
+              "local_controls": "VALIDATED_PENDING_PACKAGE_INTEGRITY",
+              "external_attestation": "NOT_VALIDATED",
+              "provider_side_correlation": "PENDING_FUTURE_AUTHORIZED_EXECUTION",
+              "limitations": [
+                  "This manifest is workflow-produced evidence, not an independently validated attestation.",
+                  "Numeric GitHub job ID and runner instance identity require external GitHub metadata correlation.",
+                  "Provider-side correlation remains pending until a future separately authorized execution and independent review.",
+                  "Cluster identity is collected from pg_control_system() in the connected PostgreSQL session and must be present, positive, in bigint range, and identical across two reads before LOCAL_CONTROLS_PASS.",
+                  "The official PostgreSQL service bootstrap role is a superuser; it is confined to this disposable, job-scoped, unexposed service. Reducing this role would require provisioning/role DDL, which this workflow intentionally does not execute."
+              ],
+              "safety": {
+                  "database_operations": ["BEGIN READ ONLY", "SELECT", "COMMIT"],
+                  "migrations_executed": False,
+                  "schema_modified": False,
+                  "data_modified": False,
+                  "production_access": False,
+                  "permanent_credentials_used": False
+              }
+          }
+          with open("attestation-evidence/attestation.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+          test -s attestation-evidence/attestation.json
+          test -s attestation-evidence/database-session.json
+          (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
+          test -s attestation-evidence/SHA256SUMS
+          (cd attestation-evidence && sha256sum --check SHA256SUMS)
+          echo "LOCAL_CONTROLS_PASS: all local controls and package integrity verified; external attestation remains NOT_VALIDATED."
+
+      - name: Upload read-only attestation evidence
+        if: success() && steps.collect.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ai-phone-02-attestation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: attestation-evidence/
+          if-no-files-found: error
+          retention-days: 7
