@@ -71,45 +71,48 @@ jobs:
             trap - EXIT
             set +e
             cleanup_failed=0
-            if [[ -n "$SERVICE_CONTAINER_NAME" ]]; then
+            if [[ -n "$SERVICE_CONTAINER_ID" ]]; then
               docker info >/dev/null 2>&1 || cleanup_failed=1
               if [[ "$cleanup_failed" -eq 0 ]]; then
-                matches="$(docker ps -aq --filter "name=^/$SERVICE_CONTAINER_NAME$")" || cleanup_failed=1
-                if [[ "$cleanup_failed" -eq 0 && -n "$matches" ]]; then
-                  if [[ "$(printf '%s\n' "$matches" | wc -l)" -ne 1 ]]; then
-                    echo "Cleanup refused: multiple containers matched this run name."
-                    cleanup_failed=1
-                  else
-                    cid="$(docker inspect --format '{{.Id}}' "$matches" 2>/dev/null)" || cleanup_failed=1
-                    labels="$(docker inspect --format '{{ index .Config.Labels "ai-phone-02.run-id" }}|{{ index .Config.Labels "ai-phone-02.run-attempt" }}|{{ index .Config.Labels "ai-phone-02.managed" }}' "$cid" 2>/dev/null)" || cleanup_failed=1
-                    if [[ "$cleanup_failed" -eq 0 && "$labels" == "$GITHUB_RUN_ID|$GITHUB_RUN_ATTEMPT|true" && -n "$cid" ]]; then
-                      docker rm -f "$cid" >/dev/null 2>&1 || cleanup_failed=1
-                    else
-                      echo "Cleanup refused: container ownership could not be proven."
-                      cleanup_failed=1
-                    fi
+                inspect_json="$(docker inspect --type container "$SERVICE_CONTAINER_ID" 2>/dev/null)"
+                inspect_rc=$?
+                if [[ "$inspect_rc" -eq 0 ]]; then
+                  python3 - "$inspect_json" "$SERVICE_CONTAINER_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'PY' || cleanup_failed=1
+import json,sys
+def unique(pairs):
+ d={}
+ for k,v in pairs:
+  if k in d: raise ValueError("duplicate key")
+  d[k]=v
+ return d
+doc=json.loads(sys.argv[1],object_pairs_hook=unique)
+assert type(doc) is list and len(doc)==1
+c=doc[0]; assert type(c) is dict and c.get("Id")==sys.argv[2]
+cfg=c.get("Config"); assert type(cfg) is dict
+labels=cfg.get("Labels"); assert type(labels) is dict
+assert labels=={"ai-phone-02.run-id":sys.argv[3],"ai-phone-02.run-attempt":sys.argv[4],"ai-phone-02.managed":"true"}
+PY
+                  if [[ "$cleanup_failed" -eq 0 ]]; then
+                    docker rm -f "$SERVICE_CONTAINER_ID" >/dev/null 2>&1 || cleanup_failed=1
                   fi
+                else
+                  remaining="$(docker ps -aq --no-trunc --filter "id=$SERVICE_CONTAINER_ID" 2>/dev/null)" || cleanup_failed=1
+                  [[ -z "$remaining" ]] || cleanup_failed=1
                 fi
-                remaining="$(docker ps -aq --filter "name=^/$SERVICE_CONTAINER_NAME$")" || cleanup_failed=1
-                [[ -z "$remaining" ]] || cleanup_failed=1
+                if [[ "$cleanup_failed" -eq 0 ]]; then
+                  if docker inspect --type container "$SERVICE_CONTAINER_ID" >/dev/null 2>&1; then cleanup_failed=1; fi
+                  remaining="$(docker ps -aq --no-trunc --filter "id=$SERVICE_CONTAINER_ID" 2>/dev/null)" || cleanup_failed=1
+                  [[ -z "$remaining" ]] || cleanup_failed=1
+                fi
               fi
             fi
             if [[ "$cleanup_failed" -eq 0 ]]; then
-              if [[ -n "$PG_SECRET_FILE" ]]; then
-                rm -f -- "$PG_SECRET_FILE" || cleanup_failed=1
-                [[ ! -e "$PG_SECRET_FILE" ]] || cleanup_failed=1
-              fi
-              if [[ -n "$PG_SECRET_DIR" ]]; then
-                rmdir -- "$PG_SECRET_DIR" 2>/dev/null || cleanup_failed=1
-                [[ ! -e "$PG_SECRET_DIR" ]] || cleanup_failed=1
-              fi
+              if [[ -n "$PG_SECRET_FILE" ]]; then rm -f -- "$PG_SECRET_FILE" || cleanup_failed=1; [[ ! -e "$PG_SECRET_FILE" ]] || cleanup_failed=1; fi
+              if [[ -n "$PG_SECRET_DIR" ]]; then rmdir -- "$PG_SECRET_DIR" 2>/dev/null || cleanup_failed=1; [[ ! -e "$PG_SECRET_DIR" ]] || cleanup_failed=1; fi
             else
-              echo "Secret retained until ephemeral runner teardown because container removal was not verified."
+              echo "Secret retained until ephemeral runner teardown because container removal/ownership was not verified."
             fi
-            if [[ "$cleanup_failed" -ne 0 ]]; then
-              echo "Run-scoped cleanup failed verification."
-              rc=1
-            fi
+            if [[ "$cleanup_failed" -ne 0 ]]; then echo "Run-scoped cleanup failed verification."; rc=1; fi
             exit "$rc"
           }
           trap cleanup_run_resources EXIT
