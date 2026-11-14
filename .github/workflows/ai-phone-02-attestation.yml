@@ -86,18 +86,17 @@ jobs:
             echo "cleanup_secret_selftest=PASS"
           }
           cleanup_shell_selftest
-          cleanup_run_resources() {
-            rc=$?
-            trap - EXIT
-            set +e
-            cleanup_failed=0
-            if [[ -n "$SERVICE_CONTAINER_ID" ]]; then
-              docker info >/dev/null 2>&1 || cleanup_failed=1
-              if [[ "$cleanup_failed" -eq 0 ]]; then
-                inspect_json="$(docker inspect --type container "$SERVICE_CONTAINER_ID" 2>/dev/null)"
-                inspect_rc=$?
-                if [[ "$inspect_rc" -eq 0 ]]; then
-                  python3 - "$inspect_json" "$SERVICE_CONTAINER_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'PY' || cleanup_failed=1
+          cleanup_container_by_id() {
+            cid="$1"
+            [[ "$cid" =~ ^[a-f0-9]{64}$ ]] || return 1
+            inspect_json="$(docker inspect --type container "$cid" 2>/dev/null)"
+            inspect_rc=$?
+            if [[ "$inspect_rc" -ne 0 ]]; then
+              remaining="$(docker ps -aq --no-trunc --filter "id=$cid" 2>/dev/null)" || return 1
+              [[ -z "$remaining" ]] && return 0
+              return 1
+            fi
+            python3 - "$inspect_json" "$cid" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'PY' || return 1
 import json,sys
 def unique(pairs):
  d={}
@@ -118,24 +117,57 @@ def selftest():
   try: verify_owned(bad,cid,"1","2")
   except AssertionError: pass
   else: raise AssertionError("ownership negative test passed unexpectedly")
- print("cleanup_identity_selftest=PASS; renamed_id=PASS; id_mismatch=REJECTED; missing_labels=REJECTED")
+ print("cleanup_identity_validator=PASS")
 selftest()
 doc=json.loads(sys.argv[1],object_pairs_hook=unique)
 verify_owned(doc,sys.argv[2],sys.argv[3],sys.argv[4])
 PY
-                  if [[ "$cleanup_failed" -eq 0 ]]; then
-                    docker rm -f "$SERVICE_CONTAINER_ID" >/dev/null 2>&1 || cleanup_failed=1
-                  fi
-                else
-                  remaining="$(docker ps -aq --no-trunc --filter "id=$SERVICE_CONTAINER_ID" 2>/dev/null)" || cleanup_failed=1
-                  [[ -z "$remaining" ]] || cleanup_failed=1
-                fi
-                if [[ "$cleanup_failed" -eq 0 ]]; then
-                  if docker inspect --type container "$SERVICE_CONTAINER_ID" >/dev/null 2>&1; then cleanup_failed=1; fi
-                  remaining="$(docker ps -aq --no-trunc --filter "id=$SERVICE_CONTAINER_ID" 2>/dev/null)" || cleanup_failed=1
-                  [[ -z "$remaining" ]] || cleanup_failed=1
-                fi
-              fi
+            docker rm -f "$cid" >/dev/null 2>&1 || return 1
+            if docker inspect --type container "$cid" >/dev/null 2>&1; then return 1; fi
+            remaining="$(docker ps -aq --no-trunc --filter "id=$cid" 2>/dev/null)" || return 1
+            [[ -z "$remaining" ]]
+          }
+          cleanup_container_selftest() {
+            (
+              GITHUB_RUN_ID=1; GITHUB_RUN_ATTEMPT=2
+              test_id="$(printf 'a%.0s' {1..64})"
+              MOCK_VALID='[{"Id":"'"$test_id"'","Name":"/renamed","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_MISMATCH='[{"Id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","Config":{"Labels":{"ai-phone-02.run-id":"1","ai-phone-02.run-attempt":"2","ai-phone-02.managed":"true"}}}]'
+              MOCK_LABELS='[{"Id":"'"$test_id"'","Config":{"Labels":{}}}]'
+              docker() {
+                case "$1" in
+                  inspect)
+                    MOCK_INSPECT_COUNT=$((MOCK_INSPECT_COUNT+1))
+                    if [[ "$MOCK_CASE" == "absent" || ( "$MOCK_CASE" == "renamed" && "$MOCK_INSPECT_COUNT" -gt 1 ) ]]; then return 1; fi
+                    case "$MOCK_CASE" in renamed|rmfail) printf '%s' "$MOCK_VALID";; mismatch) printf '%s' "$MOCK_MISMATCH";; labels) printf '%s' "$MOCK_LABELS";; esac
+                    return 0 ;;
+                  ps) printf ''; return 0 ;;
+                  rm) MOCK_RM_COUNT=$((MOCK_RM_COUNT+1)); [[ "$MOCK_CASE" != "rmfail" ]]; return $? ;;
+                  *) return 1 ;;
+                esac
+              }
+              MOCK_CASE=renamed; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+              cleanup_container_by_id "$test_id" || exit 1
+              [[ "$MOCK_RM_COUNT" -eq 1 ]] || exit 1
+              for scenario in mismatch labels rmfail; do
+                MOCK_CASE="$scenario"; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+                if cleanup_container_by_id "$test_id"; then exit 1; fi
+                [[ "$MOCK_RM_COUNT" -eq 0 || "$scenario" == "rmfail" ]] || exit 1
+              done
+              MOCK_CASE=absent; MOCK_INSPECT_COUNT=0; MOCK_RM_COUNT=0
+              cleanup_container_by_id "$test_id" || exit 1
+            )
+            echo "cleanup_container_selftest=PASS; renamed=PASS; id_mismatch=REJECTED; labels_missing=REJECTED; rm_failure=REJECTED; absence_by_id=PASS"
+          }
+          cleanup_container_selftest
+          cleanup_run_resources() {
+            rc=$?
+            trap - EXIT
+            set +e
+            cleanup_failed=0
+            if [[ -n "$SERVICE_CONTAINER_ID" ]]; then
+              docker info >/dev/null 2>&1 || cleanup_failed=1
+              if [[ "$cleanup_failed" -eq 0 ]]; then cleanup_container_by_id "$SERVICE_CONTAINER_ID" || cleanup_failed=1; fi
             fi
             if [[ "$cleanup_failed" -eq 0 ]]; then
               if [[ -n "$PG_SECRET_FILE" ]]; then remove_secret_file_verified "$PG_SECRET_FILE" || cleanup_failed=1; fi
