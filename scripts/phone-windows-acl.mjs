@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 
 const POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Security -Force -ErrorAction Stop
 $target = [System.IO.Path]::GetFullPath($env:TOKENSAVER_PHONE_RESULT_DIRECTORY)
 if (-not (Test-Path -LiteralPath $target -PathType Container)) {
   throw 'Phone result directory does not exist'
