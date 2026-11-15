@@ -10,7 +10,7 @@ const id = "30000000-0000-4000-8000-000000000003";
 const keyA = Buffer.alloc(32, 0x41);
 const keyB = Buffer.alloc(32, 0x42);
 
-function makeKeyProvider(keys = { key-a: keyA }) {
+function makeKeyProvider(keys = { "key-a": keyA, "key-b": keyB }) {
   let currentKeyId = Object.keys(keys)[0];
   return {
     setCurrentKey(keyId) { currentKeyId = keyId; },
