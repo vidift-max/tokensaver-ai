@@ -66,7 +66,7 @@ jobs:
                   "diff-tree", "--no-commit-id", "--name-only", "-r", "-z",
                   parent_sha, event_sha
               )
-              changed_paths = changed_raw.split(b"\\0")
+              changed_paths = changed_raw.split(b"\0")
               if marker.encode() not in changed_paths:
                   raise ValueError("marker is not changed by the GITHUB_SHA commit")
               git("cat-file", "-e", f"{event_sha}:{marker}")
@@ -81,8 +81,8 @@ jobs:
 
           expected='AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1'
           printf '%s' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-no-eol"
-          printf '%s\\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
-          if ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \\
+          printf '%s\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
+          if ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \
              && ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-lf"; then
             echo "Authorization denied: marker content is not an exact allowed value." >&2
             exit 1
