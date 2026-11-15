@@ -177,6 +177,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "phone.message.read",
         "phone.message.send",
         "phone.message.ack",
+        "phone.pair.grant",
         "task.read",
     ] {
         grant(&pool, tenant, room, principal, permission).await;
@@ -229,7 +230,50 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         provisioned["ai_phone_id"],
         first.phone.ai_phone_id.to_string()
     );
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    // Model a real directional message: a separate sender AI phone queues
+    // an offline message for the recipient phone under an explicit Pair Grant.
+    let sender_principal = Uuid::new_v4();
+    let sender_participant = Uuid::new_v4();
+    let sender_ai_id = Uuid::new_v4();
+    let sender_subject = format!("test-subject-{sender_principal}");
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','ai-phone-test',$3)")
+        .bind(sender_principal).bind(tenant).bind(&sender_subject).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-TEST-SENDER')")
+        .bind(sender_participant).bind(tenant).bind(sender_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(sender_principal).bind(&sender_subject).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-SENDER')")
+        .bind(sender_ai_id).bind(format!("test:ai-phone:{sender_ai_id}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(sender_ai_id).bind(tenant).bind(sender_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+        .bind(sender_ai_id).bind(tenant).execute(&pool).await.unwrap();
+    for permission in ["phone.provision", "phone.message.send", "phone.message.read", "phone.pair.grant"] {
+        grant(&pool, tenant, room, sender_principal, permission).await;
+    }
+    let (sender_session, _sender_execution) =
+        add_session(&pool, tenant, room, sender_principal, sender_participant).await;
+    sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(sender_participant).bind(sender_principal).bind(sender_session)
+        .execute(&pool).await.unwrap();
+    let sender_token = bearer_for(&pool, sender_session).await;
+    let sender_provision = http_call(
+        &app, "POST", "/ai-phone/provision", Some(&sender_token),
+        Some(serde_json::json!({"principal_id":sender_principal}))
+    ).await;
+    assert_eq!(sender_provision.status(), axum::http::StatusCode::CREATED);
+    let sender_phone: Value = serde_json::from_slice(
+        &axum::body::to_bytes(sender_provision.into_body(), 100_000).await.unwrap()
+    ).unwrap();
+    let sender_phone_id = Uuid::parse_str(sender_phone["ai_phone_id"].as_str().unwrap()).unwrap();
+    assert_ne!(sender_phone_id, first.phone.ai_phone_id, "sender and recipient must be distinct phones");
+    let pair_grant = http_call(
+        &app, "POST", "/ai-phone/pair/grant", Some(&sender_token),
+        Some(serde_json::json!({"recipient_ai_phone_id":first.phone.ai_phone_id}))
+    ).await;
+    assert_eq!(pair_grant.status(), axum::http::StatusCode::OK,
+        "sender explicitly grants one-way delivery to the recipient phone");
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
     assert_eq!(
         response.status(),
@@ -405,7 +449,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(response.status(), axum::http::StatusCode::CREATED);
     let bytes = axum::body::to_bytes(response.into_body(), 100_000)
@@ -413,7 +457,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .unwrap();
     let created_message: Value = serde_json::from_slice(&bytes).unwrap();
     let created_message_id = created_message["message_id"].as_str().unwrap().to_string();
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(
         response.status(),
@@ -428,7 +472,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         replay["message_id"], created_message_id,
         "idempotent replay returns the original message ID"
     );
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"different payload"}}))).await;
     assert_eq!(
         response.status(),
@@ -461,7 +505,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .unwrap();
     assert_eq!(http_message["message_state"], "DELIVERED");
     let message_id = http_message["message_id"].as_str().unwrap();
-    let response = http_call(&app, "GET", "/ai-phone/sent", Some(&token_a), None).await;
+    let response = http_call(&app, "GET", "/ai-phone/sent", Some(&sender_token), None).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::OK,
@@ -822,6 +866,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         axum::http::StatusCode::NOT_FOUND,
         "first AI cannot read the second AI's mailbox"
     );
+    let second_pair_grant = http_call(
+        &app, "POST", "/ai-phone/pair/grant", Some(&token_a),
+        Some(serde_json::json!({"recipient_ai_phone_id":second_phone}))
+    ).await;
+    assert_eq!(second_pair_grant.status(), axum::http::StatusCode::OK,
+        "AI #1 explicitly grants one-way delivery to AI #2");
     let second_endpoint_credential = format!("second-ai-endpoint-{}", Uuid::new_v4());
     seed_endpoint_credential(
         &pool,
@@ -1032,17 +1082,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "tenant B cannot send to tenant A phone"
     );
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_c),
-        Some(serde_json::json!({"idempotency_key":"tenant-b-own-message","content":{"text":"tenant B own message"}}))).await;
+        Some(serde_json::json!({"idempotency_key":"tenant-b-self-send","content":{"text":"self-send must be rejected"}}))).await;
     assert_eq!(
         response.status(),
-        axum::http::StatusCode::CREATED,
-        "tenant B can send to its own phone"
+        axum::http::StatusCode::FORBIDDEN,
+        "tenant B cannot self-pair a phone; a distinct sender and explicit directional grant are required"
     );
-    let bytes = axum::body::to_bytes(response.into_body(), 100_000)
-        .await
-        .unwrap();
-    let foreign_message: Value = serde_json::from_slice(&bytes).unwrap();
-    let foreign_message_id = foreign_message["message_id"].as_str().unwrap().to_string();
     let response = http_call_endpoint(
         &app,
         "GET",
@@ -1056,20 +1101,6 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         response.status(),
         axum::http::StatusCode::OK,
         "tenant B can read its own inbox with its endpoint credential"
-    );
-    let response = http_call_endpoint(
-        &app,
-        "POST",
-        &format!("/ai-phone/{foreign_phone}/messages/{foreign_message_id}/ack"),
-        &token_a,
-        &endpoint_a_credential,
-        None,
-    )
-    .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::NOT_FOUND,
-        "authenticated tenant A endpoint cannot address tenant B message"
     );
     let response = http_call_endpoint(
         &app,
@@ -1562,7 +1593,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
     let message_id = Uuid::new_v4();
     sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7)")
-        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence)
+        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal).bind(ai_id).bind(next_sequence)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     let state: String =
         sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
@@ -1573,11 +1604,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(state, "PENDING");
 
     let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence+1)
+        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal).bind(ai_id).bind(next_sequence+1)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     assert_eq!(duplicate.rows_affected(), 0);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key='offline-msg-1'")
-        .bind(first.phone.ai_phone_id).bind(sender).fetch_one(&pool).await.unwrap();
+        .bind(first.phone.ai_phone_id).bind(sender_principal).fetch_one(&pool).await.unwrap();
     assert_eq!(count, 1);
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
@@ -1644,8 +1675,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .collect();
     assert_eq!(
         sequences,
-        vec![1, 2, next_sequence],
-        "inbox is returned in per-phone sequence order"
+        vec![1, next_sequence],
+        "inbox preserves per-phone sequence order while excluding the previously ACKed sequence 2"
     );
     let response = http_call_endpoint(
         &app,
@@ -1696,14 +1727,14 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
             &app,
             "POST",
             &concurrent_uri,
-            Some(&token_b),
+            Some(&sender_token),
             Some(concurrent_body.clone())
         ),
         http_call(
             &app,
             "POST",
             &concurrent_uri,
-            Some(&token_b),
+            Some(&sender_token),
             Some(concurrent_body.clone())
         )
     );
@@ -1728,7 +1759,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     );
     let concurrent_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-message-key'"
-    ).bind(first.phone.ai_phone_id).bind(tenant).bind(principal)
+    ).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal)
       .fetch_one(&pool).await.unwrap();
     assert_eq!(
         concurrent_count, 1,
@@ -1870,6 +1901,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool)
         .await
         .unwrap();
+    // Remove directional grants before deleting either phone: pair grants intentionally retain FK references.
+    sqlx::query("DELETE FROM phone_pair_grants WHERE tenant_id=$1 AND (sender_ai_phone_id=$2 OR recipient_ai_phone_id=$2)")
+        .bind(tenant)
+        .bind(second_phone)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1")
         .bind(second_phone)
         .execute(&pool)
@@ -1954,6 +1992,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool)
         .await
         .unwrap();
+    // Remove directional grants before deleting the recipient phone as well.
+    sqlx::query("DELETE FROM phone_pair_grants WHERE tenant_id=$1 AND (sender_ai_phone_id=$2 OR recipient_ai_phone_id=$2)")
+        .bind(tenant)
+        .bind(first.phone.ai_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1")
         .bind(first.phone.ai_phone_id)
         .execute(&pool)
@@ -1972,6 +2017,68 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .unwrap();
     sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1")
         .bind(ai_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // The sender phone was provisioned separately for the directional-message test.
+    // Its AI identity mapping must outlive the phone, so remove all phone-scoped dependents first.
+    sqlx::query("DELETE FROM phone_endpoint_credentials WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_endpoints WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_pair_grants WHERE tenant_id=$1 AND (sender_ai_phone_id=$2 OR recipient_ai_phone_id=$2)")
+        .bind(tenant)
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2")
+        .bind(sender_ai_id)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1 AND tenant_id=$2")
+        .bind(sender_ai_id)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1")
+        .bind(sender_ai_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Remove any remaining tenant-scoped identity mappings after every phone has been deleted.
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1")
+        .bind(tenant)
         .execute(&pool)
         .await
         .unwrap();
