@@ -105,7 +105,7 @@ jobs:
       - name: Check independent service
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Run service unit and PostgreSQL integration tests
-        run: cargo test --manifest-path services/ai-team-room/Cargo.toml
+        run: cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output
 
   keycloak-oidc-smoke:
     runs-on: ubuntu-latest
