@@ -84,12 +84,16 @@ test("rejects ciphertext tampering and message-ID substitution", async () => {
     await store.commit(id, { output: "authenticated" });
     const file = path.join(directory, id + ".json");
     const record = JSON.parse(await readFile(file, "utf8"));
+    const originalEncrypted = { ...record.encrypted };
+    await assert.rejects(
+      () => store.decrypt("40000000-0000-4000-8000-000000000004", originalEncrypted),
+      /authentication failed/
+    );
     const bytes = Buffer.from(record.encrypted.ciphertext, "base64");
     bytes[0] ^= 0x01;
     record.encrypted.ciphertext = bytes.toString("base64");
     await writeFile(file, JSON.stringify(record));
     await assert.rejects(() => store.get(id), /authentication failed/);
-    await assert.rejects(() => store.decrypt("40000000-0000-4000-8000-000000000004", record.encrypted), /authentication failed/);
   });
 });
 
