@@ -38,7 +38,7 @@ test("rejects oversized envelopes, excessive nesting and oversized collections",
 
   const deep = valid();
   let cursor = deep.content.payload;
-  for (let i = 0; i < 14; i++) cursor.child = {};
+  for (let i = 0; i < 14; i++) { cursor.child = {}; cursor = cursor.child; }
   assert.throws(() => validatePhoneMissionEnvelope(deep), e => e.code === "PAYLOAD_TOO_DEEP");
 
   const wide = valid();
