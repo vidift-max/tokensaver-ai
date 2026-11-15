@@ -1,0 +1,34 @@
+/**
+ * Production dependency wiring for the Phone-02 mailbox worker.
+ *
+ * The AI executor is intentionally injected: this repository does not yet
+ * provide a verified external AI-provider adapter. No placeholder executor
+ * is created, and missing runtime configuration fails closed.
+ */
+import { PhoneRuntimeClient } from "./phone-runtime-client.mjs";
+import { FilePhoneResultStore } from "./phone-result-store.mjs";
+import { TeamRoomPhoneMissionAuthorizer } from "./phone-mission-authorizer.mjs";
+import { PhoneRuntimeWorker } from "./phone-runtime-worker.mjs";
+
+export async function createPhoneRuntimeWorker({
+  env = process.env,
+  executor,
+  signal,
+  fetchImpl = globalThis.fetch,
+  teamRoomClient,
+  resultStore
+} = {}) {
+  if (!executor || typeof executor.execute !== "function") {
+    const error = new Error("A real, explicitly configured AI executor is required; no default executor is available");
+    error.code = "EXECUTOR_REQUIRED";
+    throw error;
+  }
+  const client = new PhoneRuntimeClient(env, fetchImpl);
+  const authorizer = new TeamRoomPhoneMissionAuthorizer({
+    ...(teamRoomClient ? { teamRoomClient } : {}),
+    authorizedSenderPrincipalId: env.TEAM_ROOM_AUTHORIZED_SENDER_PRINCIPAL_ID
+  });
+  const store = resultStore || new FilePhoneResultStore(env.AI_PHONE_RESULT_DIRECTORY || "");
+  await store.initialize();
+  return new PhoneRuntimeWorker({ client, executor, resultStore: store, authorizer, signal });
+}
