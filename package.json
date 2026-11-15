@@ -15,12 +15,14 @@
     "test": "npm run test:missions && npm run test:phone-runtime && npm run test:phone-worker && npm run test:phone-store",
     "test:phone-envelope": "node --test tests/phone-mission-envelope.test.mjs",
     "test:phone-authorizer": "node --test tests/phone-mission-authorizer.test.mjs",
-    "test:phone-bootstrap": "node --test tests/create-phone-runtime-worker.test.mjs"
+    "test:phone-bootstrap": "node --test tests/create-phone-runtime-worker.test.mjs",
+    "test:phone-key-provider": "node --test tests/phone-key-provider.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@napi-rs/keyring": "^2.1.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
