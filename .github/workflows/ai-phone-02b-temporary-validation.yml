@@ -1,0 +1,193 @@
+name: AI-PHONE-02B Temporary Isolated Validation
+
+# Temporary validation only. The push trigger is restricted to this dedicated branch.
+on:
+  push:
+    branches:
+      - validation/phone-02b-p2-61-isolated
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone-02b-p2-61-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  phone-02b-validation:
+    name: Validate immutable Phone-02B target in disposable PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ubuntu:24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tokensaver_ci
+          POSTGRES_PASSWORD: disposable-ci-only-p2-61
+          POSTGRES_DB: phone_02b_validation
+        options: >-
+          --health-cmd "pg_isready -U tokensaver_ci -d phone_02b_validation"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://tokensaver_ci:disposable-ci-only-p2-61@postgres:5432/phone_02b_validation
+      PHONE_02B_TARGET_SHA: c9abe2d65cb2139a8136bc2a59f86f91a5382bd1
+      HARNESS_SOURCE_COMMIT: 884b0944d123ccaeae6e03391e5149b0167ec128
+      HARNESS_SOURCE_BLOB: 1cf9e7543dd6cf154b824a70995a2583feead5e8
+      HARNESS_SOURCE_PATH: services/ai-team-room/tests/ai_phone_legacy_migration.sh
+      WORKFLOW_PATH: .github/workflows/ai-phone-02b-temporary-validation.yml
+    steps:
+      - name: Install runner-container prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git curl build-essential pkg-config libssl-dev postgresql-client
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout exact Phone-02B target
+        uses: actions/checkout@v4
+        with:
+          ref: c9abe2d65cb2139a8136bc2a59f86f91a5382bd1
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify and record separated provenance SHAs
+        id: provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVENT_SHA="${GITHUB_SHA:?missing workflow event SHA}"
+          TARGET_HEAD="$(git rev-parse HEAD)"
+          test "$TARGET_HEAD" = "$PHONE_02B_TARGET_SHA"
+          test "$(git rev-parse "$EVENT_SHA:$WORKFLOW_PATH")"
+          WORKFLOW_FILE_BLOB="$(git rev-parse "$EVENT_SHA:$WORKFLOW_PATH")"
+          [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$WORKFLOW_FILE_BLOB" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$HARNESS_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$HARNESS_SOURCE_BLOB" =~ ^[a-f0-9]{40}$ ]]
+          mkdir -p validation-evidence
+          {
+            echo "WORKFLOW_EVENT_COMMIT_SHA=$EVENT_SHA"
+            echo "PHONE_02B_TARGET_SHA=$TARGET_HEAD"
+            echo "HARNESS_SOURCE_COMMIT_SHA=$HARNESS_SOURCE_COMMIT"
+            echo "HARNESS_SOURCE_BLOB_SHA=$HARNESS_SOURCE_BLOB"
+            echo "WORKFLOW_COMMIT_SHA=$EVENT_SHA"
+            echo "WORKFLOW_FILE_BLOB_SHA=$WORKFLOW_FILE_BLOB"
+            echo "WORKFLOW_PATH=$WORKFLOW_PATH"
+            echo "GITHUB_REF=$GITHUB_REF"
+            echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+            echo "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+          } | tee validation-evidence/provenance.txt
+
+      - name: Install Rust stable with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Verify disposable PostgreSQL endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT current_database(), current_user, current_setting('server_version_num');" | tee validation-evidence/postgres-version.txt
+
+      - name: Fetch and verify immutable historical migration harness
+        uses: actions/checkout@v4
+        with:
+          ref: 884b0944d123ccaeae6e03391e5149b0167ec128
+          path: .validation/harness-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify historical harness commit and blob; stage transiently
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_commit="$(git -C .validation/harness-source rev-parse HEAD)"
+          test "$actual_commit" = "$HARNESS_SOURCE_COMMIT"
+          actual_blob="$(git -C .validation/harness-source rev-parse "HEAD:$HARNESS_SOURCE_PATH")"
+          test "$actual_blob" = "$HARNESS_SOURCE_BLOB"
+          install -D -m 0700 ".validation/harness-source/$HARNESS_SOURCE_PATH" "$HARNESS_SOURCE_PATH"
+          test "$(git hash-object "$HARNESS_SOURCE_PATH")" = "$HARNESS_SOURCE_BLOB"
+          {
+            echo "HARNESS_COMMIT_VERIFIED=$actual_commit"
+            echo "HARNESS_BLOB_VERIFIED=$actual_blob"
+            echo "HARNESS_STAGED_PATH=$HARNESS_SOURCE_PATH"
+            echo "HARNESS_STAGING=TRANSIENT_UNTRACKED_FILE"
+          } | tee validation-evidence/harness-provenance.txt
+
+      - name: Rust formatting gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check 2>&1 | tee validation-evidence/cargo-fmt.log
+
+      - name: Cargo check gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path services/ai-team-room/Cargo.toml 2>&1 | tee validation-evidence/cargo-check.log
+
+      - name: Phone-02B PostgreSQL integration test — phone_postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml --test phone_postgres -- --nocapture 2>&1 | tee validation-evidence/phone-postgres.log
+
+      - name: Phone-02B PostgreSQL integration test — phone_02_postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml --test phone_02_postgres -- --nocapture 2>&1 | tee validation-evidence/phone-02-postgres.log
+
+      - name: Historical legacy migration harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$HARNESS_SOURCE_PATH" 2>&1 | tee validation-evidence/legacy-migration-harness.log
+        # Harness creates and drops only per-run databases inside the job-scoped PostgreSQL service.
+
+      - name: Build final evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "WORKFLOW_EVENT_COMMIT_SHA=$GITHUB_SHA"
+            echo "PHONE_02B_TARGET_SHA=$PHONE_02B_TARGET_SHA"
+            echo "HARNESS_SOURCE_COMMIT_SHA=$HARNESS_SOURCE_COMMIT"
+            echo "HARNESS_SOURCE_BLOB_SHA=$HARNESS_SOURCE_BLOB"
+            echo "WORKFLOW_COMMIT_SHA=$GITHUB_SHA"
+            if git cat-file -e "$GITHUB_SHA:$WORKFLOW_PATH" 2>/dev/null; then
+              echo "WORKFLOW_FILE_BLOB_SHA=$(git rev-parse "$GITHUB_SHA:$WORKFLOW_PATH")"
+            else
+              echo "WORKFLOW_FILE_BLOB_SHA=UNAVAILABLE"
+              exit 1
+            fi
+            echo "CHECKED_OUT_HEAD=$(git rev-parse HEAD)"
+            echo "TRACKED_WORKTREE_STATUS_BEGIN"
+            git status --short
+            echo "TRACKED_WORKTREE_STATUS_END"
+            echo "TRACKED_DIFF_STAT_BEGIN"
+            git diff --stat
+            echo "TRACKED_DIFF_STAT_END"
+            echo "DATABASE_URL_HOST=postgres"
+            echo "POSTGRES_SERVICE_PORT_PUBLISHED=false"
+            echo "PRODUCTION_DATABASE_ACCESS=false"
+            echo "PERMANENT_CREDENTIALS_USED=false"
+            echo "PHYSICAL_PHONE_CONNECTIONS=false"
+          } | tee validation-evidence/final-manifest.txt
+          (cd validation-evidence && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          (cd validation-evidence && sha256sum --check SHA256SUMS)
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-02b-p2-61-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: validation-evidence/
+          if-no-files-found: warn
+          retention-days: 7
