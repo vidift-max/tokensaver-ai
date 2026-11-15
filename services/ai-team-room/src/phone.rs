@@ -997,6 +997,7 @@ async fn transfer_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(r
 
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdentityProvisionRequest {
     pub identity_key: String,
     pub identity_kind: String,
@@ -1034,12 +1035,13 @@ pub async fn provision_ai_identity(
     sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,$3,$4) ON CONFLICT(identity_key) DO NOTHING")
         .bind(Uuid::new_v4()).bind(&request.identity_key).bind(&request.identity_kind).bind(&request.display_label)
         .execute(&mut *tx).await?;
-    let existing: (Uuid,String,String) = sqlx::query_as(
-        "SELECT ai_id,identity_kind,display_label FROM ai_identities WHERE identity_key=$1 FOR UPDATE"
+    let existing: (Uuid,String,String,String) = sqlx::query_as(
+        "SELECT ai_id,identity_kind,display_label,identity_status FROM ai_identities WHERE identity_key=$1 FOR UPDATE"
     ).bind(&request.identity_key).fetch_one(&mut *tx).await?;
     if existing.1 != request.identity_kind || existing.2 != request.display_label {
         return Err(PhoneError::Conflict);
     }
+    if existing.3 != "ACTIVE" { return Err(PhoneError::Forbidden); }
     sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(existing.0).bind(request.tenant_id).bind(request.principal_id)
         .execute(&mut *tx).await?;
@@ -1059,33 +1061,34 @@ pub async fn provision_ai_identity(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PhoneProvisionRequest { pub principal_id: Uuid }
+#[serde(deny_unknown_fields)]
+pub struct PhoneProvisionRequest {}
 
-pub async fn provision_phone(pool: &PgPool, caller: &AuthenticatedIdentity, request: PhoneProvisionRequest)
+pub async fn provision_phone(pool: &PgPool, caller: &AuthenticatedIdentity)
     -> Result<(PhoneRecord, bool), PhoneError> {
     require_permission(pool, caller, "phone.provision").await.map_err(|_| PhoneError::Forbidden)?;
     let mut tx = pool.begin().await?;
     validate_live_binding(&mut tx, caller).await?;
     let ai_id: Uuid = sqlx::query_scalar(
-        "SELECT ip.ai_id FROM ai_identity_principals ip JOIN principals p ON p.tenant_id=ip.tenant_id AND p.principal_id=ip.principal_id WHERE ip.tenant_id=$1 AND ip.principal_id=$2 AND p.principal_kind='AI' AND p.enabled=TRUE FOR UPDATE OF ip"
-    ).bind(caller.tenant_id).bind(request.principal_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?;
+        SELECT ip.ai_id FROM ai_identity_principals ip JOIN principals p ON p.tenant_id=ip.tenant_id AND p.principal_id=ip.principal_id JOIN ai_identities i ON i.ai_id=ip.ai_id AND i.identity_status='ACTIVE' WHERE ip.tenant_id=$1 AND ip.principal_id=$2 AND ip.binding_status='ACTIVE' AND p.principal_kind='AI' AND p.enabled=TRUE FOR UPDATE OF ip
+    ).bind(caller.tenant_id).bind(caller.principal_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?;
     let inserted = sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,ai_id) DO NOTHING")
         .bind(Uuid::new_v4()).bind(ai_id).bind(caller.tenant_id).execute(&mut *tx).await?.rows_affected() == 1;
     let phone = sqlx::query_as::<_, PhoneRecord>(
-        "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 FOR UPDATE"
-    ).bind(caller.tenant_id).bind(ai_id).fetch_one(&mut *tx).await?;
+        SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 AND phone_status<>'REVOKED' FOR UPDATE
+    ).bind(caller.tenant_id).bind(ai_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::Conflict)?;
     if inserted {
         record_phone_event(&mut tx, caller, phone.ai_phone_id, "PHONE_PROVISIONED", "phone.provisioned",
-            serde_json::json!({"target_principal_id":request.principal_id})).await?;
+            serde_json::json!({"target_principal_id":caller.principal_id})).await?;
     }
     tx.commit().await?;
     Ok((phone, inserted))
 }
 
-async fn provision_phone_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(request): Json<PhoneProvisionRequest>)
+async fn provision_phone_handler(State(pool): State<PgPool>, headers: HeaderMap, Json(_request): Json<PhoneProvisionRequest>)
     -> Result<(StatusCode, Json<PhoneRecord>), StatusCode> {
     let caller = authenticate_session(&pool, &headers).await.map_err(|_| StatusCode::UNAUTHORIZED)?;
-    provision_phone(&pool, &caller, request).await
+    provision_phone(&pool, &caller).await
         .map(|(phone, created)| (if created { StatusCode::CREATED } else { StatusCode::OK }, Json(phone)))
         .map_err(|error| match error {
             PhoneError::NotFound => StatusCode::NOT_FOUND, PhoneError::Forbidden => StatusCode::FORBIDDEN,
