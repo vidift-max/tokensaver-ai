@@ -760,7 +760,7 @@ pub async fn grant_pair(
     if source.ai_phone_id == destination_ai_phone_id || source.phone_status == "REVOKED" {
         return Err(PhoneError::Invalid);
     }
-    if expires_at.is_some_and(|expiry| expiry <= Utc::now()) {
+    if expires_at.as_ref().is_some_and(|expiry| expiry <= &Utc::now()) {
         return Err(PhoneError::Invalid);
     }
     let source_binding_version: i64 = sqlx::query_scalar(
