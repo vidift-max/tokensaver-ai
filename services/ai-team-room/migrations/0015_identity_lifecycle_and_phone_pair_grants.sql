@@ -75,6 +75,13 @@ BEGIN
     NEW.binding_version:=OLD.binding_version+1;
     INSERT INTO ai_identity_binding_events(binding_event_id,ai_id,tenant_id,principal_id,binding_version,event_type,actor_principal_id,reason)
     VALUES(gen_random_uuid(),OLD.ai_id,OLD.tenant_id,OLD.principal_id,NEW.binding_version,'REVOKED',NEW.revoked_by_principal_id,NEW.revocation_reason);
+    UPDATE phone_pair_grants SET grant_status='REVOKED',revoked_at=NOW(),
+      revoked_by_principal_id=NEW.revoked_by_principal_id,revocation_reason='identity binding revoked: '||NEW.revocation_reason
+      WHERE tenant_id=OLD.tenant_id AND grant_status='ACTIVE'
+        AND (source_principal_id=OLD.principal_id OR destination_principal_id=OLD.principal_id);
+    UPDATE ai_phones SET phone_status='REVOKED',revoked_at=NOW(),
+      revoked_by_principal_id=NEW.revoked_by_principal_id,revocation_reason='identity binding revoked: '||NEW.revocation_reason
+      WHERE ai_id=OLD.ai_id AND tenant_id=OLD.tenant_id AND phone_status<>'REVOKED';
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
@@ -93,6 +100,20 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER ai_identity_binding_insert_audit
 AFTER INSERT ON ai_identity_principals
 FOR EACH ROW EXECUTE FUNCTION record_ai_identity_binding_insert();
+
+CREATE FUNCTION revoke_ai_binding_when_principal_disabled() RETURNS TRIGGER AS $
+BEGIN
+  IF OLD.enabled=TRUE AND NEW.enabled=FALSE THEN
+    UPDATE ai_identity_principals
+       SET binding_status='REVOKED',revoked_at=NOW(),revocation_reason='principal disabled'
+     WHERE tenant_id=NEW.tenant_id AND principal_id=NEW.principal_id AND binding_status='ACTIVE';
+  END IF;
+  RETURN NEW;
+END $ LANGUAGE plpgsql;
+
+CREATE TRIGGER principal_disable_revokes_ai_phone
+AFTER UPDATE OF enabled ON principals
+FOR EACH ROW EXECUTE FUNCTION revoke_ai_binding_when_principal_disabled();
 
 CREATE FUNCTION enforce_ai_identity_retirement() RETURNS TRIGGER AS $$
 BEGIN
