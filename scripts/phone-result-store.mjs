@@ -1,4 +1,4 @@
-import { open, link, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { chmod, lstat, open, link, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -25,6 +25,7 @@ export class FilePhoneResultStore {
   async initialize() {
     if (this.initialized) return this;
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") await chmod(this.directory, 0o700);
     const resolved = await realpath(this.directory);
     const info = await stat(resolved);
     if (!info.isDirectory()) throw new Error("Result store path is not a directory");
@@ -42,6 +43,13 @@ export class FilePhoneResultStore {
     await this.initialize();
     const file = this.filePath(messageId);
     let raw;
+    try {
+      const metadata = await lstat(file);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("Result record must be a regular file");
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
     try {
       raw = await readFile(file, "utf8");
     } catch (error) {
