@@ -11,6 +11,7 @@ on:
       - v2-saas-alpha
       - fix/phone-message-inbox-ack-filter
       - security/phone-02-mission-authorization
+      - security/phone-02-encrypted-result-store
   pull_request:
     branches:
       - v2-saas-alpha
