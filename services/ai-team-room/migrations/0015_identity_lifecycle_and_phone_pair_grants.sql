@@ -332,9 +332,9 @@ BEGIN
     JOIN ai_identity_principals dip ON dip.ai_id=d.ai_id AND dip.tenant_id=d.tenant_id AND dip.principal_id=NEW.destination_principal_id AND dip.binding_status='ACTIVE'
     JOIN rooms r ON r.room_id=NEW.room_id AND r.tenant_id=NEW.tenant_id AND r.status='ACTIVE'
     JOIN room_memberships sm ON sm.room_id=r.room_id AND sm.tenant_id=r.tenant_id AND sm.principal_id=NEW.source_principal_id AND sm.status='ACTIVE'
-    JOIN sessions ss ON ss.session_id=sm.session_id AND ss.status='ACTIVE' AND ss.revoked_at IS NULL AND ss.expires_at>NOW()
+    JOIN sessions ss ON ss.session_id=sm.session_id AND ss.tenant_id=sm.tenant_id AND ss.room_id=sm.room_id AND ss.principal_id=sm.principal_id AND ss.status='ACTIVE' AND ss.revoked_at IS NULL AND ss.expires_at>NOW()
     JOIN room_memberships dm ON dm.room_id=r.room_id AND dm.tenant_id=r.tenant_id AND dm.principal_id=NEW.destination_principal_id AND dm.status='ACTIVE'
-    JOIN sessions ds ON ds.session_id=dm.session_id AND ds.status='ACTIVE' AND ds.revoked_at IS NULL AND ds.expires_at>NOW()
+    JOIN sessions ds ON ds.session_id=dm.session_id AND ds.tenant_id=dm.tenant_id AND ds.room_id=dm.room_id AND ds.principal_id=dm.principal_id AND ds.status='ACTIVE' AND ds.revoked_at IS NULL AND ds.expires_at>NOW()
     WHERE s.ai_phone_id=NEW.source_ai_phone_id AND s.tenant_id=NEW.tenant_id AND s.phone_status<>'REVOKED'
       AND d.phone_status<>'REVOKED' AND sip.binding_version=NEW.source_binding_version AND dip.binding_version=NEW.destination_binding_version
   ) THEN
