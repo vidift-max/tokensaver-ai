@@ -120,7 +120,7 @@ test("fails closed when the key provider or referenced key is unavailable", asyn
       getCurrentKey: async () => ({ keyId: "missing", key: keyA }),
       getKey: async () => undefined
     };
-    await assert.rejects(() => new FilePhoneResultStore(directory, unavailable).get(id), /32 key bytes/);
+    await assert.rejects(() => new FilePhoneResultStore(directory, unavailable).get(id), /32 bytes of key material/);
   });
 });
 
