@@ -656,6 +656,14 @@ mod postgres_tests {
 
         let timestamp_only=request(app,"GET",format!("/team-room/{room}/private/{}/messages?limit=37&before={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
         assert_eq!(timestamp_only.status(),StatusCode::BAD_REQUEST,"legacy timestamp-only private cursor must fail closed");
+        let id_only=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_message_id={}",b.principal,expected[0].1),&a.token,None).await;
+        assert_eq!(id_only.status(),StatusCode::BAD_REQUEST,"message ID without timestamp must fail closed");
+        let time_only=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
+        assert_eq!(time_only.status(),StatusCode::BAD_REQUEST,"timestamp without message ID must fail closed");
+        let malformed_time=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at=not-a-timestamp&before_message_id={}",b.principal,expected[0].1),&a.token,None).await;
+        assert_eq!(malformed_time.status(),StatusCode::BAD_REQUEST,"malformed timestamp must fail closed");
+        let malformed_id=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at={}&before_message_id=not-a-uuid",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
+        assert_eq!(malformed_id.status(),StatusCode::BAD_REQUEST,"malformed message ID must fail closed");
         sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id=$1").bind(channel).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
