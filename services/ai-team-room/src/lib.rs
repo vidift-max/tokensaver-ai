@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod phone;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
