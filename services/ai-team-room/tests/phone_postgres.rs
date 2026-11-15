@@ -2020,8 +2020,63 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool)
         .await
         .unwrap();
-    // This isolated test tenant also owns the sender AI identity mapping created above.
-    // Remove every tenant-scoped identity mapping before deleting the tenant.
+    // The sender phone was provisioned separately for the directional-message test.
+    // Its AI identity mapping must outlive the phone, so remove all phone-scoped dependents first.
+    sqlx::query("DELETE FROM phone_endpoint_credentials WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_attachments WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_endpoints WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_messages WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_mission_links WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM phone_pair_grants WHERE tenant_id=$1 AND (sender_ai_phone_id=$2 OR recipient_ai_phone_id=$2)")
+        .bind(tenant)
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1")
+        .bind(sender_phone_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE ai_id=$1 AND tenant_id=$2")
+        .bind(sender_ai_id)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identity_principals WHERE ai_id=$1 AND tenant_id=$2")
+        .bind(sender_ai_id)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM ai_identities WHERE ai_id=$1")
+        .bind(sender_ai_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Remove any remaining tenant-scoped identity mappings after every phone has been deleted.
     sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1")
         .bind(tenant)
         .execute(&pool)
