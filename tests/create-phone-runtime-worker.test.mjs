@@ -12,7 +12,10 @@ test("runtime bootstrap refuses to invent or omit an AI executor", async () => {
 test("runtime bootstrap fails closed when Phone or Team Room credentials are absent", async () => {
   const executor = { execute: async () => ({}) };
   await assert.rejects(
-    () => createPhoneRuntimeWorker({ env: {}, executor }),
+    () => createPhoneRuntimeWorker({
+      env: { AI_PHONE_RESULT_DIRECTORY: "phone-bootstrap-test-results" },
+      executor
+    }),
     error => error.code === "CONFIG_REQUIRED" || error.code === "AUTHORIZER_CONFIG_REQUIRED"
   );
 });
