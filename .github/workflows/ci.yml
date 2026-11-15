@@ -13,6 +13,7 @@ on:
       - security/phone-02-mission-authorization
       - security/phone-02-encrypted-result-store
       - security/phone-02-os-key-provider
+      - security/phone-02-windows-acl
   pull_request:
     branches:
       - v2-saas-alpha
@@ -48,6 +49,7 @@ jobs:
       - run: npm run test:phone-worker
       - run: npm run test:phone-store
       - run: npm run test:phone-key-provider
+      - run: npm run test:phone-windows-acl
       - run: npm run test:phone-envelope
       - run: npm run test:phone-authorizer
       - run: npm run test:phone-bootstrap
