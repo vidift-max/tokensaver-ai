@@ -1215,8 +1215,30 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     );
     assert!(!String::from_utf8_lossy(&body).contains("endpoint_fence"));
     assert!(!String::from_utf8_lossy(&body).contains("endpoint_credential"));
-    let (status,_) = call(&app,"POST",&phone_2_messages_path,&token_2,
-        Some(serde_json::json!({"idempotency_key":"old-process-ai-send","content":{"text":"AI authority remains separate from endpoint authority"}}))).await;
+    // Give AI #2 its own directional authorization to send to Phone #1.
+    // This proves outbound submission uses AI authority without requiring the
+    // endpoint credential, while preserving the no-self-pair invariant.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/pair/grant",
+        &token_2,
+        Some(serde_json::json!({"recipient_ai_phone_id": phone_1_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "AI #2 can authorize Phone #2 -> Phone #1");
+    let phone_1_messages_path = format!("/ai-phone/{phone_1_id}/messages");
+    let (status, _) = call(
+        &app,
+        "POST",
+        &phone_1_messages_path,
+        &token_2,
+        Some(serde_json::json!({
+            "idempotency_key": "old-process-ai-send",
+            "content": {"text": "AI authority remains separate from endpoint authority"}
+        })),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
