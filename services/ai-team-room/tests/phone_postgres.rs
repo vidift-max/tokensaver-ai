@@ -229,7 +229,49 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         provisioned["ai_phone_id"],
         first.phone.ai_phone_id.to_string()
     );
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    // Model a real directional message: a separate sender AI phone queues
+    // an offline message for the recipient phone under an explicit Pair Grant.
+    let sender_principal = Uuid::new_v4();
+    let sender_participant = Uuid::new_v4();
+    let sender_ai_id = Uuid::new_v4();
+    let sender_subject = format!("test-subject-{sender_principal}");
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','ai-phone-test',$3)")
+        .bind(sender_principal).bind(tenant).bind(&sender_subject).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-TEST-SENDER')")
+        .bind(sender_participant).bind(tenant).bind(sender_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(sender_principal).bind(&sender_subject).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-SENDER')")
+        .bind(sender_ai_id).bind(format!("test:ai-phone:{sender_ai_id}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(sender_ai_id).bind(tenant).bind(sender_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
+        .bind(sender_ai_id).bind(tenant).execute(&pool).await.unwrap();
+    for permission in ["phone.provision", "phone.message.send", "phone.pair.grant"] {
+        grant(&pool, tenant, room, sender_principal, permission).await;
+    }
+    let (sender_session, sender_execution) =
+        add_session(&pool, tenant, room, sender_principal, sender_participant).await;
+    sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(sender_participant).bind(sender_principal).bind(sender_session)
+        .execute(&pool).await.unwrap();
+    let sender_token = bearer_for(&pool, sender_session).await;
+    let sender_provision = http_call(
+        &app, "POST", "/ai-phone/provision", Some(&sender_token),
+        Some(serde_json::json!({"principal_id":sender_principal}))
+    ).await;
+    assert_eq!(sender_provision.status(), axum::http::StatusCode::CREATED);
+    let sender_phone: Value = serde_json::from_slice(
+        &axum::body::to_bytes(sender_provision.into_body(), 100_000).await.unwrap()
+    ).unwrap();
+    let sender_phone_id = Uuid::parse_str(sender_phone["ai_phone_id"].as_str().unwrap()).unwrap();
+    let pair_grant = http_call(
+        &app, "POST", "/ai-phone/pair/grant", Some(&sender_token),
+        Some(serde_json::json!({"recipient_ai_phone_id":first.phone.ai_phone_id}))
+    ).await;
+    assert_eq!(pair_grant.status(), axum::http::StatusCode::OK,
+        "sender explicitly grants one-way delivery to the recipient phone");
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
     assert_eq!(
         response.status(),
