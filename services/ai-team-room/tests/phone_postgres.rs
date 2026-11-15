@@ -1675,8 +1675,8 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .collect();
     assert_eq!(
         sequences,
-        vec![1, 2, next_sequence],
-        "inbox is returned in per-phone sequence order"
+        vec![1, next_sequence],
+        "inbox preserves per-phone sequence order while excluding the previously ACKed sequence 2"
     );
     let response = http_call_endpoint(
         &app,
