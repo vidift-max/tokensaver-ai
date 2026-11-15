@@ -42,6 +42,7 @@ jobs:
       - run: npm install
       - run: npm run test:missions
       - run: npm run test:phone-runtime
+      - run: npm run test:phone-worker
       - run: npm run build
       - name: Package source ZIP
         run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
@@ -84,6 +85,7 @@ jobs:
       - run: npm install
       - run: npm run test:missions
       - run: npm run test:phone-runtime
+      - run: npm run test:phone-worker
       - run: npm run build
 
 
