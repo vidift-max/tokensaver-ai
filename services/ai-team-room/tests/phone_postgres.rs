@@ -423,7 +423,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     );
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":foreign_principal}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNPROCESSABLE_ENTITY,"client principal_id is rejected rather than used to provision a foreign identity");
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":principal}))).await;
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNPROCESSABLE_ENTITY,"client principal_id is rejected rather than used to provision a foreign identity");
 
     let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_a),Some(serde_json::json!({"task_id":foreign_task}))).await;
