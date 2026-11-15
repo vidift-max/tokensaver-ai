@@ -1901,6 +1901,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool)
         .await
         .unwrap();
+    // Remove directional grants before deleting either phone: pair grants intentionally retain FK references.
+    sqlx::query("DELETE FROM phone_pair_grants WHERE tenant_id=$1 AND (sender_ai_phone_id=$2 OR recipient_ai_phone_id=$2)")
+        .bind(tenant)
+        .bind(second_phone)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM ai_phones WHERE ai_phone_id=$1")
         .bind(second_phone)
         .execute(&pool)
