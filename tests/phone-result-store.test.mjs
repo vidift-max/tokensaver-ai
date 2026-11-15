@@ -1,29 +1,51 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FilePhoneResultStore } from "../scripts/phone-result-store.mjs";
 import { PhoneRuntimeWorker } from "../scripts/phone-runtime-worker.mjs";
 
 const id = "30000000-0000-4000-8000-000000000003";
+const keyA = Buffer.alloc(32, 0x41);
+const keyB = Buffer.alloc(32, 0x42);
+
+function makeKeyProvider(keys = { key-a: keyA }) {
+  let currentKeyId = Object.keys(keys)[0];
+  return {
+    setCurrentKey(keyId) { currentKeyId = keyId; },
+    async getCurrentKey() {
+      return { keyId: currentKeyId, key: keys[currentKeyId] };
+    },
+    async getKey(keyId) { return keys[keyId]; }
+  };
+}
+
 async function withStore(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-store-"));
   try {
-    const store = new FilePhoneResultStore(path.join(root, "private-results"));
-    await run(store, path.join(root, "private-results"));
+    const keyProvider = makeKeyProvider();
+    const directory = path.join(root, "private-results");
+    const store = new FilePhoneResultStore(directory, keyProvider);
+    await run(store, directory, keyProvider);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 }
 
-test("commits a result atomically and reads it after reopening", async () => {
-  await withStore(async (store, directory) => {
+test("commits an authenticated encrypted result and reads it after reopening", async () => {
+  await withStore(async (store, directory, keyProvider) => {
     const committed = await store.commit(id, { output: "done" });
     assert.equal(committed.durable, true);
-    assert.deepEqual((await new FilePhoneResultStore(directory).get(id)).result, { output: "done" });
+    assert.deepEqual((await new FilePhoneResultStore(directory, keyProvider).get(id)).result, { output: "done" });
     const files = await readdir(directory);
     assert.deepEqual(files, [id + ".json"]);
+    const raw = await readFile(path.join(directory, id + ".json"), "utf8");
+    assert.equal(raw.includes("done"), false);
+    const record = JSON.parse(raw);
+    assert.equal(record.encrypted.version, 2);
+    assert.equal(record.encrypted.algorithm, "A256GCM");
+    assert.equal(typeof record.encrypted.authTag, "string");
   });
 });
 
@@ -35,7 +57,7 @@ test("first committed result wins and cannot be overwritten", async () => {
   });
 });
 
-test("concurrent commits publish exactly one complete record", async () => {
+test("concurrent commits publish exactly one complete encrypted record", async () => {
   await withStore(async store => {
     const results = await Promise.all([
       store.commit(id, { writer: "a" }),
@@ -47,13 +69,54 @@ test("concurrent commits publish exactly one complete record", async () => {
   });
 });
 
-test("rejects malformed IDs and detects corrupted records", async () => {
+test("rejects malformed IDs and detects corrupt or plaintext records", async () => {
   await withStore(async (store, directory) => {
     await assert.rejects(() => store.get("../escape"), /Invalid message UUID/);
     await store.initialize();
     const file = path.join(directory, id + ".json");
-    await import("node:fs/promises").then(fs => fs.writeFile(file, "{broken"));
-    await assert.rejects(() => store.get(id), SyntaxError);
+    await writeFile(file, JSON.stringify({ version: 1, messageId: id, result: { secret: "plaintext" } }));
+    await assert.rejects(() => store.get(id), /plaintext|Corrupt/);
+  });
+});
+
+test("rejects ciphertext tampering and message-ID substitution", async () => {
+  await withStore(async (store, directory) => {
+    await store.commit(id, { output: "authenticated" });
+    const file = path.join(directory, id + ".json");
+    const record = JSON.parse(await readFile(file, "utf8"));
+    const bytes = Buffer.from(record.encrypted.ciphertext, "base64");
+    bytes[0] ^= 0x01;
+    record.encrypted.ciphertext = bytes.toString("base64");
+    await writeFile(file, JSON.stringify(record));
+    await assert.rejects(() => store.get(id), /authentication failed/);
+    await assert.rejects(() => store.decrypt("40000000-0000-4000-8000-000000000004", record.encrypted), /authentication failed/);
+  });
+});
+
+test("supports key rotation while retaining access to records encrypted with old keys", async () => {
+  await withStore(async (store, directory, keyProvider) => {
+    await store.commit(id, { generation: "old-key" });
+    keyProvider.setCurrentKey("key-b");
+    const nextId = "40000000-0000-4000-8000-000000000004";
+    await store.commit(nextId, { generation: "new-key" });
+    const reopened = new FilePhoneResultStore(directory, keyProvider);
+    assert.deepEqual((await reopened.get(id)).result, { generation: "old-key" });
+    assert.deepEqual((await reopened.get(nextId)).result, { generation: "new-key" });
+  });
+});
+
+test("fails closed when the key provider or referenced key is unavailable", async () => {
+  await assert.rejects(
+    async () => new FilePhoneResultStore("/tmp/not-created", undefined),
+    error => error.code === "RESULT_KEY_PROVIDER_REQUIRED"
+  );
+  await withStore(async (store, directory) => {
+    await store.commit(id, { protected: true });
+    const unavailable = {
+      getCurrentKey: async () => ({ keyId: "missing", key: keyA }),
+      getKey: async () => undefined
+    };
+    await assert.rejects(() => new FilePhoneResultStore(directory, unavailable).get(id), /32 key bytes/);
   });
 });
 
@@ -66,7 +129,7 @@ test("creates a private directory and file on POSIX", async () => {
   });
 });
 
-test("worker restart reuses the real durable store after ACK failure", async () => {
+test("worker restart reuses the encrypted durable store after ACK failure", async () => {
   await withStore(async store => {
     let executions = 0;
     let failAck = true;
