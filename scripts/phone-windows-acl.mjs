@@ -71,7 +71,6 @@ export function secureWindowsResultDirectory(directory, options = {}) {
       "-NoLogo",
       "-NoProfile",
       "-NonInteractive",
-      "-ExecutionPolicy", "AllSigned",
       "-EncodedCommand", encoded
     ], {
       encoding: "utf8",
