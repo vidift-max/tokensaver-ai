@@ -177,3 +177,44 @@ test("worker restart reuses the encrypted durable store after ACK failure", asyn
     assert.equal(outcomes[0].state, "ACKNOWLEDGED");
   });
 });
+
+
+test("rejects altered key identifiers, malformed base64, and corrupted JSON records", async () => {
+  await withStore(async (store, directory) => {
+    await store.commit(id, { output: "integrity" });
+    const file = path.join(directory, id + ".json");
+    const original = JSON.parse(await readFile(file, "utf8"));
+
+    const alteredKey = structuredClone(original);
+    alteredKey.encrypted.keyId = "unknown-key";
+    await writeFile(file, JSON.stringify(alteredKey));
+    await assert.rejects(() => store.get(id), /32 bytes of key material/);
+
+    const invalidNonce = structuredClone(original);
+    invalidNonce.encrypted.nonce = "%%%";
+    await writeFile(file, JSON.stringify(invalidNonce));
+    await assert.rejects(() => store.get(id), /Invalid encrypted result nonce/);
+
+    const invalidTag = structuredClone(original);
+    invalidTag.encrypted.authTag = "AAAA";
+    await writeFile(file, JSON.stringify(invalidTag));
+    await assert.rejects(() => store.get(id), /Invalid encrypted result authentication tag/);
+
+    await writeFile(file, "{broken-json");
+    await assert.rejects(() => store.get(id), SyntaxError);
+  });
+});
+
+test("rejects authentication-tag tampering and ciphertext substitution", async () => {
+  await withStore(async (store, directory) => {
+    await store.commit(id, { output: "must remain authentic" });
+    const file = path.join(directory, id + ".json");
+    const original = JSON.parse(await readFile(file, "utf8"));
+    const tampered = structuredClone(original);
+    const tag = Buffer.from(tampered.encrypted.authTag, "base64");
+    tag[0] ^= 0x80;
+    tampered.encrypted.authTag = tag.toString("base64");
+    await writeFile(file, JSON.stringify(tampered));
+    await assert.rejects(() => store.get(id), /authentication failed/);
+  });
+});
