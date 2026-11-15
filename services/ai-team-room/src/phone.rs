@@ -1070,12 +1070,12 @@ pub async fn provision_phone(pool: &PgPool, caller: &AuthenticatedIdentity)
     let mut tx = pool.begin().await?;
     validate_live_binding(&mut tx, caller).await?;
     let ai_id: Uuid = sqlx::query_scalar(
-        SELECT ip.ai_id FROM ai_identity_principals ip JOIN principals p ON p.tenant_id=ip.tenant_id AND p.principal_id=ip.principal_id JOIN ai_identities i ON i.ai_id=ip.ai_id AND i.identity_status='ACTIVE' WHERE ip.tenant_id=$1 AND ip.principal_id=$2 AND ip.binding_status='ACTIVE' AND p.principal_kind='AI' AND p.enabled=TRUE FOR UPDATE OF ip
+        "SELECT ip.ai_id FROM ai_identity_principals ip JOIN principals p ON p.tenant_id=ip.tenant_id AND p.principal_id=ip.principal_id JOIN ai_identities i ON i.ai_id=ip.ai_id AND i.identity_status='ACTIVE' WHERE ip.tenant_id=$1 AND ip.principal_id=$2 AND ip.binding_status='ACTIVE' AND p.principal_kind='AI' AND p.enabled=TRUE FOR UPDATE OF ip"
     ).bind(caller.tenant_id).bind(caller.principal_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?;
     let inserted = sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3) ON CONFLICT(tenant_id,ai_id) DO NOTHING")
         .bind(Uuid::new_v4()).bind(ai_id).bind(caller.tenant_id).execute(&mut *tx).await?.rows_affected() == 1;
     let phone = sqlx::query_as::<_, PhoneRecord>(
-        SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 AND phone_status<>'REVOKED' FOR UPDATE
+        "SELECT ai_phone_id,ai_id,phone_status,version,endpoint_fence,current_mission_id,current_task_id,last_seen_at,created_at,updated_at FROM ai_phones WHERE tenant_id=$1 AND ai_id=$2 AND phone_status<>'REVOKED' FOR UPDATE"
     ).bind(caller.tenant_id).bind(ai_id).fetch_optional(&mut *tx).await?.ok_or(PhoneError::Conflict)?;
     if inserted {
         record_phone_event(&mut tx, caller, phone.ai_phone_id, "PHONE_PROVISIONED", "phone.provisioned",
