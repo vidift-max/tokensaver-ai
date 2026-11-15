@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout immutable AI-PHONE-02 TARGET
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ebb8eeecfea087443c5f3eba7021e96cb5302fe7
           fetch-depth: 1
@@ -78,9 +78,7 @@ jobs:
           test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
           test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
           test "$SERVICE_INSPECTED_IMAGE_ID" = "$SERVICE_IMAGE_ID"
-          if [[ "$SERVICE_REPO_DIGESTS" != "[]" ]]; then
-            printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
-          fi
+          printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
 
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
           test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
