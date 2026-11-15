@@ -36,9 +36,12 @@ export async function createPhoneRuntimeWorker({
     authorizedSenderPrincipalId: env.TEAM_ROOM_AUTHORIZED_SENDER_PRINCIPAL_ID
   });
 
-  if (!resultStore || typeof resultStore.initialize !== "function" ||
-      typeof resultStore.get !== "function" || typeof resultStore.commit !== "function") {
-    const error = new Error("An explicitly configured encrypted result store with a secure key provider is required");
+  const configuredResultStore = resultStore || (env.AI_PHONE_RESULT_DIRECTORY
+    ? await createOsBackedPhoneResultStore(env.AI_PHONE_RESULT_DIRECTORY, keyringOptions)
+    : null);
+  if (!configuredResultStore || typeof configuredResultStore.initialize !== "function" ||
+      typeof configuredResultStore.get !== "function" || typeof configuredResultStore.commit !== "function") {
+    const error = new Error("An OS-keyring-backed encrypted result store or an explicitly configured secure store is required");
     error.code = "ENCRYPTED_RESULT_STORE_REQUIRED";
     throw error;
   }
