@@ -9,6 +9,7 @@ import { PhoneRuntimeClient } from "./phone-runtime-client.mjs";
 import { TeamRoomClient } from "./team-room-client.mjs";
 import { TeamRoomPhoneMissionAuthorizer } from "./phone-mission-authorizer.mjs";
 import { PhoneRuntimeWorker } from "./phone-runtime-worker.mjs";
+import { createOsBackedPhoneResultStore } from "./create-os-backed-phone-result-store.mjs";
 
 export async function createPhoneRuntimeWorker({
   env = process.env,
@@ -16,7 +17,8 @@ export async function createPhoneRuntimeWorker({
   signal,
   fetchImpl = globalThis.fetch,
   teamRoomClient,
-  resultStore
+  resultStore,
+  keyringOptions
 } = {}) {
   if (!executor || typeof executor.execute !== "function") {
     const error = new Error("A real, explicitly configured AI executor is required; no default executor is available");
@@ -40,6 +42,6 @@ export async function createPhoneRuntimeWorker({
     error.code = "ENCRYPTED_RESULT_STORE_REQUIRED";
     throw error;
   }
-  await resultStore.initialize();
-  return new PhoneRuntimeWorker({ client, executor, resultStore, authorizer, signal });
+  await configuredResultStore.initialize();
+  return new PhoneRuntimeWorker({ client, executor, resultStore: configuredResultStore, authorizer, signal });
 }
