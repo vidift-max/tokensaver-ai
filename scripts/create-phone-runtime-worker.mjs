@@ -7,6 +7,7 @@
  */
 import { PhoneRuntimeClient } from "./phone-runtime-client.mjs";
 import { FilePhoneResultStore } from "./phone-result-store.mjs";
+import { TeamRoomClient } from "./team-room-client.mjs";
 import { TeamRoomPhoneMissionAuthorizer } from "./phone-mission-authorizer.mjs";
 import { PhoneRuntimeWorker } from "./phone-runtime-worker.mjs";
 
@@ -29,11 +30,15 @@ export async function createPhoneRuntimeWorker({
     throw error;
   }
   const client = new PhoneRuntimeClient(env, fetchImpl);
+  // Use the same explicit environment object as the Phone client. This keeps
+  // injected/test deployments deterministic and prevents accidental fallback
+  // to unrelated process.env credentials.
+  const trustedTeamRoomClient = teamRoomClient || new TeamRoomClient(env);
   const authorizer = new TeamRoomPhoneMissionAuthorizer({
-    ...(teamRoomClient ? { teamRoomClient } : {}),
+    teamRoomClient: trustedTeamRoomClient,
     authorizedSenderPrincipalId: env.TEAM_ROOM_AUTHORIZED_SENDER_PRINCIPAL_ID
   });
-  const store = resultStore || new FilePhoneResultStore(env.AI_PHONE_RESULT_DIRECTORY || "");
+  const store = resultStore || new FilePhoneResultStore(env.AI_PHONE_RESULT_DIRECTORY);
   await store.initialize();
   return new PhoneRuntimeWorker({ client, executor, resultStore: store, authorizer, signal });
 }
