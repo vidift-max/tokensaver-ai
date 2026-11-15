@@ -68,6 +68,18 @@ jobs:
           set -euo pipefail
           cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee p2-33-rust-postgres.log
 
+      - name: Audit RLS and database role boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "CURRENT DATABASE ROLE"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_user, r.rolsuper, r.rolbypassrls FROM pg_roles r WHERE r.rolname=current_user;"
+            echo "PHONE TABLE RLS FLAGS"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname IN ('ai_identities','ai_identity_principals','ai_phones','phone_pair_grants','phone_messages','phone_attachments','phone_endpoints','phone_endpoint_credentials') ORDER BY c.relname;"
+          } | tee p2-33-rls-role-audit.txt
+
       - name: Upload exact-run evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,5 +88,6 @@ jobs:
           path: |
             p2-33-run-context.txt
             p2-33-rust-postgres.log
+            p2-33-rls-role-audit.txt
           if-no-files-found: warn
           retention-days: 30
