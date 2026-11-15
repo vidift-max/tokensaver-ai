@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { OsKeyringPhoneResultKeyProvider } from "../scripts/phone-result-key-provider.mjs";
+import { createOsBackedPhoneResultStore } from "../scripts/create-os-backed-phone-result-store.mjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 class MemoryEntry {
   static values = new Map();
@@ -76,4 +80,17 @@ test("does not hide credential-store backend failures as missing entries", async
   }
   const provider = new OsKeyringPhoneResultKeyProvider({ Entry: BrokenEntry, platform: "win32" });
   await assert.rejects(() => provider.getCurrentKey(), /OS credential store read failed/);
+});
+
+test("factory connects OS keyring keys to the AES-GCM result store", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-os-keyring-"));
+  try {
+    const store = await createOsBackedPhoneResultStore(root, { Entry: MemoryEntry, platform: "win32" });
+    const messageId = "70000000-0000-4000-8000-000000000007";
+    await store.commit(messageId, { result: "persisted securely" });
+    const reopened = await createOsBackedPhoneResultStore(root, { Entry: MemoryEntry, platform: "win32" });
+    assert.deepEqual((await reopened.get(messageId)).result, { result: "persisted securely" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
