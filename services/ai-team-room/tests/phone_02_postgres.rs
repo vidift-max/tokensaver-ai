@@ -490,6 +490,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "AI #2 cannot attach AI-PHONE-01 endpoint using AI #1 endpoint credential"
     );
 
+    let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
+
     // Pair Authorization is directional and server-derived: AI #1 is the sender,
     // while the recipient is the explicitly selected Phone #2.
     let (status, _) = call(
