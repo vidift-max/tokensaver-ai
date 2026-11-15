@@ -81,7 +81,7 @@ jobs:
           WORKFLOW_CHECKOUT_SHA="$(git -C "$WORKFLOW_SOURCE_DIR" rev-parse HEAD)"
           test "$WORKFLOW_CHECKOUT_SHA" = "$EVENT_SHA"
           WORKFLOW_FILE_BLOB="$(git -C "$WORKFLOW_SOURCE_DIR" rev-parse "HEAD:$WORKFLOW_PATH")"
-          printf '%s\\n' 'AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1' > "$RUNNER_TEMP/expected-phone-02b-marker"
+          printf '%s\n' 'AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1' > "$RUNNER_TEMP/expected-phone-02b-marker"
           git -C "$WORKFLOW_SOURCE_DIR" show "$EVENT_SHA:$EXECUTION_MARKER_PATH" | cmp - "$RUNNER_TEMP/expected-phone-02b-marker"
           [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$WORKFLOW_FILE_BLOB" =~ ^[a-f0-9]{40}$ ]]
