@@ -1604,11 +1604,11 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(state, "PENDING");
 
     let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence+1)
+        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal).bind(ai_id).bind(next_sequence+1)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     assert_eq!(duplicate.rows_affected(), 0);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key='offline-msg-1'")
-        .bind(first.phone.ai_phone_id).bind(sender).fetch_one(&pool).await.unwrap();
+        .bind(first.phone.ai_phone_id).bind(sender_principal).fetch_one(&pool).await.unwrap();
     assert_eq!(count, 1);
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
