@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:missions": "node --test tests/mission-runner.test.mjs"
+    "test:missions": "node --test tests/mission-runner.test.mjs",
+    "test:phone-runtime": "node --test tests/phone-runtime-client.test.mjs",
+    "test": "npm run test:missions && npm run test:phone-runtime"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
