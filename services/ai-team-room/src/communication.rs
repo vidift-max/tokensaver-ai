@@ -665,6 +665,14 @@ mod postgres_tests {
         assert_eq!(malformed_time.status(),StatusCode::BAD_REQUEST,"malformed timestamp must fail closed");
         let malformed_id=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at={}&before_message_id=not-a-uuid",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
         assert_eq!(malformed_id.status(),StatusCode::BAD_REQUEST,"malformed message ID must fail closed");
+        let empty_cursor=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at=&before_message_id=",b.principal),&a.token,None).await;
+        assert_eq!(empty_cursor.status(),StatusCode::BAD_REQUEST,"empty composite cursor must fail closed");
+        let empty_timestamp=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at=&before_message_id={}",b.principal,expected[0].1),&a.token,None).await;
+        assert_eq!(empty_timestamp.status(),StatusCode::BAD_REQUEST,"empty timestamp must fail closed");
+        let empty_id=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at={}&before_message_id=",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
+        assert_eq!(empty_id.status(),StatusCode::BAD_REQUEST,"empty message ID must fail closed");
+        let duplicate_timestamp=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_created_at={}&before_created_at={}&before_message_id={}",b.principal,tied_at.to_rfc3339(),older_at.to_rfc3339(),expected[0].1),&a.token,None).await;
+        assert_eq!(duplicate_timestamp.status(),StatusCode::BAD_REQUEST,"duplicate cursor fields must fail closed");
         sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id=$1").bind(channel).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
