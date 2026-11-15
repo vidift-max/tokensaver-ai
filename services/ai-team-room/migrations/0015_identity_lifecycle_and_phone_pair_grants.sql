@@ -183,6 +183,8 @@ BEGIN
       WHERE ai_phone_id=OLD.ai_phone_id AND tenant_id=OLD.tenant_id AND attachment_status='ACTIVE';
     UPDATE phone_endpoints SET endpoint_status='REVOKED',detached_at=NOW()
       WHERE ai_phone_id=OLD.ai_phone_id AND endpoint_status<>'REVOKED';
+    UPDATE phone_endpoint_operator_keys SET key_status='REVOKED',revoked_at=NOW()
+      WHERE tenant_id=OLD.tenant_id AND ai_id=OLD.ai_id AND key_status='ACTIVE';
     UPDATE sessions SET status='REVOKED',revoked_at=NOW()
       WHERE session_id IN (SELECT session_id FROM phone_attachments WHERE ai_phone_id=OLD.ai_phone_id AND tenant_id=OLD.tenant_id);
     UPDATE workload_executions SET status='REVOKED',revoked_at=NOW()
@@ -290,7 +292,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'pair grant author lacks phone.pair.grant permission' USING ERRCODE='42501';
   END IF;
-  IF TG_OP='UPDATE' AND OLD.grant_status='ACTIVE' AND NEW.grant_status='REVOKED' AND NOT EXISTS (
+  IF TG_OP='UPDATE' AND OLD.grant_status='ACTIVE' AND NEW.grant_status='REVOKED' AND NEW.revoked_by_principal_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM principals p JOIN principal_permissions pp
       ON pp.tenant_id=p.tenant_id AND pp.principal_id=p.principal_id
     WHERE p.tenant_id=NEW.tenant_id AND p.principal_id=NEW.revoked_by_principal_id AND p.enabled=TRUE
