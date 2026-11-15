@@ -45,6 +45,7 @@ jobs:
       - run: npm run test:phone-worker
       - run: npm run test:phone-store
       - run: npm run test:phone-envelope
+      - run: npm run test:phone-authorizer
       - run: npm run build
       - name: Package source ZIP
         run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
@@ -90,6 +91,7 @@ jobs:
       - run: npm run test:phone-worker
       - run: npm run test:phone-store
       - run: npm run test:phone-envelope
+      - run: npm run test:phone-authorizer
       - run: npm run build
 
 
