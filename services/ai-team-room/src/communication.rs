@@ -616,6 +616,7 @@ mod postgres_tests {
         let app=router(pool.clone());
         let mut path=format!("/team-room/{room}/private/{}/messages?limit=37",b.principal);
         let mut recovered:Vec<Uuid>=Vec::new();
+        let mut page_keys:Vec<Vec<(DateTime<Utc>,Uuid)>>=Vec::new();
         let mut page_count=0usize;
         loop {
             let response=request(app.clone(),"GET",path,&a.token,None).await;
@@ -623,7 +624,16 @@ mod postgres_tests {
             let page:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),200000).await.unwrap()).unwrap();
             let items=page["items"].as_array().unwrap();
             assert!(!items.is_empty() || !page["has_more"].as_bool().unwrap());
-            for item in items { recovered.push(Uuid::parse_str(item["message_id"].as_str().unwrap()).unwrap()); }
+            let mut keys=Vec::new();
+            for item in items {
+                let id=Uuid::parse_str(item["message_id"].as_str().unwrap()).unwrap();
+                let created_at=item["created_at"].as_str().unwrap().parse::<DateTime<Utc>>().unwrap();
+                recovered.push(id);
+                keys.push((created_at,id));
+            }
+            assert!(keys.windows(2).all(|w| w[0] < w[1]),
+                "each page must be ordered ASC by (created_at,message_id), matching the API's page presentation");
+            page_keys.push(keys);
             page_count+=1;
             if !page["has_more"].as_bool().unwrap() { break; }
             let oldest=items.first().unwrap();
@@ -635,7 +645,13 @@ mod postgres_tests {
         let expected_ids:Vec<Uuid>=expected.iter().map(|(_,id)|*id).collect();
         assert_eq!(recovered.len(),231,"all rows, including the channel bootstrap message, must be recovered across multiple pages");
         assert_eq!(recovered.iter().copied().collect::<std::collections::HashSet<_>>().len(),231,"no duplicate message IDs");
-        assert_eq!(recovered,expected_ids,"stable ascending order by (created_at,message_id)");
+        let mut recovered_sorted=recovered.clone();
+        recovered_sorted.sort();
+        assert_eq!(recovered_sorted,expected_ids,"complete set must match all expected message IDs");
+        for pair in page_keys.windows(2) {
+            assert!(pair[1].last().unwrap() < pair[0].first().unwrap(),
+                "next page must be strictly older than the previous page's oldest boundary");
+        }
         assert!(page_count>=6,"test must cross multiple page boundaries, got {page_count}");
 
         let timestamp_only=request(app,"GET",format!("/team-room/{room}/private/{}/messages?limit=37&before={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
