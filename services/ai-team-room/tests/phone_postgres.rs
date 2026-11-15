@@ -1593,7 +1593,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
     let message_id = Uuid::new_v4();
     sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7)")
-        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence)
+        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal).bind(ai_id).bind(next_sequence)
         .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
     let state: String =
         sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
