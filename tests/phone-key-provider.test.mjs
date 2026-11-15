@@ -94,3 +94,26 @@ test("factory connects OS keyring keys to the AES-GCM result store", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("rejects malformed current-key identifiers and corrupted key material", async () => {
+  const provider = new OsKeyringPhoneResultKeyProvider({ Entry: MemoryEntry, platform: "win32" });
+  MemoryEntry.values.set("com.tokensaver.ai.phone-02.result-store:current-key-id", "not-a-uuid");
+  await assert.rejects(() => provider.getCurrentKey(), /invalid current key identifier/);
+
+  MemoryEntry.values.clear();
+  const keyId = "70000000-0000-4000-8000-000000000007";
+  MemoryEntry.values.set("com.tokensaver.ai.phone-02.result-store:current-key-id", keyId);
+  MemoryEntry.values.set("com.tokensaver.ai.phone-02.result-store:aes-256-gcm-key:" + keyId, "not-base64!");
+  await assert.rejects(() => provider.getCurrentKey(), /invalid key record/);
+});
+
+test("serializes concurrent first initialization within one provider instance", async () => {
+  const provider = new OsKeyringPhoneResultKeyProvider({ Entry: MemoryEntry, platform: "win32" });
+  const [first, second, third] = await Promise.all([
+    provider.getCurrentKey(), provider.getCurrentKey(), provider.getCurrentKey()
+  ]);
+  assert.equal(first.keyId, second.keyId);
+  assert.equal(second.keyId, third.keyId);
+  assert.deepEqual(first.key, second.key);
+});
