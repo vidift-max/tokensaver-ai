@@ -156,6 +156,8 @@ CREATE TABLE phone_pair_grants (
   permission TEXT NOT NULL CHECK (permission='phone.message.send'),
   grant_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (grant_status IN ('ACTIVE','REVOKED','EXPIRED')),
   grant_version BIGINT NOT NULL DEFAULT 1 CHECK (grant_version>0),
+  source_binding_version BIGINT NOT NULL CHECK (source_binding_version>0),
+  destination_binding_version BIGINT NOT NULL CHECK (destination_binding_version>0),
   valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ,
   granted_by_principal_id UUID NOT NULL,
@@ -206,7 +208,7 @@ BEGIN
     JOIN ai_identity_principals dip ON dip.ai_id=d.ai_id AND dip.tenant_id=d.tenant_id AND dip.principal_id=NEW.destination_principal_id AND dip.binding_status='ACTIVE'
     JOIN rooms r ON r.room_id=NEW.room_id AND r.tenant_id=NEW.tenant_id AND r.status='ACTIVE'
     WHERE s.ai_phone_id=NEW.source_ai_phone_id AND s.tenant_id=NEW.tenant_id AND s.phone_status<>'REVOKED'
-      AND d.phone_status<>'REVOKED' AND sip.binding_version>0 AND dip.binding_version>0
+      AND d.phone_status<>'REVOKED' AND sip.binding_version=NEW.source_binding_version AND dip.binding_version=NEW.destination_binding_version
   ) THEN
     RAISE EXCEPTION 'pair grant principals must be the active principals bound to both phones in the same tenant and room' USING ERRCODE='23514';
   END IF;
@@ -217,12 +219,64 @@ CREATE TRIGGER phone_pair_grant_binding_guard
 BEFORE INSERT OR UPDATE ON phone_pair_grants
 FOR EACH ROW EXECUTE FUNCTION enforce_phone_pair_grant_binding();
 
+CREATE TABLE phone_pair_grant_events (
+  event_id UUID PRIMARY KEY,
+  grant_id UUID NOT NULL REFERENCES phone_pair_grants(grant_id) ON DELETE RESTRICT,
+  tenant_id UUID NOT NULL,
+  actor_principal_id UUID,
+  event_type TEXT NOT NULL CHECK (event_type IN ('GRANTED','REVOKED')),
+  reason TEXT NOT NULL CHECK (length(trim(reason)) BETWEEN 1 AND 1000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (tenant_id,actor_principal_id) REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT
+);
+
+CREATE FUNCTION record_phone_pair_grant_event() RETURNS TRIGGER AS $
+BEGIN
+  IF TG_OP='INSERT' THEN
+    INSERT INTO phone_pair_grant_events(event_id,grant_id,tenant_id,actor_principal_id,event_type,reason)
+    VALUES(gen_random_uuid(),NEW.grant_id,NEW.tenant_id,NEW.granted_by_principal_id,'GRANTED','Explicit directional phone grant');
+    RETURN NEW;
+  END IF;
+  IF OLD.grant_status='ACTIVE' AND NEW.grant_status='REVOKED' THEN
+    INSERT INTO phone_pair_grant_events(event_id,grant_id,tenant_id,actor_principal_id,event_type,reason)
+    VALUES(gen_random_uuid(),OLD.grant_id,OLD.tenant_id,NEW.revoked_by_principal_id,'REVOKED',NEW.revocation_reason);
+  END IF;
+  RETURN NEW;
+END $ LANGUAGE plpgsql;
+
+CREATE TRIGGER phone_pair_grant_audit_insert
+AFTER INSERT ON phone_pair_grants
+FOR EACH ROW EXECUTE FUNCTION record_phone_pair_grant_event();
+
+CREATE TRIGGER phone_pair_grant_audit_revoke
+AFTER UPDATE OF grant_status ON phone_pair_grants
+FOR EACH ROW EXECUTE FUNCTION record_phone_pair_grant_event();
+
+CREATE FUNCTION reject_phone_identity_audit_mutation() RETURNS TRIGGER AS $
+BEGIN
+  RAISE EXCEPTION 'identity and grant audit history is append-only' USING ERRCODE='55000';
+END $ LANGUAGE plpgsql;
+
+CREATE TRIGGER ai_identity_binding_events_immutable
+BEFORE UPDATE OR DELETE ON ai_identity_binding_events
+FOR EACH ROW EXECUTE FUNCTION reject_phone_identity_audit_mutation();
+
+CREATE TRIGGER phone_pair_grant_events_immutable
+BEFORE UPDATE OR DELETE ON phone_pair_grant_events
+FOR EACH ROW EXECUTE FUNCTION reject_phone_identity_audit_mutation();
+
+INSERT INTO permission_catalog(permission,description,privileged) VALUES
+ ('phone.pair.grant','Create or revoke a directional phone-to-phone messaging grant in the authenticated room',TRUE)
+ON CONFLICT (permission) DO NOTHING;
+
 ALTER TABLE phone_messages
   ADD COLUMN source_ai_phone_id UUID,
   ADD COLUMN destination_principal_id UUID,
   ADD COLUMN room_id UUID,
   ADD COLUMN pair_grant_id UUID,
-  ADD COLUMN pair_grant_version BIGINT;
+  ADD COLUMN pair_grant_version BIGINT,
+  ADD COLUMN source_binding_version BIGINT,
+  ADD COLUMN destination_binding_version BIGINT;
 
 ALTER TABLE phone_messages
   ADD CONSTRAINT phone_messages_source_phone_scope_fk
@@ -252,3 +306,5 @@ FOR EACH ROW EXECUTE FUNCTION fail_pending_messages_on_pair_grant_revocation();
 COMMENT ON TABLE phone_pair_grants IS 'Directional, tenant- and room-scoped authorization between permanent AI phones. No grant means deny.';
 COMMENT ON COLUMN phone_messages.source_ai_phone_id IS 'Server-derived sender phone; never accepted from client payload.';
 COMMENT ON COLUMN phone_messages.pair_grant_id IS 'Exact directional grant used at send time; revocation fails undelivered messages.';
+COMMENT ON COLUMN phone_pair_grants.source_binding_version IS 'Version of the authenticated source phone/principal binding at grant creation.';
+COMMENT ON COLUMN phone_pair_grants.destination_binding_version IS 'Version of the authenticated destination phone/principal binding at grant creation.';
