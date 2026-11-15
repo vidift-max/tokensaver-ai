@@ -746,6 +746,29 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "the persisted offline/sent message is available to Phone #2"
     );
 
+    // A delivered-but-unacknowledged message must remain visible after a consumer crash.
+    let (status, body) = call_with_headers(
+        &app,
+        "GET",
+        &format!("/ai-phone/{phone_2_id}/messages"),
+        &token_2,
+        Some(&endpoint_2_credential),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unacknowledged mailbox can be polled again");
+    let retry_inbox: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    for message_id in [&first_message_id, &second_message_id] {
+        assert!(
+            retry_inbox.iter().any(|message| {
+                message["message_id"] == message_id.to_string()
+                    && message["message_state"] == "DELIVERED"
+            }),
+            "DELIVERED messages remain available for retry until ACK"
+        );
+    }
+
     // Revocation is immediate: previously stored messages remain durable but are no longer
     // readable/deliverable through the revoked directional pair.
     let (status, _) = call(
