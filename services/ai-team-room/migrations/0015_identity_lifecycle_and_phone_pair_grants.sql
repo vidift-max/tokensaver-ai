@@ -103,6 +103,9 @@ BEGIN
     RAISE EXCEPTION 'retired AI identity cannot be reactivated' USING ERRCODE='23514';
   END IF;
   IF NEW.identity_status='RETIRED' AND OLD.identity_status<>'RETIRED' THEN
+    IF EXISTS (SELECT 1 FROM ai_identity_principals WHERE ai_id=OLD.ai_id AND binding_status='ACTIVE') OR EXISTS (SELECT 1 FROM ai_phones WHERE ai_id=OLD.ai_id AND phone_status<>'REVOKED') THEN
+      RAISE EXCEPTION 'revoke every tenant binding and AI phone before retiring the global AI identity' USING ERRCODE='23514';
+    END IF;
     IF NEW.retired_at IS NULL OR NEW.retirement_reason IS NULL OR length(trim(NEW.retirement_reason))=0 THEN
       RAISE EXCEPTION 'AI retirement requires timestamp and reason' USING ERRCODE='23514';
     END IF;
@@ -172,7 +175,7 @@ CREATE TABLE phone_pair_grants (
   FOREIGN KEY (tenant_id,destination_principal_id) REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT,
   FOREIGN KEY (tenant_id,granted_by_principal_id) REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT,
   FOREIGN KEY (tenant_id,revoked_by_principal_id) REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT,
-  UNIQUE (grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,grant_version),
+  UNIQUE (grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,grant_version,source_binding_version,destination_binding_version),
   CHECK (source_ai_phone_id<>destination_ai_phone_id),
   CHECK (expires_at IS NULL OR expires_at>valid_from),
   CHECK ((grant_status='REVOKED')=(revoked_at IS NOT NULL))
@@ -207,6 +210,10 @@ BEGIN
     JOIN ai_phones d ON d.ai_phone_id=NEW.destination_ai_phone_id AND d.tenant_id=NEW.tenant_id
     JOIN ai_identity_principals dip ON dip.ai_id=d.ai_id AND dip.tenant_id=d.tenant_id AND dip.principal_id=NEW.destination_principal_id AND dip.binding_status='ACTIVE'
     JOIN rooms r ON r.room_id=NEW.room_id AND r.tenant_id=NEW.tenant_id AND r.status='ACTIVE'
+    JOIN room_memberships sm ON sm.room_id=r.room_id AND sm.tenant_id=r.tenant_id AND sm.principal_id=NEW.source_principal_id AND sm.status='ACTIVE'
+    JOIN sessions ss ON ss.session_id=sm.session_id AND ss.status='ACTIVE' AND ss.revoked_at IS NULL AND ss.expires_at>NOW()
+    JOIN room_memberships dm ON dm.room_id=r.room_id AND dm.tenant_id=r.tenant_id AND dm.principal_id=NEW.destination_principal_id AND dm.status='ACTIVE'
+    JOIN sessions ds ON ds.session_id=dm.session_id AND ds.status='ACTIVE' AND ds.revoked_at IS NULL AND ds.expires_at>NOW()
     WHERE s.ai_phone_id=NEW.source_ai_phone_id AND s.tenant_id=NEW.tenant_id AND s.phone_status<>'REVOKED'
       AND d.phone_status<>'REVOKED' AND sip.binding_version=NEW.source_binding_version AND dip.binding_version=NEW.destination_binding_version
   ) THEN
@@ -284,8 +291,8 @@ ALTER TABLE phone_messages
   ADD CONSTRAINT phone_messages_room_scope_fk
     FOREIGN KEY (tenant_id,room_id) REFERENCES rooms(tenant_id,room_id) ON DELETE RESTRICT,
   ADD CONSTRAINT phone_messages_pair_grant_scope_fk
-    FOREIGN KEY (pair_grant_id,tenant_id,room_id,source_ai_phone_id,ai_phone_id,sender_principal_id,destination_principal_id,pair_grant_version)
-    REFERENCES phone_pair_grants(grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,grant_version)
+    FOREIGN KEY (pair_grant_id,tenant_id,room_id,source_ai_phone_id,ai_phone_id,sender_principal_id,destination_principal_id,pair_grant_version,source_binding_version,destination_binding_version)
+    REFERENCES phone_pair_grants(grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,grant_version,source_binding_version,destination_binding_version)
     ON DELETE RESTRICT;
 
 CREATE INDEX phone_messages_pair_grant_idx ON phone_messages(pair_grant_id,message_state);
