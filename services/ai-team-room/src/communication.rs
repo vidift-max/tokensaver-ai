@@ -592,6 +592,11 @@ mod postgres_tests {
         let tied_at:DateTime<Utc>="2026-11-14T12:00:00Z".parse().unwrap();
         let older_at:DateTime<Utc>="2026-11-14T11:00:00Z".parse().unwrap();
         let mut expected:Vec<(DateTime<Utc>,Uuid)>=Vec::new();
+        // The initial POST above is also part of this private channel history.
+        expected.push((
+            created_json["created_at"].as_str().unwrap().parse::<DateTime<Utc>>().unwrap(),
+            Uuid::parse_str(created_json["message_id"].as_str().unwrap()).unwrap()
+        ));
         for i in 0..170u128 {
             let id=Uuid::from_u128(0x10000000_0000_4000_8000_000000000000u128+i+1);
             sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
@@ -628,8 +633,8 @@ mod postgres_tests {
                 b.principal,encoded_timestamp,oldest["message_id"].as_str().unwrap());
         }
         let expected_ids:Vec<Uuid>=expected.iter().map(|(_,id)|*id).collect();
-        assert_eq!(recovered.len(),230,"all rows must be recovered across multiple pages");
-        assert_eq!(recovered.iter().copied().collect::<std::collections::HashSet<_>>().len(),230,"no duplicate message IDs");
+        assert_eq!(recovered.len(),231,"all rows, including the channel bootstrap message, must be recovered across multiple pages");
+        assert_eq!(recovered.iter().copied().collect::<std::collections::HashSet<_>>().len(),231,"no duplicate message IDs");
         assert_eq!(recovered,expected_ids,"stable ascending order by (created_at,message_id)");
         assert!(page_count>=6,"test must cross multiple page boundaries, got {page_count}");
 
