@@ -43,3 +43,20 @@ test("runtime bootstrap constructs Team Room from the supplied environment", asy
   assert.equal(worker.authorizer.teamRoom.token, env.TEAM_ROOM_SESSION_TOKEN);
   assert.equal(worker.authorizer.teamRoom.roomId, env.TEAM_ROOM_ROOM_ID);
 });
+
+test("runtime bootstrap refuses to start without an injected encrypted result store", async () => {
+  const env = {
+    AI_PHONE_API_URL: "https://phone.example.test",
+    AI_PHONE_SESSION_TOKEN: "phone-session-token",
+    AI_PHONE_ENDPOINT_CREDENTIAL: "x".repeat(48),
+    AI_PHONE_ID: "10000000-0000-4000-8000-000000000001",
+    TEAM_ROOM_API_URL: "https://team-room.example.test",
+    TEAM_ROOM_SESSION_TOKEN: "team-room-session-token",
+    TEAM_ROOM_ROOM_ID: "20000000-0000-4000-8000-000000000002",
+    TEAM_ROOM_AUTHORIZED_SENDER_PRINCIPAL_ID: "30000000-0000-4000-8000-000000000003"
+  };
+  await assert.rejects(
+    () => createPhoneRuntimeWorker({ env, executor: { execute: async () => ({}) } }),
+    error => error.code === "ENCRYPTED_RESULT_STORE_REQUIRED"
+  );
+});
