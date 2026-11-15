@@ -1,9 +1,10 @@
 /**
  * Production dependency wiring for the Phone-02 mailbox worker.
  *
- * The AI executor and encrypted result store are intentionally injected.
- * The result store must be configured with an explicit secure key provider;
- * this bootstrap does not invent a key source or fall back to plaintext.
+ * The AI executor is always explicitly injected. The durable result store is
+ * either explicitly injected or constructed from AI_PHONE_RESULT_DIRECTORY
+ * with the current user's persistent OS credential store. There is no
+ * plaintext fallback.
  */
 import { PhoneRuntimeClient } from "./phone-runtime-client.mjs";
 import { TeamRoomClient } from "./team-room-client.mjs";
