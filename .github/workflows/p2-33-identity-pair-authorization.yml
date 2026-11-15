@@ -1,0 +1,80 @@
+name: AI-PHONE-02 P2.33 Identity + Pair Authorization
+
+on:
+  push:
+    branches:
+      - mission/ai-phone-02-p2-33-identity-pair-auth
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-phone-02-p2-33-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  identity-pair-postgres:
+    name: Rust + PostgreSQL 16 + migration and adversarial regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_phone_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: ai_phone_p2_33_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_phone_ci -d ai_phone_p2_33_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://ai_phone_ci:disposable-ci-only@localhost:5432/ai_phone_p2_33_test
+    steps:
+      - name: Checkout exact mission commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify immutable mission target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF_NAME" = "mission/ai-phone-02-p2-33-identity-pair-auth"
+          printf 'SHA=%s\nBRANCH=%s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" | tee p2-33-run-context.txt
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Confirm PostgreSQL 16 disposable database
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SELECT current_setting('server_version_num'); SELECT current_setting('transaction_read_only');"
+
+      - name: Cargo check
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+
+      - name: Legacy migration compatibility
+        run: bash services/ai-team-room/tests/ai_phone_legacy_migration.sh
+
+      - name: Full Rust and PostgreSQL regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee p2-33-rust-postgres.log
+
+      - name: Upload exact-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-phone-02-p2-33-${{ github.run_id }}
+          path: |
+            p2-33-run-context.txt
+            p2-33-rust-postgres.log
+          if-no-files-found: warn
+          retention-days: 30
