@@ -642,7 +642,8 @@ mod postgres_tests {
             path=format!("/team-room/{room}/private/{}/messages?limit=37&before_created_at={}&before_message_id={}",
                 b.principal,encoded_timestamp,oldest["message_id"].as_str().unwrap());
         }
-        let expected_ids:Vec<Uuid>=expected.iter().map(|(_,id)|*id).collect();
+        let mut expected_ids:Vec<Uuid>=expected.iter().map(|(_,id)|*id).collect();
+        expected_ids.sort();
         assert_eq!(recovered.len(),231,"all rows, including the channel bootstrap message, must be recovered across multiple pages");
         assert_eq!(recovered.iter().copied().collect::<std::collections::HashSet<_>>().len(),231,"no duplicate message IDs");
         let mut recovered_sorted=recovered.clone();
@@ -654,7 +655,7 @@ mod postgres_tests {
         }
         assert!(page_count>=6,"test must cross multiple page boundaries, got {page_count}");
 
-        let timestamp_only=request(app,"GET",format!("/team-room/{room}/private/{}/messages?limit=37&before={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
+        let timestamp_only=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?limit=37&before={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
         assert_eq!(timestamp_only.status(),StatusCode::BAD_REQUEST,"legacy timestamp-only private cursor must fail closed");
         let id_only=request(app.clone(),"GET",format!("/team-room/{room}/private/{}/messages?before_message_id={}",b.principal,expected[0].1),&a.token,None).await;
         assert_eq!(id_only.status(),StatusCode::BAD_REQUEST,"message ID without timestamp must fail closed");
