@@ -2020,6 +2020,13 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .execute(&pool)
         .await
         .unwrap();
+    // This isolated test tenant also owns the sender AI identity mapping created above.
+    // Remove every tenant-scoped identity mapping before deleting the tenant.
+    sqlx::query("DELETE FROM ai_identity_tenants WHERE tenant_id=$1")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM tenants WHERE tenant_id=$1")
         .bind(tenant)
         .execute(&pool)
