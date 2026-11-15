@@ -316,7 +316,7 @@ fn contains_identity_claim(value: &Value) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(key, child)| {
             let key = key.to_ascii_lowercase();
-            ["origin", "destination", "peer", "room", "sender", "ai_id", "ai_phone_id", "principal_id", "tenant_id"]
+            ["origin", "origin_id", "origin_ai_id", "origin_ai_phone_id", "source_ai_phone_id", "destination", "destination_id", "destination_ai_id", "destination_ai_phone_id", "peer", "peer_id", "peer_principal_id", "room", "room_id", "sender", "sender_id", "sender_principal_id", "sender_ai_id", "sender_ai_phone_id", "ai_id", "ai_phone_id", "principal_id", "tenant_id"]
                 .iter().any(|claim| key == *claim) || contains_identity_claim(child)
         }),
         Value::Array(items) => items.iter().any(contains_identity_claim),
