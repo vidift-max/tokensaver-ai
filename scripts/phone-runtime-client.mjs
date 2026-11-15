@@ -14,7 +14,7 @@ export class PhoneRuntimeError extends Error {
 
 export class PhoneRuntimeClient {
   constructor(env = process.env, fetchImpl = globalThis.fetch) {
-    this.baseUrl = (env.AI_PHONE_API_URL || "").replace(/\\/+$/, "");
+    this.baseUrl = (env.AI_PHONE_API_URL || "").replace(/\/+$/, "");
     this.sessionToken = env.AI_PHONE_SESSION_TOKEN || "";
     this.endpointCredential = env.AI_PHONE_ENDPOINT_CREDENTIAL || "";
     this.phoneId = env.AI_PHONE_ID || "";
