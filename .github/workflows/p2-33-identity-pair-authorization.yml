@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee p2-33-rust-postgres.log
+          cargo test --manifest-path services/ai-team-room/Cargo.toml --no-fail-fast -- --show-output 2>&1 | tee p2-33-rust-postgres.log
 
       - name: Audit RLS and database role boundary
         if: always()
