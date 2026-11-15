@@ -441,7 +441,7 @@ fn build_router(state: AppState) -> Router {
         .route("/team-room/{room_id}/tasks/recover", post(recover_room_tasks))
         .layer(axum::extract::DefaultBodyLimit::max(20_000))
         .with_state(state.clone());
-    base.merge(communication::router(state.pool))
+    base.merge(communication::router(state.pool.clone())).merge(phone::router(state.pool))
 }
 
 #[tokio::main]
