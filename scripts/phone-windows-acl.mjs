@@ -9,52 +9,74 @@ if (-not (Test-Path -LiteralPath $target -PathType Container)) {
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
 $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+$fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+$pending = [System.Collections.Generic.Stack[string]]::new()
+$pending.Push($target)
 
 function Set-RestrictedAcl([string]$path, [bool]$isDirectory) {
-  $acl = Get-Acl -LiteralPath $path
+  $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($existing in @($acl.Access)) {
-    $acl.RemoveAccessRuleAll($existing)
+    [void]$acl.RemoveAccessRuleAll($existing)
   }
   foreach ($sid in $allowed) {
     $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
     if ($isDirectory) {
       $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $identity,
-        [System.Security.AccessControl.FileSystemRights]::FullControl,
-        $inheritance,
+        $identity, $fullControl, $inheritance,
         [System.Security.AccessControl.PropagationFlags]::None,
         [System.Security.AccessControl.AccessControlType]::Allow
       )
     } else {
       $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $identity,
-        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        $identity, $fullControl,
         [System.Security.AccessControl.AccessControlType]::Allow
       )
     }
-    $acl.AddAccessRule($rule)
+    [void]$acl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $path -AclObject $acl
-  $verified = Get-Acl -LiteralPath $path
+  Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
+  $verified = Get-Acl -LiteralPath $path -ErrorAction Stop
   if (-not $verified.AreAccessRulesProtected) {
-    throw "ACL inheritance remains enabled: $path"
+    throw "ACL inheritance remains enabled on protected item: $path"
   }
-  foreach ($entry in $verified.Access) {
+  $entries = @($verified.Access)
+  if ($entries.Count -ne 3) {
+    throw "Expected exactly three ACL entries on $path; found $($entries.Count)"
+  }
+  foreach ($entry in $entries) {
     $sid = $entry.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-    if ($allowed -notcontains $sid -or $entry.AccessControlType -ne 'Allow' -or
-        $entry.FileSystemRights -ne 'FullControl' -or $entry.IsInherited) {
-      throw "Unexpected or inherited ACL entry on $path for $sid"
+    if ($allowed -notcontains $sid -or
+        $entry.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+        $entry.FileSystemRights -ne $fullControl -or $entry.IsInherited) {
+      throw "Unexpected ACL entry on $path for SID $sid"
     }
-  }
-  if (@($verified.Access).Count -ne 3) {
-    throw "Expected exactly three restricted ACL entries on $path"
+    if ($isDirectory -and $entry.InheritanceFlags -ne $inheritance) {
+      throw "Directory ACL does not propagate to child files and directories: $path"
+    }
   }
 }
 
-Set-RestrictedAcl $target $true
-Get-ChildItem -LiteralPath $target -Force -File | ForEach-Object {
-  Set-RestrictedAcl $_.FullName $false
+while ($pending.Count -gt 0) {
+  $current = $pending.Pop()
+  $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Reparse point found in result storage; refusing to follow it: $current"
+  }
+  $isDirectory = [bool]$item.PSIsContainer
+  Set-RestrictedAcl $current $isDirectory
+  if ($isDirectory) {
+    foreach ($child in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+      if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Reparse point found in result storage; refusing to follow it: $($child.FullName)"
+      }
+      if ($child.PSIsContainer) {
+        $pending.Push($child.FullName)
+      } else {
+        Set-RestrictedAcl $child.FullName $false
+      }
+    }
+  }
 }
 Write-Output 'PHONE_RESULT_ACL_OK'
 `;
@@ -75,7 +97,7 @@ export function secureWindowsResultDirectory(directory, options = {}) {
     ], {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 15000,
+      timeout: 60000,
       env: { ...process.env, TOKENSAVER_PHONE_RESULT_DIRECTORY: directory },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -83,7 +105,13 @@ export function secureWindowsResultDirectory(directory, options = {}) {
       throw new Error("Windows ACL verification marker missing");
     }
   } catch (cause) {
-    const error = new Error("Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage", { cause });
+    const detail = cause?.stderr?.toString?.("utf8") || cause?.message || String(cause);
+    const code = cause?.code ? " [" + cause.code + "]" : "";
+    const error = new Error(
+      "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
+      code + ": " + detail.trim().slice(-2000),
+      { cause }
+    );
     error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
     throw error;
   }
