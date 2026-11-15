@@ -179,7 +179,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(provisioned_again["ai_phone_id"],first.phone.ai_phone_id.to_string());
     sqlx::query("DELETE FROM principal_permissions WHERE tenant_id=$1 AND principal_id=$2 AND permission='phone.provision'")
         .bind(tenant).bind(principal).execute(&pool).await.unwrap();
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN,"provisioning without the explicit tenant permission is rejected");
     grant(&pool,tenant,room,principal,"phone.provision").await;
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
@@ -657,7 +657,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     });
     let concurrent_uri = format!("/ai-phone/{}/messages", first.phone.ai_phone_id);
     let (send_left, send_right) = tokio::join!(
-        http_call(&app, "POST", &concurrent_uri, Some(&token_b), Some(concurrent_body.clone())),
+        http_call(&app, "POST", &concurrent_uri, Some(&token_second), Some(concurrent_body.clone())),
         http_call(&app, "POST", &concurrent_uri, Some(&token_b), Some(concurrent_body.clone()))
     );
     let mut concurrent_statuses = vec![send_left.status(), send_right.status()];
@@ -674,7 +674,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "concurrent retries return the same persisted message identity");
     let concurrent_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-message-key'"
-    ).bind(first.phone.ai_phone_id).bind(tenant).bind(principal)
+    ).bind(first.phone.ai_phone_id).bind(tenant).bind(second_principal)
       .fetch_one(&pool).await.unwrap();
     assert_eq!(concurrent_count, 1, "concurrent idempotent send persists exactly one row");
 
