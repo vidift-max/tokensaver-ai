@@ -427,7 +427,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     }))).await;
     assert_eq!(status,StatusCode::BAD_REQUEST,"room claims embedded in content are rejected");
 
-    for claim in ["destination","peer","sender"] {
+    for claim in ["destination","peer","sender","room_id","source_ai_phone_id","sender_principal_id"] {
         let mut content=serde_json::Map::new();
         content.insert(claim.to_string(),serde_json::json!("forged-identity"));
         content.insert("text".to_string(),serde_json::json!("must reject"));
