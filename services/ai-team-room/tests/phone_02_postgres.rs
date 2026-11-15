@@ -398,6 +398,10 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let pair_grant_id=Uuid::parse_str(pair_grant["grant_id"].as_str().unwrap()).unwrap();
     assert_eq!(pair_grant["source_ai_phone_id"],phone_1_id.to_string());
     assert_eq!(pair_grant["destination_ai_phone_id"],phone_2_id.to_string());
+    let (duplicate_grant_status,_)=call(&app,"POST","/ai-phone/pair-grants",&token_1,Some(serde_json::json!({
+        "destination_ai_phone_id":phone_2_id
+    }))).await;
+    assert_eq!(duplicate_grant_status,StatusCode::CONFLICT,"duplicate active directional grants are rejected");
 
     let (status,_)=call(&app,"POST",&format!("/ai-phone/{phone_3_id}/messages"),&token_1,Some(serde_json::json!({
         "idempotency_key":"phone-01-to-03-denied","content":{"text":"no pair grant"}
