@@ -760,6 +760,9 @@ pub async fn grant_pair(
     if source.ai_phone_id == destination_ai_phone_id || source.phone_status == "REVOKED" {
         return Err(PhoneError::Invalid);
     }
+    if expires_at.is_some_and(|expiry| expiry <= Utc::now()) {
+        return Err(PhoneError::Invalid);
+    }
     let source_binding_version: i64 = sqlx::query_scalar(
         "SELECT binding_version FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2 AND ai_id=$3 AND binding_status='ACTIVE'"
     ).bind(identity.tenant_id).bind(identity.principal_id).bind(source.ai_id)
@@ -769,12 +772,18 @@ pub async fn grant_pair(
     ).bind(destination_ai_phone_id).bind(identity.tenant_id).bind(identity.room_id)
       .fetch_optional(&mut *tx).await?.ok_or(PhoneError::NotFound)?;
     let grant_id = Uuid::new_v4();
-    sqlx::query(
+    let insert_result=sqlx::query(
         "INSERT INTO phone_pair_grants(grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,permission,source_binding_version,destination_binding_version,expires_at,granted_by_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7,'phone.message.send',$8,$9,$10,$6)"
     ).bind(grant_id).bind(identity.tenant_id).bind(identity.room_id)
       .bind(source.ai_phone_id).bind(destination_ai_phone_id).bind(identity.principal_id)
       .bind(destination.1).bind(source_binding_version).bind(destination.2).bind(expires_at)
-      .execute(&mut *tx).await?;
+      .execute(&mut *tx).await;
+    if let Err(error)=insert_result {
+        if let sqlx::Error::Database(database_error)=&error {
+            if database_error.code().as_deref()==Some("23505") { return Err(PhoneError::Conflict); }
+        }
+        return Err(error.into());
+    }
     let grant = sqlx::query_as::<_, PhonePairGrant>(
         "SELECT grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,permission,grant_status,grant_version,source_binding_version,destination_binding_version,valid_from,expires_at,granted_by_principal_id,granted_at,revoked_by_principal_id,revoked_at,revocation_reason FROM phone_pair_grants WHERE grant_id=$1"
     ).bind(grant_id).fetch_one(&mut *tx).await?;
@@ -815,7 +824,7 @@ async fn pair_grant_handler(
     let identity=authenticate_session(&pool,&headers).await.map_err(|_|StatusCode::UNAUTHORIZED)?;
     grant_pair(&pool,&identity,request.destination_ai_phone_id,request.expires_at).await
         .map(|grant|(StatusCode::CREATED,Json(grant)))
-        .map_err(|error|match error { PhoneError::Forbidden=>StatusCode::FORBIDDEN,PhoneError::NotFound=>StatusCode::NOT_FOUND,PhoneError::Invalid=>StatusCode::BAD_REQUEST,PhoneError::InvalidSession=>StatusCode::UNAUTHORIZED,_=>StatusCode::INTERNAL_SERVER_ERROR })
+        .map_err(|error|match error { PhoneError::Forbidden=>StatusCode::FORBIDDEN,PhoneError::NotFound=>StatusCode::NOT_FOUND,PhoneError::Invalid=>StatusCode::BAD_REQUEST,PhoneError::InvalidSession=>StatusCode::UNAUTHORIZED,PhoneError::Conflict=>StatusCode::CONFLICT,_=>StatusCode::INTERNAL_SERVER_ERROR })
 }
 
 async fn pair_grant_revoke_handler(
