@@ -126,6 +126,8 @@ async fn grant_permissions(pool: &PgPool, tenant_id: Uuid, room_id: Uuid, princi
         "phone.message.read",
         "phone.message.send",
         "phone.message.ack",
+        "phone.pair.grant",
+        "phone.pair.revoke",
         "task.read",
     ] {
         sqlx::query(
@@ -489,6 +491,41 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     );
 
     let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
+
+    // Pair Authorization is directional and server-derived: AI #1 is the sender,
+    // while the recipient is the explicitly selected Phone #2.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &phone_2_messages_path,
+        &token_1,
+        Some(serde_json::json!({
+            "idempotency_key": "phone-02-before-pair-grant",
+            "content": {"text": "must be blocked before pairing"}
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "message send is blocked before a directional pair grant exists"
+    );
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/ai-phone/pair/grant",
+        &token_1,
+        Some(serde_json::json!({"recipient_ai_phone_id": phone_2_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "AI #1 can create its authorized Phone #1 -> Phone #2 grant");
+    let pair_grant: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(pair_grant["sender_ai_phone_id"], phone_1_id.to_string());
+    assert_eq!(pair_grant["recipient_ai_phone_id"], phone_2_id.to_string());
+    assert_eq!(pair_grant["grant_status"], "ACTIVE");
+
+    let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
     let same_payload = serde_json::json!({
         "idempotency_key": "phone-02-concurrent-idempotency",
         "content": {"text": "durable message addressed to AI-PHONE-02"}
@@ -708,6 +745,61 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
             .any(|message| message["message_id"] == first_message_id.to_string()),
         "the persisted offline/sent message is available to Phone #2"
     );
+
+    // Revocation is immediate: previously stored messages remain durable but are no longer
+    // readable/deliverable through the revoked directional pair.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/pair/revoke",
+        &token_1,
+        Some(serde_json::json!({"recipient_ai_phone_id": phone_2_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "sender can revoke the directional pair");
+
+    let (status, body) = call_with_headers(
+        &app,
+        "GET",
+        &format!("/ai-phone/{phone_2_id}/messages"),
+        &token_2,
+        Some(&endpoint_2_credential),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "recipient mailbox remains reachable after pair revocation");
+    let revoked_inbox: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    assert!(
+        revoked_inbox
+            .iter()
+            .all(|message| message["message_id"] != first_message_id.to_string()),
+        "revoked pair must not expose previously stored messages"
+    );
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &phone_2_messages_path,
+        &token_1,
+        Some(serde_json::json!({
+            "idempotency_key": "phone-02-after-pair-revocation",
+            "content": {"text": "must be blocked after pairing is revoked"}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "revoked pair blocks later sends");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/ai-phone/pair/grant",
+        &token_1,
+        Some(serde_json::json!({"recipient_ai_phone_id": phone_2_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "pair can be explicitly re-authorized");
+
 
     let (status, _) = call_with_headers(
         &app,
