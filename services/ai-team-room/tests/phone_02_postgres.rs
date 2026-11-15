@@ -878,10 +878,15 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_eq!(status,StatusCode::OK,"AI authority may inspect control-plane presence");
     assert!(!String::from_utf8_lossy(&body).contains("endpoint_fence"));
     assert!(!String::from_utf8_lossy(&body).contains("endpoint_credential"));
-    let (status,_) = call(&app,"POST",&phone_2_messages_path,&token_2,
+    let (reverse_grant_status,_) = call(&app,"POST","/ai-phone/pair-grants",&token_2,
+        Some(serde_json::json!({"destination_ai_phone_id":phone_1_id}))).await;
+    assert_eq!(reverse_grant_status,StatusCode::CREATED,
+        "Phone #2 must receive an explicit reverse grant before sending to Phone #1");
+    let phone_1_messages_path=format!("/ai-phone/{phone_1_id}/messages");
+    let (status,_) = call(&app,"POST",&phone_1_messages_path,&token_2,
         Some(serde_json::json!({"idempotency_key":"old-process-ai-send","content":{"text":"AI authority remains separate from endpoint authority"}}))).await;
     assert_eq!(status,StatusCode::CREATED,
-        "durable outbound message submission remains AI-authorized, not endpoint-authorized");
+        "durable outbound message submission remains AI-authorized, not endpoint-authorized, after pair grant");
     // Attack B: the transferred-away endpoint's own credential is terminally revoked.
     let (status, _) = call_with_headers(&app,"GET","/ai-phone/me",&token_2,
         Some(&endpoint_2_credential),None,None).await;
