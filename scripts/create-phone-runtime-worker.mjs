@@ -1,12 +1,11 @@
 /**
  * Production dependency wiring for the Phone-02 mailbox worker.
  *
- * The AI executor is intentionally injected: this repository does not yet
- * provide a verified external AI-provider adapter. No placeholder executor
- * is created, and missing runtime configuration fails closed.
+ * The AI executor and encrypted result store are intentionally injected.
+ * The result store must be configured with an explicit secure key provider;
+ * this bootstrap does not invent a key source or fall back to plaintext.
  */
 import { PhoneRuntimeClient } from "./phone-runtime-client.mjs";
-import { FilePhoneResultStore } from "./phone-result-store.mjs";
 import { TeamRoomClient } from "./team-room-client.mjs";
 import { TeamRoomPhoneMissionAuthorizer } from "./phone-mission-authorizer.mjs";
 import { PhoneRuntimeWorker } from "./phone-runtime-worker.mjs";
@@ -24,11 +23,7 @@ export async function createPhoneRuntimeWorker({
     error.code = "EXECUTOR_REQUIRED";
     throw error;
   }
-  if (typeof env.AI_PHONE_RESULT_DIRECTORY !== "string" || !env.AI_PHONE_RESULT_DIRECTORY.trim()) {
-    const error = new Error("AI_PHONE_RESULT_DIRECTORY must point to a private local result directory");
-    error.code = "RESULT_DIRECTORY_REQUIRED";
-    throw error;
-  }
+
   const client = new PhoneRuntimeClient(env, fetchImpl);
   // Use the same explicit environment object as the Phone client. This keeps
   // injected/test deployments deterministic and prevents accidental fallback
@@ -38,7 +33,13 @@ export async function createPhoneRuntimeWorker({
     teamRoomClient: trustedTeamRoomClient,
     authorizedSenderPrincipalId: env.TEAM_ROOM_AUTHORIZED_SENDER_PRINCIPAL_ID
   });
-  const store = resultStore || new FilePhoneResultStore(env.AI_PHONE_RESULT_DIRECTORY);
-  await store.initialize();
-  return new PhoneRuntimeWorker({ client, executor, resultStore: store, authorizer, signal });
+
+  if (!resultStore || typeof resultStore.initialize !== "function" ||
+      typeof resultStore.get !== "function" || typeof resultStore.commit !== "function") {
+    const error = new Error("An explicitly configured encrypted result store with a secure key provider is required");
+    error.code = "ENCRYPTED_RESULT_STORE_REQUIRED";
+    throw error;
+  }
+  await resultStore.initialize();
+  return new PhoneRuntimeWorker({ client, executor, resultStore, authorizer, signal });
 }
