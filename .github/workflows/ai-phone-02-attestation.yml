@@ -105,6 +105,8 @@ jobs:
               'server_version_num', current_setting('server_version_num'),
               'server_addr', inet_server_addr()::text,
               'server_port', inet_server_port(),
+              'client_addr', inet_client_addr()::text,
+              'client_port', inet_client_port(),
               'postmaster_start_time', pg_postmaster_start_time()
             )::text" \
             -c "COMMIT" > attestation-evidence/database-session.json
@@ -116,6 +118,15 @@ jobs:
           import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
               db = json.load(f)
+
+          # Informational endpoint diagnostics only; do not use these values to alter gate decisions.
+          endpoint_diagnostic = {
+              "server_addr": db.get("server_addr"),
+              "server_port": db.get("server_port"),
+              "client_addr": db.get("client_addr"),
+              "client_port": db.get("client_port"),
+          }
+          print("POSTGRES_ENDPOINT_DIAGNOSTIC " + json.dumps(endpoint_diagnostic, sort_keys=True), flush=True)
 
           expected_app = os.environ["APP_NAME"]
           def valid_system_identifier(value):
