@@ -16,7 +16,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  authorize-execution:
+    # Defense in depth: only a marker addition/modification in the HEAD commit authorizes the heavy job.
+    if: >-
+      github.ref == 'refs/heads/validation/phone-02b-p2-61-isolated' &&
+      (
+        contains(github.event.head_commit.added, '.validation/EXECUTE_PHONE_02B_VALIDATION') ||
+        contains(github.event.head_commit.modified, '.validation/EXECUTE_PHONE_02B_VALIDATION')
+      )
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout push event commit for marker authorization
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require exact explicit Phone-02B authorization marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$GITHUB_REF" = "refs/heads/validation/phone-02b-p2-61-isolated"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf '%s\\n' 'AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1' > "$RUNNER_TEMP/expected-phone-02b-marker"
+          cmp "$RUNNER_TEMP/expected-phone-02b-marker" .validation/EXECUTE_PHONE_02B_VALIDATION
+
   phone-02b-validation:
+    needs: authorize-execution
+    if: needs.authorize-execution.result == 'success'
     name: Validate immutable Phone-02B target in disposable PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 60
