@@ -1,0 +1,79 @@
+name: P2.26 Isolated Team Room PostgreSQL Tests
+
+on:
+  push:
+    branches:
+      - mission/ai-phone-02-p2-25-team-room-cursor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2-26-team-room-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  team-room-postgres:
+    name: Rust service tests against disposable PostgreSQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: p2_test
+          POSTGRES_PASSWORD: p2-disposable-only
+          POSTGRES_DB: p2_team_room_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U p2_test -d p2_team_room_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://p2_test:p2-disposable-only@127.0.0.1:5432/p2_team_room_test
+      RUST_LOG: info
+    steps:
+      - name: Checkout exact pushed mission commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record toolchain and exact source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          rustc --version || true
+          cargo --version || true
+          printf 'TESTED_SHA=%s\n' "$GITHUB_SHA" | tee p2-26-rust-evidence.txt
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Verify disposable PostgreSQL is ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL"
+          pg_isready -h 127.0.0.1 -p 5432 -U p2_test -d p2_team_room_test
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT version(); SELECT current_database();"
+      - name: Cargo check Team Room
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml
+      - name: Run Team Room Rust and PostgreSQL tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path services/ai-team-room/Cargo.toml -- --show-output 2>&1 | tee -a p2-26-rust-evidence.txt
+      - name: Upload isolated test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2-26-team-room-${{ github.sha }}
+          path: p2-26-rust-evidence.txt
+          if-no-files-found: warn
+          retention-days: 14
