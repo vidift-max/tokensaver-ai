@@ -23,6 +23,11 @@ export async function createPhoneRuntimeWorker({
     error.code = "EXECUTOR_REQUIRED";
     throw error;
   }
+  if (typeof env.AI_PHONE_RESULT_DIRECTORY !== "string" || !env.AI_PHONE_RESULT_DIRECTORY.trim()) {
+    const error = new Error("AI_PHONE_RESULT_DIRECTORY must point to a private local result directory");
+    error.code = "RESULT_DIRECTORY_REQUIRED";
+    throw error;
+  }
   const client = new PhoneRuntimeClient(env, fetchImpl);
   const authorizer = new TeamRoomPhoneMissionAuthorizer({
     ...(teamRoomClient ? { teamRoomClient } : {}),
