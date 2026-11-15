@@ -70,7 +70,28 @@ test("worker restart reuses the real durable store after ACK failure", async () 
   await withStore(async store => {
     let executions = 0;
     let failAck = true;
-    const message = { message_id: id, message_state: "DELIVERED", content: { task: "safe test" } };
+    const message = {
+      message_id: id,
+      sender_principal_id: "50000000-0000-4000-8000-000000000005",
+      message_state: "DELIVERED",
+      content: {
+        version: 1,
+        kind: "mission",
+        mission_id: "30000000-0000-4000-8000-000000000003",
+        task_id: "40000000-0000-4000-8000-000000000004",
+        payload: { task: "safe test" }
+      }
+    };
+    const authorizer = {
+      authorize: async () => ({
+        missionId: message.content.mission_id,
+        taskId: message.content.task_id,
+        senderPrincipalId: message.sender_principal_id,
+        ownerPrincipalId: "60000000-0000-4000-8000-000000000006",
+        fencingToken: 7,
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString()
+      })
+    };
     const client = {
       poll: async () => [message],
       acknowledge: async () => {
@@ -78,11 +99,11 @@ test("worker restart reuses the real durable store after ACK failure", async () 
       }
     };
     const executor = { execute: async () => { executions++; return { report: "persisted" }; } };
-    const firstWorker = new PhoneRuntimeWorker({ client, executor, resultStore: store });
+    const firstWorker = new PhoneRuntimeWorker({ client, executor, resultStore: store, authorizer });
     await assert.rejects(() => firstWorker.runOnce(), error => error.code === "ACK_FAILED");
 
     failAck = false;
-    const restartedWorker = new PhoneRuntimeWorker({ client, executor, resultStore: store });
+    const restartedWorker = new PhoneRuntimeWorker({ client, executor, resultStore: store, authorizer });
     const outcomes = await restartedWorker.runOnce();
     assert.equal(executions, 1);
     assert.equal(outcomes[0].recovered, true);
