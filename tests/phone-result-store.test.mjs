@@ -218,3 +218,34 @@ test("rejects authentication-tag tampering and ciphertext substitution", async (
     await assert.rejects(() => store.get(id), /authentication failed/);
   });
 });
+
+
+test("rejects a valid alternate key ID because key ID is authenticated as AAD", async () => {
+  await withStore(async (store, directory) => {
+    await store.commit(id, { output: "bound to key-a" });
+    const file = path.join(directory, id + ".json");
+    const record = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(record.encrypted.keyId, "key-a");
+    record.encrypted.keyId = "key-b";
+    await writeFile(file, JSON.stringify(record));
+    await assert.rejects(() => store.get(id), /authentication failed/);
+  });
+});
+
+test("rejects empty ciphertext and non-canonical ciphertext encoding", async () => {
+  await withStore(async (store, directory) => {
+    await store.commit(id, { output: "ciphertext validation" });
+    const file = path.join(directory, id + ".json");
+    const original = JSON.parse(await readFile(file, "utf8"));
+
+    const emptyCiphertext = structuredClone(original);
+    emptyCiphertext.encrypted.ciphertext = "";
+    await writeFile(file, JSON.stringify(emptyCiphertext));
+    await assert.rejects(() => store.get(id), /authentication failed/);
+
+    const malformedCiphertext = structuredClone(original);
+    malformedCiphertext.encrypted.ciphertext = "AB==junk";
+    await writeFile(file, JSON.stringify(malformedCiphertext));
+    await assert.rejects(() => store.get(id), /Invalid encrypted result ciphertext/);
+  });
+});
