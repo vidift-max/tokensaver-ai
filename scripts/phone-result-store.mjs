@@ -154,7 +154,7 @@ export class FilePhoneResultStore {
       throw error;
     }
     const record = JSON.parse(raw);
-    if (record?.messageId !== messageId || !record?.encrypted || typeof record.encrypted !== "object") {
+    if (record?.version !== FORMAT_VERSION || record?.messageId !== messageId || !record?.encrypted || typeof record.encrypted !== "object") {
       throw new Error("Corrupt, plaintext, or mismatched durable result record");
     }
     const result = await this.decrypt(messageId, record.encrypted);
