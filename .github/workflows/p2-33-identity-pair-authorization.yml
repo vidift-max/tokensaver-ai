@@ -77,7 +77,7 @@ jobs:
             echo "CURRENT DATABASE ROLE"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_user, r.rolsuper, r.rolbypassrls FROM pg_roles r WHERE r.rolname=current_user;"
             echo "PHONE TABLE RLS FLAGS"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname IN ('ai_identities','ai_identity_principals','ai_phones','phone_pair_grants','phone_messages','phone_attachments','phone_endpoints','phone_endpoint_credentials') ORDER BY c.relname;"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT n.nspname,c.relname,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND c.relname IN ('ai_identities','ai_identity_principals','ai_phones','phone_pair_grants','phone_messages','phone_attachments','phone_endpoints','phone_endpoint_credentials') ORDER BY c.relname;"
           } | tee p2-33-rls-role-audit.txt
 
       - name: Upload exact-run evidence
