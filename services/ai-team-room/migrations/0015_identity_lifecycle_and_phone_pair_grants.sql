@@ -79,6 +79,10 @@ BEGIN
     NEW.binding_version:=OLD.binding_version+1;
     INSERT INTO ai_identity_binding_events(binding_event_id,ai_id,tenant_id,principal_id,binding_version,event_type,actor_principal_id,reason)
     VALUES(gen_random_uuid(),OLD.ai_id,OLD.tenant_id,OLD.principal_id,NEW.binding_version,'REVOKED',NEW.revoked_by_principal_id,NEW.revocation_reason);
+    UPDATE sessions SET status='REVOKED',revoked_at=NOW()
+      WHERE tenant_id=OLD.tenant_id AND principal_id=OLD.principal_id AND status='ACTIVE';
+    UPDATE workload_executions SET status='REVOKED',revoked_at=NOW()
+      WHERE tenant_id=OLD.tenant_id AND principal_id=OLD.principal_id AND status='ACTIVE';
     UPDATE phone_pair_grants SET grant_status='REVOKED',revoked_at=NOW(),
       revoked_by_principal_id=NEW.revoked_by_principal_id,revocation_reason='identity binding revoked: '||NEW.revocation_reason
       WHERE tenant_id=OLD.tenant_id AND grant_status='ACTIVE'
