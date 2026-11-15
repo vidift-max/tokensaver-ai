@@ -1,0 +1,47 @@
+name: P2.69 isolated rustfmt reproduction
+
+on:
+  push:
+    branches:
+      - validation/p2-69-rustfmt-repro
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt-reproduction:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout immutable Phone-02B target
+        uses: actions/checkout@v4
+        with:
+          ref: c9abe2d65cb2139a8136bc2a59f86f91a5382bd1
+          persist-credentials: false
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Record toolchain and verify immutable HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          rustfmt --version
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "c9abe2d65cb2139a8136bc2a59f86f91a5382bd1"
+          git status --short
+
+      - name: Run read-only formatter check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+
+      - name: Confirm checkout remains unchanged
+        if: always()
+        shell: bash
+        run: |
+          git status --short
+          test -z "$(git status --porcelain)"
