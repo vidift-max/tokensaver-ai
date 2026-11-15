@@ -16,8 +16,8 @@ CREATE TABLE phone_pair_grants (
         REFERENCES ai_phones(ai_phone_id,tenant_id) ON DELETE RESTRICT,
     FOREIGN KEY (recipient_ai_phone_id,tenant_id)
         REFERENCES ai_phones(ai_phone_id,tenant_id) ON DELETE RESTRICT,
-    FOREIGN KEY (created_by_principal_id,tenant_id)
-        REFERENCES principals(principal_id,tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (tenant_id,created_by_principal_id)
+        REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT,
     CHECK (sender_ai_phone_id <> recipient_ai_phone_id),
     CHECK ((grant_status='REVOKED') = (revoked_at IS NOT NULL))
 );
