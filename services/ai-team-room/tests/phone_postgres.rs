@@ -172,7 +172,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"offline message is durably queued before endpoint attach");
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"repeated provision is idempotent");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let provisioned_again:Value=serde_json::from_slice(&bytes).unwrap();
@@ -215,19 +215,19 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let response=http_call_endpoint(&app,"POST","/ai-phone/heartbeat",&token_a,&endpoint_a_credential,Some(serde_json::json!({"endpoint_fence":attached_a.endpoint_fence}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK);
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED);
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let created_message:Value=serde_json::from_slice(&bytes).unwrap();
     let created_message_id=created_message["message_id"].as_str().unwrap().to_string();
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"same idempotency key and payload replays the existing message");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let replay:Value=serde_json::from_slice(&bytes).unwrap();
     assert_eq!(replay["message_id"],created_message_id,"idempotent replay returns the original message ID");
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"different payload"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CONFLICT,"same idempotency key with different payload is rejected");
     let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),&token_a,&endpoint_a_credential,None).await;
@@ -292,7 +292,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B binds the same stable global AI identity");
     let (provision_a,provision_b)=tokio::join!(
         http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({}))),
-        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal})))
+        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({})))
     );
     let statuses=[provision_a.status(),provision_b.status()];
     assert!(statuses.contains(&axum::http::StatusCode::CREATED) && statuses.contains(&axum::http::StatusCode::OK),
