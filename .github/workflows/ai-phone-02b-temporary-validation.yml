@@ -22,7 +22,7 @@ jobs:
       image: ubuntu:24.04
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87
         env:
           POSTGRES_USER: tokensaver_ci
           POSTGRES_PASSWORD: disposable-ci-only-p2-61
@@ -147,6 +147,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rm -f "$HARNESS_SOURCE_PATH"' EXIT
           bash "$HARNESS_SOURCE_PATH" 2>&1 | tee validation-evidence/legacy-migration-harness.log
         # Harness creates and drops only per-run databases inside the job-scoped PostgreSQL service.
 
