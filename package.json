@@ -14,7 +14,8 @@
     "test:phone-store": "node --test tests/phone-result-store.test.mjs",
     "test": "npm run test:missions && npm run test:phone-runtime && npm run test:phone-worker && npm run test:phone-store",
     "test:phone-envelope": "node --test tests/phone-mission-envelope.test.mjs",
-    "test:phone-authorizer": "node --test tests/phone-mission-authorizer.test.mjs"
+    "test:phone-authorizer": "node --test tests/phone-mission-authorizer.test.mjs",
+    "test:phone-bootstrap": "node --test tests/create-phone-runtime-worker.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
