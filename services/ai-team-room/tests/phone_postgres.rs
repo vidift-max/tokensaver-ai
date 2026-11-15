@@ -1734,7 +1734,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
             &app,
             "POST",
             &concurrent_uri,
-            Some(&token_b),
+            Some(&sender_token),
             Some(concurrent_body.clone())
         )
     );
