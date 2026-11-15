@@ -38,7 +38,11 @@ struct CreateMessage {
 
 #[derive(Debug, Deserialize)]
 struct HistoryQuery {
+    // Timestamp-only cursor remains for the general room history endpoint.
     before: Option<DateTime<Utc>>,
+    // Private history requires the complete lexicographic cursor pair.
+    before_created_at: Option<DateTime<Utc>>,
+    before_message_id: Option<Uuid>,
     limit: Option<i64>,
 }
 
@@ -161,10 +165,15 @@ async fn private_history(
     let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members WHERE channel_id=$1 AND principal_id=$2)")
         .bind(channel).bind(who.principal_id).fetch_one(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     if !allowed{return Err(StatusCode::FORBIDDEN);}
+    // A private-history continuation must carry both cursor fields. Reject
+    // legacy timestamp-only cursors rather than silently skipping equal-time rows.
+    if query.before.is_some() || query.before_created_at.is_some() != query.before_message_id.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let limit=query.limit.unwrap_or(50).clamp(1,100);
     let rows=sqlx::query_as::<_,MessageRow>(
-        "SELECT m.message_id,m.room_id,m.channel_id,m.sender_principal_id,p.display_name AS sender_display_name,m.parent_message_id,m.body,m.created_at,m.edited_at,m.deleted_at FROM team_room_messages m JOIN participants p ON p.principal_id=m.sender_principal_id AND p.tenant_id=m.tenant_id WHERE m.channel_id=$1 AND m.deleted_at IS NULL AND ($2::timestamptz IS NULL OR m.created_at<$2) ORDER BY m.created_at DESC,m.message_id DESC LIMIT $3"
-    ).bind(channel).bind(query.before).bind(limit+1).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+        "SELECT m.message_id,m.room_id,m.channel_id,m.sender_principal_id,p.display_name AS sender_display_name,m.parent_message_id,m.body,m.created_at,m.edited_at,m.deleted_at FROM team_room_messages m JOIN participants p ON p.principal_id=m.sender_principal_id AND p.tenant_id=m.tenant_id WHERE m.channel_id=$1 AND m.deleted_at IS NULL AND ($2::timestamptz IS NULL OR (m.created_at,m.message_id)<($2,$3)) ORDER BY m.created_at DESC,m.message_id DESC LIMIT $4"
+    ).bind(channel).bind(query.before_created_at).bind(query.before_message_id).bind(limit+1).fetch_all(&pool).await.map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let has_more=rows.len() as i64>limit;
     let mut items:Vec<_>=rows.into_iter().take(limit as usize).collect(); items.reverse();
     let unread_count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM team_room_messages m LEFT JOIN team_room_message_reads r ON r.channel_id=m.channel_id AND r.principal_id=$2 WHERE m.channel_id=$1 AND m.sender_principal_id<>$2 AND m.deleted_at IS NULL AND m.created_at>COALESCE(r.last_read_at,'-infinity'::timestamptz)")
@@ -563,5 +572,71 @@ mod postgres_tests {
             .bind(tenant).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
         let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+    } 
+    #[tokio::test]
+    async fn postgres_private_history_composite_cursor_recovers_equal_timestamp_pages_without_loss_or_duplicates() {
+        let database=std::env::var("DATABASE_URL").expect("PostgreSQL integration database required");
+        let pool=connect_pool(&database).await.unwrap();migrate(&pool).await.unwrap();
+        let tenant=Uuid::new_v4();let room=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'private-cursor-integration')").bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,'private-cursor-room')").bind(room).bind(tenant).execute(&pool).await.unwrap();
+        let grants=["room.join","room.read","room.write","private_chat"];
+        let a=actor(&pool,tenant,room,"Cursor A",&grants).await;
+        let b=actor(&pool,tenant,room,"Cursor B",&grants).await;
+        let created=request(router(pool.clone()),"POST",format!("/team-room/{room}/private/{}/messages",b.principal),&a.token,
+            Some(json!({"client_message_id":Uuid::new_v4(),"body":"create private channel","parent_message_id":null}))).await;
+        assert_eq!(created.status(),StatusCode::CREATED);
+        let created_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(created.into_body(),20000).await.unwrap()).unwrap();
+        let channel=Uuid::parse_str(created_json["channel_id"].as_str().unwrap()).unwrap();
+
+        let tied_at:DateTime<Utc>="2026-11-14T12:00:00Z".parse().unwrap();
+        let older_at:DateTime<Utc>="2026-11-14T11:00:00Z".parse().unwrap();
+        let mut expected:Vec<(DateTime<Utc>,Uuid)>=Vec::new();
+        for i in 0..170u128 {
+            let id=Uuid::from_u128(0x10000000_0000_4000_8000_000000000000u128+i+1);
+            sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+                .bind(id).bind(tenant).bind(room).bind(channel).bind(b.principal).bind(Uuid::new_v4()).bind(format!("same-time-{i}")).bind(tied_at)
+                .execute(&pool).await.unwrap();
+            expected.push((tied_at,id));
+        }
+        for i in 0..60u128 {
+            let id=Uuid::from_u128(0x20000000_0000_4000_8000_000000000000u128+i+1);
+            sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+                .bind(id).bind(tenant).bind(room).bind(channel).bind(b.principal).bind(Uuid::new_v4()).bind(format!("older-{i}")).bind(older_at)
+                .execute(&pool).await.unwrap();
+            expected.push((older_at,id));
+        }
+        expected.sort();
+
+        let app=router(pool.clone());
+        let mut path=format!("/team-room/{room}/private/{}/messages?limit=37",b.principal);
+        let mut recovered:Vec<Uuid>=Vec::new();
+        let mut page_count=0usize;
+        loop {
+            let response=request(app.clone(),"GET",path,&a.token,None).await;
+            assert_eq!(response.status(),StatusCode::OK);
+            let page:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),200000).await.unwrap()).unwrap();
+            let items=page["items"].as_array().unwrap();
+            assert!(!items.is_empty() || !page["has_more"].as_bool().unwrap());
+            for item in items { recovered.push(Uuid::parse_str(item["message_id"].as_str().unwrap()).unwrap()); }
+            page_count+=1;
+            if !page["has_more"].as_bool().unwrap() { break; }
+            let oldest=items.first().unwrap();
+            let timestamp=oldest["created_at"].as_str().unwrap().replace("+00:00","Z");
+            let encoded_timestamp=timestamp.replace("+","%2B");
+            path=format!("/team-room/{room}/private/{}/messages?limit=37&before_created_at={}&before_message_id={}",
+                b.principal,encoded_timestamp,oldest["message_id"].as_str().unwrap());
+        }
+        let expected_ids:Vec<Uuid>=expected.iter().map(|(_,id)|*id).collect();
+        assert_eq!(recovered.len(),230,"all rows must be recovered across multiple pages");
+        assert_eq!(recovered.iter().copied().collect::<std::collections::HashSet<_>>().len(),230,"no duplicate message IDs");
+        assert_eq!(recovered,expected_ids,"stable ascending order by (created_at,message_id)");
+        assert!(page_count>=6,"test must cross multiple page boundaries, got {page_count}");
+
+        let timestamp_only=request(app,"GET",format!("/team-room/{room}/private/{}/messages?limit=37&before={}",b.principal,tied_at.to_rfc3339()),&a.token,None).await;
+        assert_eq!(timestamp_only.status(),StatusCode::BAD_REQUEST,"legacy timestamp-only private cursor must fail closed");
+        sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id=$1").bind(channel).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
     }
+
 }
