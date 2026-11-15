@@ -60,7 +60,7 @@ INSERT INTO ai_identity_binding_events
 SELECT gen_random_uuid(),ai_id,tenant_id,principal_id,binding_version,'CREATED','P2.33 baseline import'
 FROM ai_identity_principals;
 
-CREATE FUNCTION record_ai_identity_binding_update() RETURNS TRIGGER AS $$
+CREATE FUNCTION record_ai_identity_binding_update() RETURNS TRIGGER AS $p233$
 BEGIN
   IF NEW.ai_id<>OLD.ai_id OR NEW.tenant_id<>OLD.tenant_id OR NEW.principal_id<>OLD.principal_id THEN
     RAISE EXCEPTION 'AI identity principal binding is immutable; revoke and provision a new identity' USING ERRCODE='23514';
@@ -88,24 +88,24 @@ BEGIN
       WHERE ai_id=OLD.ai_id AND tenant_id=OLD.tenant_id AND phone_status<>'REVOKED';
   END IF;
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_identity_binding_update_guard
 BEFORE UPDATE ON ai_identity_principals
 FOR EACH ROW EXECUTE FUNCTION record_ai_identity_binding_update();
 
-CREATE FUNCTION record_ai_identity_binding_insert() RETURNS TRIGGER AS $$
+CREATE FUNCTION record_ai_identity_binding_insert() RETURNS TRIGGER AS $p233$
 BEGIN
   INSERT INTO ai_identity_binding_events(binding_event_id,ai_id,tenant_id,principal_id,binding_version,event_type,reason)
   VALUES(gen_random_uuid(),NEW.ai_id,NEW.tenant_id,NEW.principal_id,NEW.binding_version,'CREATED','Provisioned by trusted control plane');
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_identity_binding_insert_audit
 AFTER INSERT ON ai_identity_principals
 FOR EACH ROW EXECUTE FUNCTION record_ai_identity_binding_insert();
 
-CREATE FUNCTION enforce_active_ai_identity_binding() RETURNS TRIGGER AS $
+CREATE FUNCTION enforce_active_ai_identity_binding() RETURNS TRIGGER AS $p233$
 DECLARE identity_state TEXT;
 BEGIN
   SELECT identity_status INTO identity_state FROM ai_identities WHERE ai_id=NEW.ai_id;
@@ -113,13 +113,13 @@ BEGIN
     RAISE EXCEPTION 'retired or missing AI identity cannot receive a tenant principal binding' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
-END $ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_identity_binding_requires_active_ai
 BEFORE INSERT OR UPDATE ON ai_identity_principals
 FOR EACH ROW EXECUTE FUNCTION enforce_active_ai_identity_binding();
 
-CREATE FUNCTION revoke_ai_binding_when_principal_disabled() RETURNS TRIGGER AS $
+CREATE FUNCTION revoke_ai_binding_when_principal_disabled() RETURNS TRIGGER AS $p233$
 BEGIN
   IF OLD.enabled=TRUE AND NEW.enabled=FALSE THEN
     UPDATE ai_identity_principals
@@ -127,13 +127,13 @@ BEGIN
      WHERE tenant_id=NEW.tenant_id AND principal_id=NEW.principal_id AND binding_status='ACTIVE';
   END IF;
   RETURN NEW;
-END $ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER principal_disable_revokes_ai_phone
 AFTER UPDATE OF enabled ON principals
 FOR EACH ROW EXECUTE FUNCTION revoke_ai_binding_when_principal_disabled();
 
-CREATE FUNCTION enforce_ai_identity_retirement() RETURNS TRIGGER AS $$
+CREATE FUNCTION enforce_ai_identity_retirement() RETURNS TRIGGER AS $p233$
 BEGIN
   IF NEW.ai_id<>OLD.ai_id OR NEW.identity_key<>OLD.identity_key OR NEW.identity_kind<>OLD.identity_kind THEN
     RAISE EXCEPTION 'global AI identity keys and kind are immutable' USING ERRCODE='23514';
@@ -154,13 +154,13 @@ BEGIN
     END IF;
   END IF;
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_identity_retirement_guard
 BEFORE UPDATE ON ai_identities
 FOR EACH ROW EXECUTE FUNCTION enforce_ai_identity_retirement();
 
-CREATE FUNCTION enforce_ai_phone_revocation() RETURNS TRIGGER AS $$
+CREATE FUNCTION enforce_ai_phone_revocation() RETURNS TRIGGER AS $p233$
 BEGIN
   IF NEW.ai_phone_id<>OLD.ai_phone_id OR NEW.ai_id<>OLD.ai_id OR NEW.tenant_id<>OLD.tenant_id THEN
     RAISE EXCEPTION 'AI_PHONE_ID ownership tuple is immutable' USING ERRCODE='23514';
@@ -189,11 +189,16 @@ BEGIN
       WHERE execution_id IN (SELECT execution_id FROM phone_attachments WHERE ai_phone_id=OLD.ai_phone_id AND tenant_id=OLD.tenant_id);
   END IF;
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_phone_revocation_guard
 BEFORE UPDATE ON ai_phones
 FOR EACH ROW EXECUTE FUNCTION enforce_ai_phone_revocation();
+
+CREATE FUNCTION reject_phone_identity_audit_mutation() RETURNS TRIGGER AS $p233$
+BEGIN
+  RAISE EXCEPTION 'identity and grant audit history is append-only' USING ERRCODE='55000';
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TABLE ai_phone_lifecycle_events (
   event_id UUID PRIMARY KEY,
@@ -212,7 +217,7 @@ CREATE TABLE ai_phone_lifecycle_events (
 INSERT INTO ai_phone_lifecycle_events(event_id,ai_phone_id,tenant_id,ai_id,event_type,reason)
 SELECT gen_random_uuid(),ai_phone_id,tenant_id,ai_id,'CREATED','P2.33 baseline import' FROM ai_phones;
 
-CREATE FUNCTION record_ai_phone_lifecycle_event() RETURNS TRIGGER AS $
+CREATE FUNCTION record_ai_phone_lifecycle_event() RETURNS TRIGGER AS $p233$
 BEGIN
   IF TG_OP='INSERT' THEN
     INSERT INTO ai_phone_lifecycle_events(event_id,ai_phone_id,tenant_id,ai_id,event_type,reason)
@@ -222,7 +227,7 @@ BEGIN
     VALUES(gen_random_uuid(),OLD.ai_phone_id,OLD.tenant_id,OLD.ai_id,'REVOKED',NEW.revoked_by_principal_id,NEW.revocation_reason);
   END IF;
   RETURN NEW;
-END $ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_phone_lifecycle_insert_audit
 AFTER INSERT ON ai_phones
@@ -274,7 +279,7 @@ CREATE UNIQUE INDEX phone_pair_one_active_grant_idx
 CREATE INDEX phone_pair_grants_lookup_idx
   ON phone_pair_grants(tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,grant_status);
 
-CREATE FUNCTION enforce_phone_pair_grant_binding() RETURNS TRIGGER AS $
+CREATE FUNCTION enforce_phone_pair_grant_binding() RETURNS TRIGGER AS $p233$
 BEGIN
   IF TG_OP='INSERT' AND NOT EXISTS (
     SELECT 1 FROM principals p JOIN principal_permissions pp
@@ -336,7 +341,7 @@ BEGIN
     RAISE EXCEPTION 'pair grant principals must be the active principals bound to both phones in the same tenant and room' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER phone_pair_grant_binding_guard
 BEFORE INSERT OR UPDATE ON phone_pair_grants
@@ -353,7 +358,7 @@ CREATE TABLE phone_pair_grant_events (
   FOREIGN KEY (tenant_id,actor_principal_id) REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT
 );
 
-CREATE FUNCTION record_phone_pair_grant_event() RETURNS TRIGGER AS $
+CREATE FUNCTION record_phone_pair_grant_event() RETURNS TRIGGER AS $p233$
 BEGIN
   IF TG_OP='INSERT' THEN
     INSERT INTO phone_pair_grant_events(event_id,grant_id,tenant_id,actor_principal_id,event_type,reason)
@@ -365,7 +370,7 @@ BEGIN
     VALUES(gen_random_uuid(),OLD.grant_id,OLD.tenant_id,NEW.revoked_by_principal_id,'REVOKED',NEW.revocation_reason);
   END IF;
   RETURN NEW;
-END $ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER phone_pair_grant_audit_insert
 AFTER INSERT ON phone_pair_grants
@@ -374,11 +379,6 @@ FOR EACH ROW EXECUTE FUNCTION record_phone_pair_grant_event();
 CREATE TRIGGER phone_pair_grant_audit_revoke
 AFTER UPDATE OF grant_status ON phone_pair_grants
 FOR EACH ROW EXECUTE FUNCTION record_phone_pair_grant_event();
-
-CREATE FUNCTION reject_phone_identity_audit_mutation() RETURNS TRIGGER AS $
-BEGIN
-  RAISE EXCEPTION 'identity and grant audit history is append-only' USING ERRCODE='55000';
-END $ LANGUAGE plpgsql;
 
 CREATE TRIGGER ai_identity_binding_events_immutable
 BEFORE UPDATE OR DELETE ON ai_identity_binding_events
@@ -420,7 +420,7 @@ ALTER TABLE phone_messages
 
 CREATE INDEX phone_messages_pair_grant_idx ON phone_messages(pair_grant_id,message_state);
 
-CREATE OR REPLACE FUNCTION enforce_phone_message_transition() RETURNS TRIGGER AS $
+CREATE OR REPLACE FUNCTION enforce_phone_message_transition() RETURNS TRIGGER AS $p233$
 BEGIN
   IF NEW.ai_phone_id<>OLD.ai_phone_id OR NEW.tenant_id<>OLD.tenant_id OR
      NEW.sender_principal_id<>OLD.sender_principal_id OR NEW.recipient_ai_id<>OLD.recipient_ai_id OR
@@ -445,17 +445,17 @@ BEGIN
     RAISE EXCEPTION 'phone message attempts cannot decrease' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
-END $ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 
-CREATE FUNCTION fail_pending_messages_on_pair_grant_revocation() RETURNS TRIGGER AS $$
+CREATE FUNCTION fail_pending_messages_on_pair_grant_revocation() RETURNS TRIGGER AS $p233$
 BEGIN
   IF OLD.grant_status='ACTIVE' AND NEW.grant_status IN ('REVOKED','EXPIRED') THEN
     UPDATE phone_messages SET message_state='FAILED',updated_at=NOW()
       WHERE pair_grant_id=OLD.grant_id AND message_state IN ('PENDING','DELIVERED');
   END IF;
   RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $p233$ LANGUAGE plpgsql;
 
 CREATE TRIGGER phone_pair_grant_message_revoke
 AFTER UPDATE OF grant_status ON phone_pair_grants
