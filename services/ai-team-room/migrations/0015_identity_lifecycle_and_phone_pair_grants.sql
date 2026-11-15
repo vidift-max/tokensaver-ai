@@ -65,8 +65,12 @@ BEGIN
   IF NEW.ai_id<>OLD.ai_id OR NEW.tenant_id<>OLD.tenant_id OR NEW.principal_id<>OLD.principal_id THEN
     RAISE EXCEPTION 'AI identity principal binding is immutable; revoke and provision a new identity' USING ERRCODE='23514';
   END IF;
-  IF OLD.binding_status='REVOKED' AND NEW.binding_status<>'REVOKED' THEN
-    RAISE EXCEPTION 'revoked AI identity principal binding cannot be reactivated' USING ERRCODE='23514';
+  IF OLD.binding_status='REVOKED' AND (
+    NEW.binding_status<>'REVOKED' OR NEW.revoked_at IS DISTINCT FROM OLD.revoked_at OR
+    NEW.revoked_by_principal_id IS DISTINCT FROM OLD.revoked_by_principal_id OR
+    NEW.revocation_reason IS DISTINCT FROM OLD.revocation_reason OR NEW.binding_version<>OLD.binding_version
+  ) THEN
+    RAISE EXCEPTION 'revoked AI identity principal binding is immutable' USING ERRCODE='23514';
   END IF;
   IF OLD.binding_status='ACTIVE' AND NEW.binding_status='REVOKED' THEN
     IF NEW.revoked_at IS NULL OR NEW.revocation_reason IS NULL OR length(trim(NEW.revocation_reason))=0 THEN
@@ -101,6 +105,20 @@ CREATE TRIGGER ai_identity_binding_insert_audit
 AFTER INSERT ON ai_identity_principals
 FOR EACH ROW EXECUTE FUNCTION record_ai_identity_binding_insert();
 
+CREATE FUNCTION enforce_active_ai_identity_binding() RETURNS TRIGGER AS $
+DECLARE identity_state TEXT;
+BEGIN
+  SELECT identity_status INTO identity_state FROM ai_identities WHERE ai_id=NEW.ai_id;
+  IF identity_state IS DISTINCT FROM 'ACTIVE' THEN
+    RAISE EXCEPTION 'retired or missing AI identity cannot receive a tenant principal binding' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END $ LANGUAGE plpgsql;
+
+CREATE TRIGGER ai_identity_binding_requires_active_ai
+BEFORE INSERT OR UPDATE ON ai_identity_principals
+FOR EACH ROW EXECUTE FUNCTION enforce_active_ai_identity_binding();
+
 CREATE FUNCTION revoke_ai_binding_when_principal_disabled() RETURNS TRIGGER AS $
 BEGIN
   IF OLD.enabled=TRUE AND NEW.enabled=FALSE THEN
@@ -120,8 +138,12 @@ BEGIN
   IF NEW.ai_id<>OLD.ai_id OR NEW.identity_key<>OLD.identity_key OR NEW.identity_kind<>OLD.identity_kind THEN
     RAISE EXCEPTION 'global AI identity keys and kind are immutable' USING ERRCODE='23514';
   END IF;
-  IF OLD.identity_status='RETIRED' AND NEW.identity_status<>'RETIRED' THEN
-    RAISE EXCEPTION 'retired AI identity cannot be reactivated' USING ERRCODE='23514';
+  IF OLD.identity_status='RETIRED' AND (
+    NEW.identity_status<>'RETIRED' OR NEW.retired_at IS DISTINCT FROM OLD.retired_at OR
+    NEW.retired_by_principal_id IS DISTINCT FROM OLD.retired_by_principal_id OR
+    NEW.retirement_reason IS DISTINCT FROM OLD.retirement_reason
+  ) THEN
+    RAISE EXCEPTION 'retired AI identity lifecycle record is immutable' USING ERRCODE='23514';
   END IF;
   IF NEW.identity_status='RETIRED' AND OLD.identity_status<>'RETIRED' THEN
     IF EXISTS (SELECT 1 FROM ai_identity_principals WHERE ai_id=OLD.ai_id AND binding_status='ACTIVE') OR EXISTS (SELECT 1 FROM ai_phones WHERE ai_id=OLD.ai_id AND phone_status<>'REVOKED') THEN
@@ -143,8 +165,12 @@ BEGIN
   IF NEW.ai_phone_id<>OLD.ai_phone_id OR NEW.ai_id<>OLD.ai_id OR NEW.tenant_id<>OLD.tenant_id THEN
     RAISE EXCEPTION 'AI_PHONE_ID ownership tuple is immutable' USING ERRCODE='23514';
   END IF;
-  IF OLD.phone_status='REVOKED' AND NEW.phone_status<>'REVOKED' THEN
-    RAISE EXCEPTION 'revoked AI_PHONE_ID cannot be reactivated' USING ERRCODE='23514';
+  IF OLD.phone_status='REVOKED' AND (
+    NEW.phone_status<>'REVOKED' OR NEW.revoked_at IS DISTINCT FROM OLD.revoked_at OR
+    NEW.revoked_by_principal_id IS DISTINCT FROM OLD.revoked_by_principal_id OR
+    NEW.revocation_reason IS DISTINCT FROM OLD.revocation_reason
+  ) THEN
+    RAISE EXCEPTION 'revoked AI_PHONE_ID lifecycle record is immutable' USING ERRCODE='23514';
   END IF;
   IF NEW.phone_status='REVOKED' AND OLD.phone_status<>'REVOKED' THEN
     IF NEW.revoked_at IS NULL OR NEW.revocation_reason IS NULL OR length(trim(NEW.revocation_reason))=0 THEN
@@ -168,6 +194,47 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER ai_phone_revocation_guard
 BEFORE UPDATE ON ai_phones
 FOR EACH ROW EXECUTE FUNCTION enforce_ai_phone_revocation();
+
+CREATE TABLE ai_phone_lifecycle_events (
+  event_id UUID PRIMARY KEY,
+  ai_phone_id UUID NOT NULL,
+  tenant_id UUID NOT NULL,
+  ai_id UUID NOT NULL,
+  event_type TEXT NOT NULL CHECK (event_type IN ('CREATED','REVOKED')),
+  actor_principal_id UUID,
+  reason TEXT NOT NULL CHECK (length(trim(reason)) BETWEEN 1 AND 1000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (ai_phone_id,tenant_id,ai_id)
+    REFERENCES ai_phones(ai_phone_id,tenant_id,ai_id) ON DELETE RESTRICT,
+  FOREIGN KEY (tenant_id,actor_principal_id)
+    REFERENCES principals(tenant_id,principal_id) ON DELETE RESTRICT
+);
+INSERT INTO ai_phone_lifecycle_events(event_id,ai_phone_id,tenant_id,ai_id,event_type,reason)
+SELECT gen_random_uuid(),ai_phone_id,tenant_id,ai_id,'CREATED','P2.33 baseline import' FROM ai_phones;
+
+CREATE FUNCTION record_ai_phone_lifecycle_event() RETURNS TRIGGER AS $
+BEGIN
+  IF TG_OP='INSERT' THEN
+    INSERT INTO ai_phone_lifecycle_events(event_id,ai_phone_id,tenant_id,ai_id,event_type,reason)
+    VALUES(gen_random_uuid(),NEW.ai_phone_id,NEW.tenant_id,NEW.ai_id,'CREATED','Provisioned by trusted control plane');
+  ELSIF OLD.phone_status<>'REVOKED' AND NEW.phone_status='REVOKED' THEN
+    INSERT INTO ai_phone_lifecycle_events(event_id,ai_phone_id,tenant_id,ai_id,event_type,actor_principal_id,reason)
+    VALUES(gen_random_uuid(),OLD.ai_phone_id,OLD.tenant_id,OLD.ai_id,'REVOKED',NEW.revoked_by_principal_id,NEW.revocation_reason);
+  END IF;
+  RETURN NEW;
+END $ LANGUAGE plpgsql;
+
+CREATE TRIGGER ai_phone_lifecycle_insert_audit
+AFTER INSERT ON ai_phones
+FOR EACH ROW EXECUTE FUNCTION record_ai_phone_lifecycle_event();
+
+CREATE TRIGGER ai_phone_lifecycle_revoke_audit
+AFTER UPDATE OF phone_status ON ai_phones
+FOR EACH ROW EXECUTE FUNCTION record_ai_phone_lifecycle_event();
+
+CREATE TRIGGER ai_phone_lifecycle_events_immutable
+BEFORE UPDATE OR DELETE ON ai_phone_lifecycle_events
+FOR EACH ROW EXECUTE FUNCTION reject_phone_identity_audit_mutation();
 
 CREATE TABLE phone_pair_grants (
   grant_id UUID PRIMARY KEY,
@@ -207,18 +274,46 @@ CREATE UNIQUE INDEX phone_pair_one_active_grant_idx
 CREATE INDEX phone_pair_grants_lookup_idx
   ON phone_pair_grants(tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,grant_status);
 
-CREATE FUNCTION enforce_phone_pair_grant_binding() RETURNS TRIGGER AS $$
+CREATE FUNCTION enforce_phone_pair_grant_binding() RETURNS TRIGGER AS $
 BEGIN
+  IF TG_OP='INSERT' AND NOT EXISTS (
+    SELECT 1 FROM principals p JOIN principal_permissions pp
+      ON pp.tenant_id=p.tenant_id AND pp.principal_id=p.principal_id
+    WHERE p.tenant_id=NEW.tenant_id AND p.principal_id=NEW.granted_by_principal_id AND p.enabled=TRUE
+      AND pp.permission='phone.pair.grant' AND pp.revoked_at IS NULL
+      AND (pp.room_id IS NULL OR pp.room_id=NEW.room_id)
+  ) THEN
+    RAISE EXCEPTION 'pair grant author lacks phone.pair.grant permission' USING ERRCODE='42501';
+  END IF;
+  IF TG_OP='UPDATE' AND OLD.grant_status='ACTIVE' AND NEW.grant_status='REVOKED' AND NOT EXISTS (
+    SELECT 1 FROM principals p JOIN principal_permissions pp
+      ON pp.tenant_id=p.tenant_id AND pp.principal_id=p.principal_id
+    WHERE p.tenant_id=NEW.tenant_id AND p.principal_id=NEW.revoked_by_principal_id AND p.enabled=TRUE
+      AND pp.permission='phone.pair.grant' AND pp.revoked_at IS NULL
+      AND (pp.room_id IS NULL OR pp.room_id=NEW.room_id)
+  ) THEN
+    RAISE EXCEPTION 'pair grant revoker lacks phone.pair.grant permission' USING ERRCODE='42501';
+  END IF;
   IF TG_OP='UPDATE' AND (
     NEW.tenant_id<>OLD.tenant_id OR NEW.room_id<>OLD.room_id OR
     NEW.source_ai_phone_id<>OLD.source_ai_phone_id OR NEW.destination_ai_phone_id<>OLD.destination_ai_phone_id OR
     NEW.source_principal_id<>OLD.source_principal_id OR NEW.destination_principal_id<>OLD.destination_principal_id OR
-    NEW.permission<>OLD.permission OR NEW.grant_version<>OLD.grant_version
+    NEW.permission<>OLD.permission OR NEW.grant_version<>OLD.grant_version OR
+    NEW.source_binding_version<>OLD.source_binding_version OR NEW.destination_binding_version<>OLD.destination_binding_version OR
+    NEW.valid_from<>OLD.valid_from OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR
+    NEW.granted_by_principal_id<>OLD.granted_by_principal_id OR NEW.granted_at<>OLD.granted_at
   ) THEN
     RAISE EXCEPTION 'phone pair grant identity is immutable' USING ERRCODE='23514';
   END IF;
   IF TG_OP='UPDATE' AND OLD.grant_status<>'ACTIVE' AND NEW.grant_status='ACTIVE' THEN
     RAISE EXCEPTION 'revoked or expired pair grants cannot be reactivated' USING ERRCODE='23514';
+  END IF;
+  IF TG_OP='UPDATE' AND OLD.grant_status='REVOKED' AND (
+    NEW.revoked_at IS DISTINCT FROM OLD.revoked_at OR
+    NEW.revoked_by_principal_id IS DISTINCT FROM OLD.revoked_by_principal_id OR
+    NEW.revocation_reason IS DISTINCT FROM OLD.revocation_reason
+  ) THEN
+    RAISE EXCEPTION 'revoked pair grant audit data is immutable' USING ERRCODE='23514';
   END IF;
   IF TG_OP='UPDATE' AND OLD.grant_status='ACTIVE' AND NEW.grant_status='REVOKED' THEN
     IF NEW.revoked_at IS NULL OR NEW.revocation_reason IS NULL OR length(trim(NEW.revocation_reason))=0 THEN
@@ -311,12 +406,47 @@ ALTER TABLE phone_messages
     FOREIGN KEY (source_ai_phone_id,tenant_id) REFERENCES ai_phones(ai_phone_id,tenant_id) ON DELETE RESTRICT,
   ADD CONSTRAINT phone_messages_room_scope_fk
     FOREIGN KEY (tenant_id,room_id) REFERENCES rooms(tenant_id,room_id) ON DELETE RESTRICT,
+  ADD CONSTRAINT phone_messages_pair_fields_all_or_none CHECK (
+    (pair_grant_id IS NULL AND source_ai_phone_id IS NULL AND destination_principal_id IS NULL AND room_id IS NULL
+      AND pair_grant_version IS NULL AND source_binding_version IS NULL AND destination_binding_version IS NULL)
+    OR
+    (pair_grant_id IS NOT NULL AND source_ai_phone_id IS NOT NULL AND destination_principal_id IS NOT NULL AND room_id IS NOT NULL
+      AND pair_grant_version IS NOT NULL AND source_binding_version IS NOT NULL AND destination_binding_version IS NOT NULL)
+  ),
   ADD CONSTRAINT phone_messages_pair_grant_scope_fk
     FOREIGN KEY (pair_grant_id,tenant_id,room_id,source_ai_phone_id,ai_phone_id,sender_principal_id,destination_principal_id,pair_grant_version,source_binding_version,destination_binding_version)
     REFERENCES phone_pair_grants(grant_id,tenant_id,room_id,source_ai_phone_id,destination_ai_phone_id,source_principal_id,destination_principal_id,grant_version,source_binding_version,destination_binding_version)
     ON DELETE RESTRICT;
 
 CREATE INDEX phone_messages_pair_grant_idx ON phone_messages(pair_grant_id,message_state);
+
+CREATE OR REPLACE FUNCTION enforce_phone_message_transition() RETURNS TRIGGER AS $
+BEGIN
+  IF NEW.ai_phone_id<>OLD.ai_phone_id OR NEW.tenant_id<>OLD.tenant_id OR
+     NEW.sender_principal_id<>OLD.sender_principal_id OR NEW.recipient_ai_id<>OLD.recipient_ai_id OR
+     NEW.sequence_no<>OLD.sequence_no OR NEW.idempotency_key<>OLD.idempotency_key OR
+     NEW.content<>OLD.content OR
+     NEW.source_ai_phone_id IS DISTINCT FROM OLD.source_ai_phone_id OR
+     NEW.destination_principal_id IS DISTINCT FROM OLD.destination_principal_id OR
+     NEW.room_id IS DISTINCT FROM OLD.room_id OR NEW.pair_grant_id IS DISTINCT FROM OLD.pair_grant_id OR
+     NEW.pair_grant_version IS DISTINCT FROM OLD.pair_grant_version OR
+     NEW.source_binding_version IS DISTINCT FROM OLD.source_binding_version OR
+     NEW.destination_binding_version IS DISTINCT FROM OLD.destination_binding_version THEN
+    RAISE EXCEPTION 'phone message identity, routing and content are immutable' USING ERRCODE='23514';
+  END IF;
+  IF NOT (
+    NEW.message_state=OLD.message_state OR
+    (OLD.message_state='PENDING' AND NEW.message_state IN ('DELIVERED','FAILED')) OR
+    (OLD.message_state='DELIVERED' AND NEW.message_state IN ('ACK','FAILED','PENDING'))
+  ) THEN
+    RAISE EXCEPTION 'invalid phone message state transition' USING ERRCODE='23514';
+  END IF;
+  IF NEW.attempt_count<OLD.attempt_count THEN
+    RAISE EXCEPTION 'phone message attempts cannot decrease' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END $ LANGUAGE plpgsql;
+
 
 CREATE FUNCTION fail_pending_messages_on_pair_grant_revocation() RETURNS TRIGGER AS $$
 BEGIN
