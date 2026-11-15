@@ -374,7 +374,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     assert_ne!(phone_1_id, phone_2_id, "AI #2 must receive a distinct AI_PHONE_ID");
 
     // A third phone is provisioned in the same tenant and room but receives no pair grant.
-    let (ai_3_principal, _, ai_3_session, _, _, _) =
+    let (ai_3_principal, _, ai_3_session, ai_3_execution, _, _) =
         add_ai(&pool, tenant_id, room_id, "AI-PHONE-03-TEST").await;
     grant_permissions(&pool, tenant_id, room_id, ai_3_principal).await;
     let (status, body) = call(&app,"POST","/ai-phone/identities",&token_1,Some(serde_json::json!({
@@ -404,6 +404,19 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     }))).await;
     assert_eq!(status,StatusCode::FORBIDDEN,"Phone #1 cannot send to Phone #3 without an explicit directional grant");
 
+    let (status,_)=call(&app,"POST",&format!("/ai-phone/{phone_1_id}/messages"),&token_2,Some(serde_json::json!({
+        "idempotency_key":"phone-02-to-01-denied","content":{"text":"no reverse grant"}
+    }))).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,"Phone #2 cannot reply without a separately authorized reverse grant");
+
+    let wrong_binding=sqlx::query("INSERT INTO ai_identity_principals(ai_id,tenant_id,principal_id) VALUES($1,$2,$3)")
+        .bind(ai_1_id).bind(tenant_id).bind(ai_2_principal).execute(&pool).await;
+    assert!(wrong_binding.is_err(),"one AI identity cannot be rebound to another principal in the same tenant");
+
+    let duplicate_phone=sqlx::query("INSERT INTO ai_phones(ai_phone_id,ai_id,tenant_id) VALUES($1,$2,$3)")
+        .bind(phone_1_id).bind(ai_2_id).bind(tenant_id).execute(&pool).await;
+    assert!(duplicate_phone.is_err(),"an AI_PHONE_ID cannot be duplicated across AI identities");
+
     let (status,_)=call(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages"),&token_1,Some(serde_json::json!({
         "idempotency_key":"phone-01-spoof-origin","content":{"origin":"forged-phone","text":"must reject"}
     }))).await;
@@ -413,6 +426,16 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "idempotency_key":"phone-01-spoof-room","content":{"room":"foreign-room","text":"must reject"}
     }))).await;
     assert_eq!(status,StatusCode::BAD_REQUEST,"room claims embedded in content are rejected");
+
+    for claim in ["destination","peer","sender"] {
+        let mut content=serde_json::Map::new();
+        content.insert(claim.to_string(),serde_json::json!("forged-identity"));
+        content.insert("text".to_string(),serde_json::json!("must reject"));
+        let (claim_status,_)=call(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages"),&token_1,Some(serde_json::json!({
+            "idempotency_key":format!("phone-01-spoof-{claim}"),"content":Value::Object(content)
+        }))).await;
+        assert_eq!(claim_status,StatusCode::BAD_REQUEST,"{claim} identity claim is rejected from content");
+    }
 
     let (status,_)=call(&app,"POST",&format!("/ai-phone/{phone_2_id}/messages"),&token_1,Some(serde_json::json!({
         "idempotency_key":"phone-01-top-level-origin","content":{"text":"must reject"},"origin":"forged-phone"
@@ -1309,4 +1332,42 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let grant_state:String=sqlx::query_scalar("SELECT grant_status FROM phone_pair_grants WHERE grant_id=$1")
         .bind(pair_grant_id).fetch_one(&pool).await.unwrap();
     assert_eq!(grant_state,"REVOKED");
+
+    // Revoke Phone #3's identity binding: the phone, sessions, executions and old identity
+    // become terminal, and neither the phone nor AI identity can be reused.
+    let ai_3_id:Uuid=sqlx::query_scalar("SELECT ai_id FROM ai_identity_principals WHERE tenant_id=$1 AND principal_id=$2")
+        .bind(tenant_id).bind(ai_3_principal).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE ai_identity_principals SET binding_status='REVOKED',revoked_at=NOW(),revocation_reason='P2.33 adversarial binding revocation' WHERE tenant_id=$1 AND principal_id=$2 AND binding_status='ACTIVE'")
+        .bind(tenant_id).bind(ai_3_principal).execute(&pool).await.unwrap();
+
+    let phone3_status:String=sqlx::query_scalar("SELECT phone_status FROM ai_phones WHERE ai_phone_id=$1")
+        .bind(phone_3_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(phone3_status,"REVOKED");
+    let session3_status:String=sqlx::query_scalar("SELECT status FROM sessions WHERE session_id=$1")
+        .bind(ai_3_session).fetch_one(&pool).await.unwrap();
+    assert_eq!(session3_status,"REVOKED");
+    let execution3_status:String=sqlx::query_scalar("SELECT status FROM workload_executions WHERE execution_id=$1")
+        .bind(ai_3_execution).fetch_one(&pool).await.unwrap();
+    assert_eq!(execution3_status,"REVOKED");
+
+    let binding_reuse=sqlx::query("UPDATE ai_identity_principals SET binding_status='ACTIVE',revoked_at=NULL,revocation_reason=NULL WHERE tenant_id=$1 AND principal_id=$2")
+        .bind(tenant_id).bind(ai_3_principal).execute(&pool).await;
+    assert!(binding_reuse.is_err(),"revoked principal-to-AI binding cannot be reactivated");
+
+    let phone_reuse=sqlx::query("UPDATE ai_phones SET phone_status='DISCONNECTED',revoked_at=NULL,revocation_reason=NULL WHERE ai_phone_id=$1")
+        .bind(phone_3_id).execute(&pool).await;
+    assert!(phone_reuse.is_err(),"revoked AI_PHONE_ID cannot be reactivated");
+
+    sqlx::query("UPDATE ai_identities SET identity_status='RETIRED',retired_at=NOW(),retirement_reason='P2.33 terminal identity retirement' WHERE ai_id=$1")
+        .bind(ai_3_id).execute(&pool).await.unwrap();
+    let identity_reuse=sqlx::query("UPDATE ai_identities SET identity_status='ACTIVE',retired_at=NULL,retirement_reason=NULL WHERE ai_id=$1")
+        .bind(ai_3_id).execute(&pool).await;
+    assert!(identity_reuse.is_err(),"retired AI_ID cannot be reactivated");
+
+    let (status,_)=call(&app,"POST","/ai-phone/identities",&token_1,Some(serde_json::json!({
+        "identity_key":format!("phone-02-test:ai-3:{}",ai_3_principal),
+        "identity_kind":"TEST","display_label":"AI-PHONE-03-TEST",
+        "tenant_id":tenant_id,"principal_id":ai_3_principal
+    }))).await;
+    assert_eq!(status,StatusCode::FORBIDDEN,"retired AI_ID key cannot be reused by provisioning");
 }
