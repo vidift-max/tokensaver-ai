@@ -1,3 +1,4 @@
+pub mod phone;
 pub mod auth;
 
 use chrono::{DateTime, Utc};
