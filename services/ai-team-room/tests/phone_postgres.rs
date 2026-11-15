@@ -177,6 +177,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "phone.message.read",
         "phone.message.send",
         "phone.message.ack",
+        "phone.pair.grant",
         "task.read",
     ] {
         grant(&pool, tenant, room, principal, permission).await;
@@ -448,7 +449,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(response.status(), axum::http::StatusCode::CREATED);
     let bytes = axum::body::to_bytes(response.into_body(), 100_000)
@@ -456,7 +457,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .unwrap();
     let created_message: Value = serde_json::from_slice(&bytes).unwrap();
     let created_message_id = created_message["message_id"].as_str().unwrap().to_string();
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"offline-to-online"}}))).await;
     assert_eq!(
         response.status(),
@@ -471,7 +472,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         replay["message_id"], created_message_id,
         "idempotent replay returns the original message ID"
     );
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&sender_token),
         Some(serde_json::json!({"idempotency_key":"http-e2e-1","content":{"text":"different payload"}}))).await;
     assert_eq!(
         response.status(),
@@ -504,7 +505,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .unwrap();
     assert_eq!(http_message["message_state"], "DELIVERED");
     let message_id = http_message["message_id"].as_str().unwrap();
-    let response = http_call(&app, "GET", "/ai-phone/sent", Some(&token_a), None).await;
+    let response = http_call(&app, "GET", "/ai-phone/sent", Some(&sender_token), None).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::OK,
@@ -865,6 +866,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         axum::http::StatusCode::NOT_FOUND,
         "first AI cannot read the second AI's mailbox"
     );
+    let second_pair_grant = http_call(
+        &app, "POST", "/ai-phone/pair/grant", Some(&token_a),
+        Some(serde_json::json!({"recipient_ai_phone_id":second_phone}))
+    ).await;
+    assert_eq!(second_pair_grant.status(), axum::http::StatusCode::OK,
+        "AI #1 explicitly grants one-way delivery to AI #2");
     let second_endpoint_credential = format!("second-ai-endpoint-{}", Uuid::new_v4());
     seed_endpoint_credential(
         &pool,
@@ -1075,17 +1082,12 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         "tenant B cannot send to tenant A phone"
     );
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_c),
-        Some(serde_json::json!({"idempotency_key":"tenant-b-own-message","content":{"text":"tenant B own message"}}))).await;
+        Some(serde_json::json!({"idempotency_key":"tenant-b-self-send","content":{"text":"self-send must be rejected"}}))).await;
     assert_eq!(
         response.status(),
-        axum::http::StatusCode::CREATED,
-        "tenant B can send to its own phone"
+        axum::http::StatusCode::FORBIDDEN,
+        "tenant B cannot self-pair a phone; a distinct sender and explicit directional grant are required"
     );
-    let bytes = axum::body::to_bytes(response.into_body(), 100_000)
-        .await
-        .unwrap();
-    let foreign_message: Value = serde_json::from_slice(&bytes).unwrap();
-    let foreign_message_id = foreign_message["message_id"].as_str().unwrap().to_string();
     let response = http_call_endpoint(
         &app,
         "GET",
@@ -1099,20 +1101,6 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         response.status(),
         axum::http::StatusCode::OK,
         "tenant B can read its own inbox with its endpoint credential"
-    );
-    let response = http_call_endpoint(
-        &app,
-        "POST",
-        &format!("/ai-phone/{foreign_phone}/messages/{foreign_message_id}/ack"),
-        &token_a,
-        &endpoint_a_credential,
-        None,
-    )
-    .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::NOT_FOUND,
-        "authenticated tenant A endpoint cannot address tenant B message"
     );
     let response = http_call_endpoint(
         &app,
@@ -1739,7 +1727,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
             &app,
             "POST",
             &concurrent_uri,
-            Some(&token_b),
+            Some(&sender_token),
             Some(concurrent_body.clone())
         ),
         http_call(
