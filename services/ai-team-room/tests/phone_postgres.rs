@@ -605,20 +605,24 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert!(human_mapping.is_err(), "a HUMAN principal must never bind to a global AI identity");
     let next_sequence:i64=sqlx::query_scalar("SELECT COALESCE(MAX(sequence_no),0)+1 FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2")
         .bind(first.phone.ai_phone_id).bind(tenant).fetch_one(&pool).await.unwrap();
-    let message_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7)")
-        .bind(message_id).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence)
-        .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
-    let state: String = sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
+    let send_offline=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
+        Some(serde_json::json!({"idempotency_key":"offline-msg-1","content":{"text":"resume mission"}}))).await;
+    assert_eq!(send_offline.status(),axum::http::StatusCode::CREATED,"offline message is created through the authenticated, granted phone pair");
+    let bytes=axum::body::to_bytes(send_offline.into_body(),100_000).await.unwrap();
+    let offline_created:Value=serde_json::from_slice(&bytes).unwrap();
+    let message_id=Uuid::parse_str(offline_created["message_id"].as_str().unwrap()).unwrap();
+    let state:String=sqlx::query_scalar("SELECT message_state FROM phone_messages WHERE message_id=$1")
         .bind(message_id).fetch_one(&pool).await.unwrap();
     assert_eq!(state,"PENDING");
 
-    let duplicate = sqlx::query("INSERT INTO phone_messages(message_id,ai_phone_id,tenant_id,sender_principal_id,recipient_ai_id,sequence_no,idempotency_key,content) VALUES($1,$2,$3,$4,$5,$6,'offline-msg-1',$7) ON CONFLICT(ai_phone_id,sender_principal_id,idempotency_key) DO NOTHING")
-        .bind(Uuid::new_v4()).bind(first.phone.ai_phone_id).bind(tenant).bind(sender).bind(ai_id).bind(next_sequence+1)
-        .bind(serde_json::json!({"text":"resume mission"})).execute(&pool).await.unwrap();
-    assert_eq!(duplicate.rows_affected(),0);
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key='offline-msg-1'")
-        .bind(first.phone.ai_phone_id).bind(sender).fetch_one(&pool).await.unwrap();
+    let duplicate=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
+        Some(serde_json::json!({"idempotency_key":"offline-msg-1","content":{"text":"resume mission"}}))).await;
+    assert_eq!(duplicate.status(),axum::http::StatusCode::OK,"duplicate message send replays the same persisted row");
+    let bytes=axum::body::to_bytes(duplicate.into_body(),100_000).await.unwrap();
+    let duplicate_body:Value=serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(duplicate_body["message_id"],message_id.to_string());
+    let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND sender_principal_id=$2 AND idempotency_key='offline-msg-1'")
+        .bind(first.phone.ai_phone_id).bind(second_principal).fetch_one(&pool).await.unwrap();
     assert_eq!(count,1);
 
     // Reconnect a fresh endpoint and verify the offline message remains in sequence.
