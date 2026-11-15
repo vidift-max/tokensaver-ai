@@ -863,6 +863,26 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "duplicate ACK is idempotent"
     );
 
+    let (status, body) = call_with_headers(
+        &app,
+        "GET",
+        &phone_2_messages_path,
+        &token_2,
+        Some(&endpoint_2_credential),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "mailbox remains readable after ACK");
+    let acknowledged_inbox: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    assert!(
+        acknowledged_inbox.iter().all(|message| {
+            message["message_id"] != first_message_id.to_string()
+                && message["message_id"] != second_message_id.to_string()
+        }),
+        "ACKed messages must not be returned by subsequent inbox polls"
+    );
+
     // Team Room remains the task authority: Phone #2 can link only a task owned by AI #2.
     let ai_2_task = Uuid::new_v4();
     let ai_2_mission = Uuid::new_v4();
