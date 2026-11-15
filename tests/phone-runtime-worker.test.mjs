@@ -4,10 +4,25 @@ import { PhoneRuntimeWorker, PhoneRuntimeWorkerError } from "../scripts/phone-ru
 
 const message = {
   message_id: "20000000-0000-4000-8000-000000000002",
+  sender_principal_id: "50000000-0000-4000-8000-000000000005",
   message_state: "DELIVERED",
-  content: { kind: "mission", text: "authorized test mission" }
+  content: {
+    version: 1,
+    kind: "mission",
+    mission_id: "30000000-0000-4000-8000-000000000003",
+    task_id: "40000000-0000-4000-8000-000000000004",
+    payload: { action: "analyze", text: "authorized test mission" }
+  }
 };
-function setup({ stored = null, execute, commit, ack, signal } = {}) {
+const authorization = () => ({
+  missionId: message.content.mission_id,
+  taskId: message.content.task_id,
+  senderPrincipalId: message.sender_principal_id,
+  ownerPrincipalId: "60000000-0000-4000-8000-000000000006",
+  fencingToken: 7,
+  leaseExpiresAt: new Date(Date.now() + 60000).toISOString()
+});
+function setup({ stored = null, execute, commit, ack, authorize, signal } = {}) {
   const events = [];
   const client = {
     poll: async () => { events.push("poll"); return [message]; },
@@ -26,22 +41,67 @@ function setup({ stored = null, execute, commit, ack, signal } = {}) {
       return commit ? commit(id, result) : { messageId: id, result, durable: true };
     }
   };
-  return { worker: new PhoneRuntimeWorker({ client, executor, resultStore, signal }), events };
+  const authorizer = {
+    authorize: async (msg, envelope, options) => {
+      events.push("authorize:" + envelope.mission_id);
+      if (authorize) return authorize(msg, envelope, options);
+      return authorization();
+    }
+  };
+  return { worker: new PhoneRuntimeWorker({ client, executor, resultStore, authorizer, signal }), events };
 }
 
-test("executes, durably commits, then ACKs in strict order", async () => {
+test("authorizes before store read, revalidates before execution and before ACK", async () => {
   const { worker, events } = setup();
   const outcome = await worker.runOnce();
   assert.equal(outcome[0].state, "ACKNOWLEDGED");
-  assert.deepEqual(events.map(x => x.split(":")[0]), ["poll", "get", "execute", "commit", "ack"]);
+  assert.deepEqual(events.map(x => x.split(":")[0]), [
+    "poll", "authorize", "get", "authorize", "execute", "commit", "authorize", "ack"
+  ]);
 });
 
-test("reuses an existing durable result and does not execute again", async () => {
+test("reuses an existing durable result only after fresh authorization", async () => {
   const stored = { messageId: message.message_id, result: { ok: true }, durable: true };
   const { worker, events } = setup({ stored });
   await worker.runOnce();
+  assert.equal(events.filter(x => x.startsWith("authorize:")).length, 2);
   assert.equal(events.some(x => x.startsWith("execute:")), false);
   assert.equal(events.at(-1), "ack:" + message.message_id);
+});
+
+test("does not read result store, execute or ACK when sender authorization fails", async () => {
+  const denied = setup({ authorize: async () => { const e = new Error("denied"); e.code = "AUTHORIZATION_LOST"; throw e; } });
+  await assert.rejects(() => denied.worker.runOnce(), e => e.code === "AUTHORIZATION_LOST");
+  assert.equal(denied.events.some(x => x.startsWith("get:")), false);
+  assert.equal(denied.events.some(x => x.startsWith("execute:")), false);
+  assert.equal(denied.events.some(x => x.startsWith("ack:")), false);
+});
+
+test("rejects authorization evidence bound to a different task or sender", async () => {
+  for (const alter of [
+    a => { a.taskId = "70000000-0000-4000-8000-000000000007"; },
+    a => { a.senderPrincipalId = "70000000-0000-4000-8000-000000000007"; },
+    a => { a.fencingToken = 0; },
+    a => { a.leaseExpiresAt = new Date(Date.now() - 1000).toISOString(); }
+  ]) {
+    const denied = setup({ authorize: async () => { const a = authorization(); alter(a); return a; } });
+    await assert.rejects(() => denied.worker.runOnce(), e => e.code === "MISSION_AUTHORIZATION_INVALID");
+    assert.equal(denied.events.some(x => x.startsWith("get:")), false);
+  }
+});
+
+test("rejects a changed fencing token before execution", async () => {
+  let calls = 0;
+  const changed = setup({
+    authorize: async () => {
+      calls++;
+      const a = authorization();
+      if (calls === 2) a.fencingToken++;
+      return a;
+    }
+  });
+  await assert.rejects(() => changed.worker.runOnce(), e => e.code === "AUTHORIZATION_FENCE_CHANGED");
+  assert.equal(changed.events.some(x => x.startsWith("execute:")), false);
 });
 
 test("does not ACK if executor fails or durable commit fails", async () => {
@@ -80,7 +140,8 @@ test("durable result survives ACK failure and retry skips executor", async () =>
       return stored;
     }
   };
-  const worker = new PhoneRuntimeWorker({ client, executor, resultStore });
+  const authorizer = { authorize: async () => authorization() };
+  const worker = new PhoneRuntimeWorker({ client, executor, resultStore, authorizer });
   await assert.rejects(() => worker.runOnce(), e => e.code === "ACK_FAILED");
   failAck = false;
   await worker.runOnce();
@@ -98,6 +159,11 @@ test("stops on authorization loss and abort signal", async () => {
   await assert.rejects(() => aborted.worker.runOnce(), e => e.code === "ABORTED");
 });
 
-test("requires an explicit executor and durable result store", () => {
+test("requires an explicit executor, result store and authorizer", () => {
   assert.throws(() => new PhoneRuntimeWorker({}), e => e instanceof PhoneRuntimeWorkerError && e.code === "CLIENT_REQUIRED");
+  assert.throws(() => new PhoneRuntimeWorker({
+    client: { poll() {}, acknowledge() {} },
+    executor: { execute() {} },
+    resultStore: { get() {}, commit() {} }
+  }), e => e.code === "AUTHORIZER_REQUIRED");
 });
