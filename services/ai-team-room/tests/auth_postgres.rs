@@ -1,6 +1,9 @@
 use ai_team_room_service::{
     admit_authenticated_participant,
-    auth::{authenticate_session, close_session, exchange_workload_token, require_permission, AuthError, OidcConfig},
+    auth::{
+        authenticate_session, close_session, exchange_workload_token, require_permission,
+        AuthError, OidcConfig,
+    },
     connect_pool, migrate,
 };
 use axum::{routing::get, Json, Router};
@@ -45,31 +48,67 @@ a93ROy+abL98Yf/fSAlNg3Lw
 const N: &str = "yLl5hgomp60yGxBsQbRb0G9j8YR6YolqOVDww6jCiCGurQ6l_tNmvWhzkYMFkR0fSfROWaoyerLuGlE6RLcDarGSjk0W07kH6dcWtQy5J8BWY9mOzJjcDyMPcSter1ESLucnGbVOFs4Qj-Jq-WqJDsnDkzUSHeZoCiNUggLpx_5DFVc2FLLpqLKWkKr2abcfZLFwlu3wbpEOS3whcBOppZd_K-HAVrYYmwiDDVQVA6E4ilq78pcOrKVdCanLQeRgybykZsalRp9HnN6QsZVwo3k0PHCHopuGoGyFu8ZbBvXz6csm50Koj6ePkT9BZaWm_c94jIxkcikDK5r0hz6P3w";
 
 #[derive(Serialize)]
-struct Claims { iss: String, sub: String, aud: String, iat: usize, exp: usize, nbf: usize, jti: String, scope: String }
+struct Claims {
+    iss: String,
+    sub: String,
+    aud: String,
+    iat: usize,
+    exp: usize,
+    nbf: usize,
+    jti: String,
+    scope: String,
+}
 
 fn token(subject: &str, jti: &str, lifetime_seconds: i64) -> String {
     let claims = Claims {
-        iss: ISSUER.into(), sub: subject.into(), aud: AUDIENCE.into(),
+        iss: ISSUER.into(),
+        sub: subject.into(),
+        aud: AUDIENCE.into(),
         iat: Utc::now().timestamp() as usize,
         exp: (Utc::now() + Duration::seconds(lifetime_seconds)).timestamp() as usize,
         nbf: (Utc::now() - Duration::seconds(1)).timestamp() as usize,
-        jti: jti.into(), scope: "team_room:connect".into(),
+        jti: jti.into(),
+        scope: "team_room:connect".into(),
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("test-key".into());
-    encode(&header, &claims, &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap()).unwrap()
+    encode(
+        &header,
+        &claims,
+        &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap(),
+    )
+    .unwrap()
 }
 
-async fn setup() -> (PgPool, OidcConfig, Uuid, Uuid, Uuid, String, tokio::task::JoinHandle<()>) {
-    let pool = connect_pool(&std::env::var("DATABASE_URL").expect("PostgreSQL CI required")).await.unwrap();
+async fn setup() -> (
+    PgPool,
+    OidcConfig,
+    Uuid,
+    Uuid,
+    Uuid,
+    String,
+    tokio::task::JoinHandle<()>,
+) {
+    let pool = connect_pool(&std::env::var("DATABASE_URL").expect("PostgreSQL CI required"))
+        .await
+        .unwrap();
     migrate(&pool).await.unwrap();
     let tenant = Uuid::new_v4();
     let room = Uuid::new_v4();
     let principal = Uuid::new_v4();
     let participant = Uuid::new_v4();
     let subject = format!("registered-{}", Uuid::new_v4());
-    sqlx::query("INSERT INTO tenants (tenant_id,name) VALUES ($1,'auth-test')").bind(tenant).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO rooms (room_id,tenant_id,name) VALUES ($1,$2,'auth-room')").bind(room).bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tenants (tenant_id,name) VALUES ($1,'auth-test')")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO rooms (room_id,tenant_id,name) VALUES ($1,$2,'auth-room')")
+        .bind(room)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO principals (principal_id,tenant_id,principal_kind,provider,external_subject) VALUES ($1,$2,'AI',$3,$4)")
         .bind(principal).bind(tenant).bind(ISSUER).bind(&subject).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO participants (participant_id,tenant_id,principal_id,display_name) VALUES ($1,$2,$3,'declarative display name')")
@@ -79,15 +118,28 @@ async fn setup() -> (PgPool, OidcConfig, Uuid, Uuid, Uuid, String, tokio::task::
     sqlx::query("INSERT INTO principal_permissions (permission_id,tenant_id,principal_id,room_id,permission) VALUES ($1,$2,$3,$4,'room.join'),($5,$2,$3,$4,'room.read')")
         .bind(Uuid::new_v4()).bind(tenant).bind(principal).bind(room).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
 
-    let jwks = json!({"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
-    let app = Router::new().route("/jwks", get(move || {
-        let value = jwks.clone();
-        async move { Json(value) }
-    }));
+    let jwks =
+        json!({"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":N,"e":"AQAB"}]});
+    let app = Router::new().route(
+        "/jwks",
+        get(move || {
+            let value = jwks.clone();
+            async move { Json(value) }
+        }),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-    let config = OidcConfig { issuer: ISSUER.into(), audience: AUDIENCE.into(), jwks_url: format!("http://{address}/jwks"), require_discovery: false, expected_jwks_url: None, allow_http_localhost: true };
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let config = OidcConfig {
+        issuer: ISSUER.into(),
+        audience: AUDIENCE.into(),
+        jwks_url: format!("http://{address}/jwks"),
+        require_discovery: false,
+        expected_jwks_url: None,
+        allow_http_localhost: true,
+    };
     (pool, config, tenant, room, principal, subject, server)
 }
 
@@ -95,32 +147,67 @@ async fn setup() -> (PgPool, OidcConfig, Uuid, Uuid, Uuid, String, tokio::task::
 async fn signed_identity_to_session_authorization_admission_replay_and_revocation() {
     let (pool, config, tenant, room, principal, subject, server) = setup().await;
     let external = token(&subject, &Uuid::new_v4().to_string(), 300);
-    let exchanged = exchange_workload_token(&pool, &config, room, &external).await.unwrap();
+    let exchanged = exchange_workload_token(&pool, &config, room, &external)
+        .await
+        .unwrap();
     assert_eq!(exchanged.identity.principal_id, principal);
     assert_ne!(exchanged.identity.participant_id, principal);
-    assert_ne!(exchanged.identity.session_id, exchanged.identity.execution_id);
+    assert_ne!(
+        exchanged.identity.session_id,
+        exchanged.identity.execution_id
+    );
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert("authorization", format!("Bearer {}", exchanged.access_token).parse().unwrap());
+    headers.insert(
+        "authorization",
+        format!("Bearer {}", exchanged.access_token)
+            .parse()
+            .unwrap(),
+    );
     let identity = authenticate_session(&pool, &headers).await.unwrap();
     assert_eq!(identity.session_id, exchanged.identity.session_id);
-    require_permission(&pool, &identity, "room.join").await.unwrap();
-    require_permission(&pool, &identity, "room.read").await.unwrap();
+    require_permission(&pool, &identity, "room.join")
+        .await
+        .unwrap();
+    require_permission(&pool, &identity, "room.read")
+        .await
+        .unwrap();
     for permission in ["admin", "task.write", "private_chat", "audio.publish"] {
-        assert!(matches!(
-            require_permission(&pool, &identity, permission).await,
-            Err(AuthError::Forbidden)
-        ), "unexpected implicit grant for {permission}");
+        assert!(
+            matches!(
+                require_permission(&pool, &identity, permission).await,
+                Err(AuthError::Forbidden)
+            ),
+            "unexpected implicit grant for {permission}"
+        );
     }
 
-    let admission = admit_authenticated_participant(&pool, room, identity.participant_id, identity.principal_id, identity.session_id).await.unwrap();
+    let admission = admit_authenticated_participant(
+        &pool,
+        room,
+        identity.participant_id,
+        identity.principal_id,
+        identity.session_id,
+    )
+    .await
+    .unwrap();
     assert_eq!(admission.active_ai_count, 1);
 
-    assert!(matches!(exchange_workload_token(&pool, &config, room, &external).await, Err(AuthError::Unauthorized)));
+    assert!(matches!(
+        exchange_workload_token(&pool, &config, room, &external).await,
+        Err(AuthError::Unauthorized)
+    ));
     close_session(&pool, &identity).await.unwrap();
-    assert!(matches!(authenticate_session(&pool, &headers).await, Err(AuthError::Unauthorized)));
+    assert!(matches!(
+        authenticate_session(&pool, &headers).await,
+        Err(AuthError::Unauthorized)
+    ));
 
-    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
 }
 
@@ -158,26 +245,49 @@ async fn simultaneous_replay_exchange_has_exactly_one_winner_and_permission_is_s
     sqlx::query("INSERT INTO workload_identities (workload_id,tenant_id,principal_id,issuer,subject,status) VALUES ($1,$2,$3,$4,$5,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(tenant).bind(no_grant_principal).bind(ISSUER).bind(&no_grant_subject).execute(&pool).await.unwrap();
     let denied = token(&no_grant_subject, &Uuid::new_v4().to_string(), 300);
-    let authenticated_without_grant = exchange_workload_token(&pool, &config, room, &denied).await.unwrap();
-    assert!(matches!(require_permission(&pool, &authenticated_without_grant.identity, "room.join").await, Err(AuthError::Forbidden)));
+    let authenticated_without_grant = exchange_workload_token(&pool, &config, room, &denied)
+        .await
+        .unwrap();
+    assert!(matches!(
+        require_permission(&pool, &authenticated_without_grant.identity, "room.join").await,
+        Err(AuthError::Forbidden)
+    ));
 
     // Disabled identity is rejected even when the external token is cryptographically valid.
-    sqlx::query("UPDATE principals SET enabled = FALSE WHERE principal_id = $1").bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE principals SET enabled = FALSE WHERE principal_id = $1")
+        .bind(principal)
+        .execute(&pool)
+        .await
+        .unwrap();
     let disabled_principal = token(&subject, &Uuid::new_v4().to_string(), 300);
-    assert!(matches!(exchange_workload_token(&pool, &config, room, &disabled_principal).await, Err(AuthError::IdentityUnavailable)));
+    assert!(matches!(
+        exchange_workload_token(&pool, &config, room, &disabled_principal).await,
+        Err(AuthError::IdentityUnavailable)
+    ));
 
-    sqlx::query("UPDATE principals SET enabled = TRUE WHERE principal_id = $1").bind(principal).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE principals SET enabled = TRUE WHERE principal_id = $1")
+        .bind(principal)
+        .execute(&pool)
+        .await
+        .unwrap();
     for status in ["DISABLED", "REVOKED", "EXPIRED"] {
         sqlx::query("UPDATE workload_identities SET status = $1, revoked_at = CASE WHEN $1 = 'REVOKED' THEN NOW() ELSE NULL END WHERE principal_id = $2")
             .bind(status).bind(principal).execute(&pool).await.unwrap();
         let assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
-        assert!(matches!(
-            exchange_workload_token(&pool, &config, room, &assertion).await,
-            Err(AuthError::IdentityUnavailable)
-        ), "workload state {status} must not exchange");
+        assert!(
+            matches!(
+                exchange_workload_token(&pool, &config, room, &assertion).await,
+                Err(AuthError::IdentityUnavailable)
+            ),
+            "workload state {status} must not exchange"
+        );
     }
 
-    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
 }
 
@@ -185,40 +295,74 @@ async fn simultaneous_replay_exchange_has_exactly_one_winner_and_permission_is_s
 async fn expired_assertion_is_rejected_before_session_creation() {
     let (pool, config, tenant, room, _principal, subject, server) = setup().await;
     let external = token(&subject, &Uuid::new_v4().to_string(), -30);
-    assert!(matches!(exchange_workload_token(&pool, &config, room, &external).await, Err(AuthError::Unauthorized)));
-    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE room_id = $1").bind(room).fetch_one(&pool).await.unwrap();
+    assert!(matches!(
+        exchange_workload_token(&pool, &config, room, &external).await,
+        Err(AuthError::Unauthorized)
+    ));
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE room_id = $1")
+        .bind(room)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(sessions, 0);
-    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
 }
-
 
 #[tokio::test]
 async fn local_session_expiry_rotation_and_unknown_subject_are_enforced() {
     let (pool, config, tenant, room, _principal, subject, server) = setup().await;
     let first_assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
-    let first = exchange_workload_token(&pool, &config, room, &first_assertion).await.unwrap();
+    let first = exchange_workload_token(&pool, &config, room, &first_assertion)
+        .await
+        .unwrap();
 
     // A new upstream assertion rotates the existing room session and execution.
     let second_assertion = token(&subject, &Uuid::new_v4().to_string(), 300);
-    let second = exchange_workload_token(&pool, &config, room, &second_assertion).await.unwrap();
-    let previous_status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
-        .bind(first.identity.session_id).fetch_one(&pool).await.unwrap();
+    let second = exchange_workload_token(&pool, &config, room, &second_assertion)
+        .await
+        .unwrap();
+    let previous_status: String =
+        sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
+            .bind(first.identity.session_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(previous_status, "REVOKED");
 
     let mut old_headers = axum::http::HeaderMap::new();
-    old_headers.insert("authorization", format!("Bearer {}", first.access_token).parse().unwrap());
-    assert!(matches!(authenticate_session(&pool, &old_headers).await, Err(AuthError::Unauthorized)));
+    old_headers.insert(
+        "authorization",
+        format!("Bearer {}", first.access_token).parse().unwrap(),
+    );
+    assert!(matches!(
+        authenticate_session(&pool, &old_headers).await,
+        Err(AuthError::Unauthorized)
+    ));
 
     let mut new_headers = axum::http::HeaderMap::new();
-    new_headers.insert("authorization", format!("Bearer {}", second.access_token).parse().unwrap());
+    new_headers.insert(
+        "authorization",
+        format!("Bearer {}", second.access_token).parse().unwrap(),
+    );
     assert!(authenticate_session(&pool, &new_headers).await.is_ok());
 
     sqlx::query("UPDATE sessions SET issued_at = NOW() - INTERVAL '2 seconds', expires_at = NOW() - INTERVAL '1 second' WHERE session_id = $1")
         .bind(second.identity.session_id).execute(&pool).await.unwrap();
-    assert!(matches!(authenticate_session(&pool, &new_headers).await, Err(AuthError::Unauthorized)));
-    let expired_status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
-        .bind(second.identity.session_id).fetch_one(&pool).await.unwrap();
+    assert!(matches!(
+        authenticate_session(&pool, &new_headers).await,
+        Err(AuthError::Unauthorized)
+    ));
+    let expired_status: String =
+        sqlx::query_scalar("SELECT status FROM sessions WHERE session_id = $1")
+            .bind(second.identity.session_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(expired_status, "EXPIRED");
 
     let unknown_subject = token("not-registered", &Uuid::new_v4().to_string(), 300);
@@ -227,6 +371,10 @@ async fn local_session_expiry_rotation_and_unknown_subject_are_enforced() {
         Err(AuthError::IdentityUnavailable)
     ));
 
-    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1").bind(tenant).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
     server.abort();
 }
