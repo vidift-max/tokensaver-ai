@@ -7,9 +7,13 @@ concurrency:
 
 on:
   push:
-    branches: [v2-saas-alpha]
+    branches:
+      - v2-saas-alpha
+      - fix/phone-message-inbox-ack-filter
   pull_request:
-    branches: [v2-saas-alpha]
+    branches:
+      - v2-saas-alpha
+      - mission/phone-02-first-contact-pair-auth
 
 jobs:
   foundation:
