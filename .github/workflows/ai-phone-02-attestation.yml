@@ -73,9 +73,11 @@ jobs:
           SERVICE_ACTUAL_ID="$(docker inspect --format '{{.Id}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$SERVICE_CONTAINER_ID")"
           SERVICE_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVICE_CONTAINER_ID")"
-          SERVICE_REPO_DIGESTS="$(docker inspect --format '{{json .RepoDigests}}' "$SERVICE_CONTAINER_ID")"
+          SERVICE_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$SERVICE_IMAGE_ID")"
+          SERVICE_INSPECTED_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$SERVICE_IMAGE_ID")"
           test "$SERVICE_ACTUAL_ID" = "$SERVICE_CONTAINER_ID"
           test "$SERVICE_IMAGE" = "postgres:16.16@sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87"
+          test "$SERVICE_INSPECTED_IMAGE_ID" = "$SERVICE_IMAGE_ID"
           printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
 
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
