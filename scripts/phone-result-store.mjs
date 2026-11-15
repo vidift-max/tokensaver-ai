@@ -16,6 +16,7 @@ import {
   stat
 } from "node:fs/promises";
 import path from "node:path";
+import { secureWindowsResultDirectory } from "./phone-windows-acl.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KEY_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -86,6 +87,7 @@ export class FilePhoneResultStore {
     const resolved = await realpath(this.directory);
     const info = await stat(resolved);
     if (!info.isDirectory()) throw new Error("Result store path is not a directory");
+    if (process.platform === "win32") secureWindowsResultDirectory(resolved);
     this.directory = resolved;
     this.initialized = true;
     return this;
