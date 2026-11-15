@@ -5,7 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MIGRATIONS="$ROOT/services/ai-team-room/migrations"
 MIGRATION_0012="$MIGRATIONS/0012_ai_phone_tenant_isolation.sql"
-MIGRATION_0013="$MIGRATIONS/0013_ai_phone_endpoint_credentials.sql"
+MIGRATION_0013="$MIGRATIONS/0013_team_room_tenant_scope_constraints.sql"
+MIGRATION_0014="$MIGRATIONS/0014_ai_phone_endpoint_credentials.sql"
+MIGRATION_0015="$MIGRATIONS/0015_identity_lifecycle_and_phone_pair_grants.sql"
 RUN_SUFFIX="${GITHUB_RUN_ID:-$$}"
 
 create_legacy_db() {
@@ -14,7 +16,7 @@ create_legacy_db() {
   local url="${DATABASE_URL%/*}/$db"
   createdb --maintenance-db="$DATABASE_URL" "$db"
   for migration in "$MIGRATIONS"/[0-9][0-9][0-9][0-9]_*.sql; do
-    [[ "$(basename "$migration")" == 0012_* || "$(basename "$migration")" == 0013_* ]] && continue
+    case "$(basename "$migration")" in 0012_*|0013_*|0014_*|0015_*) continue ;; esac
     psql "$url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
   done
   printf '%s\n' "$url"
@@ -150,6 +152,7 @@ run_compatible_legacy_case() {
 
   # AI-PHONE-02B must fence legacy attachments that have no endpoint credential.
   psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0013"
+  psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0014"
   local endpoint_backfill
   endpoint_backfill="$(psql "$url" -Atc "
     SELECT p.phone_status||':'||p.endpoint_fence||':'||e.endpoint_status||':'||a.attachment_status
@@ -169,7 +172,17 @@ run_compatible_legacy_case() {
     echo "FAIL: 0013 deleted or duplicated legacy durable resources: before=$before after=$after_0013" >&2
     exit 1
   }
-  echo "PASS: 0013 preserved phone/mailbox/mission rows and fenced legacy endpoint generation ($endpoint_backfill)"
+  echo "PASS: 0014 preserved phone/mailbox/mission rows and fenced legacy endpoint generation ($endpoint_backfill)"
+
+  psql "$url" -v ON_ERROR_STOP=1 --single-transaction -f "$MIGRATION_0015"
+  local identity_events phone_events
+  identity_events="$(psql "$url" -Atc "SELECT COUNT(*) FROM ai_identity_binding_events WHERE event_type='CREATED'")"
+  phone_events="$(psql "$url" -Atc "SELECT COUNT(*) FROM ai_phone_lifecycle_events WHERE event_type='CREATED'")"
+  [[ "$identity_events" == "1" && "$phone_events" == "1" ]] || {
+    echo "FAIL: lifecycle audit backfill missing: identity=$identity_events phone=$phone_events" >&2
+    exit 1
+  }
+  echo "PASS: 0015 identity and phone lifecycle audit history backfilled"
 }
 
 run_shared_legacy_case
