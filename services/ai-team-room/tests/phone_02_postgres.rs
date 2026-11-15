@@ -293,6 +293,12 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
 
     let token_1 = bearer_for(&pool, ai_1_session).await;
     let token_2 = bearer_for(&pool, ai_2_session).await;
+
+    let (spoof_status,_) = call(&ai_team_room_service::phone::router(pool.clone()),
+        "POST","/ai-phone/provision",&bearer_for(&pool,ai_1_session).await,
+        Some(serde_json::json!({"principal_id":ai_2_principal}))).await;
+    assert_eq!(spoof_status,StatusCode::UNPROCESSABLE_ENTITY,
+        "a client-supplied principal_id cannot select another AI for phone provisioning");
     // Test-only operator keys model separately provisioned control-plane secrets.
     let operator_key_1 = format!("operator-key-phone-01-{}", Uuid::new_v4());
     let operator_key_2 = format!("operator-key-phone-02-{}", Uuid::new_v4());
@@ -307,7 +313,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "POST",
         "/ai-phone/provision",
         &token_1,
-        Some(serde_json::json!({"principal_id": ai_1_principal})),
+        Some(serde_json::json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "Phone #1 fixture is explicitly provisioned");
@@ -337,7 +343,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         .bind(Sha256::digest(operator_key_2.as_bytes()).to_vec())
         .execute(&pool).await.unwrap();
 
-    let provision_body = serde_json::json!({"principal_id": ai_2_principal});
+    let provision_body = serde_json::json!({});
     let (first, second, third) = tokio::join!(
         call(&app, "POST", "/ai-phone/provision", &token_2, Some(provision_body.clone())),
         call(&app, "POST", "/ai-phone/provision", &token_2, Some(provision_body.clone())),
@@ -378,7 +384,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     }))).await;
     assert_eq!(status,StatusCode::CREATED,"Phone #3 receives its own permanent AI identity");
     let token_3=bearer_for(&pool,ai_3_session).await;
-    let (status,body)=call(&app,"POST","/ai-phone/provision",&token_3,Some(serde_json::json!({"principal_id":ai_3_principal}))).await;
+    let (status,body)=call(&app,"POST","/ai-phone/provision",&token_3,Some(serde_json::json!({}))).await;
     assert_eq!(status,StatusCode::CREATED,"Phone #3 is provisioned without an implicit peer grant");
     let phone_3:Value=serde_json::from_slice(&body).unwrap();
     let phone_3_id=Uuid::parse_str(phone_3["ai_phone_id"].as_str().unwrap()).unwrap();
