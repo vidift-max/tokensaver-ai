@@ -1759,7 +1759,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     );
     let concurrent_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key='concurrent-message-key'"
-    ).bind(first.phone.ai_phone_id).bind(tenant).bind(principal)
+    ).bind(first.phone.ai_phone_id).bind(tenant).bind(sender_principal)
       .fetch_one(&pool).await.unwrap();
     assert_eq!(
         concurrent_count, 1,
