@@ -117,3 +117,28 @@ test("serializes concurrent first initialization within one provider instance", 
   assert.equal(second.keyId, third.keyId);
   assert.deepEqual(first.key, second.key);
 });
+
+
+test("coordinates simultaneous first-key initialization across provider instances", async () => {
+  const providers = Array.from({ length: 4 }, () =>
+    new OsKeyringPhoneResultKeyProvider({ Entry: MemoryEntry, platform: "win32" })
+  );
+  const keys = await Promise.all(providers.map(provider => provider.getCurrentKey()));
+  assert.equal(new Set(keys.map(item => item.keyId)).size, 1);
+  for (const item of keys) assert.deepEqual(item.key, keys[0].key);
+});
+
+test("concurrent rotations retain every generated key and publish one valid current key", async () => {
+  const provider = new OsKeyringPhoneResultKeyProvider({ Entry: MemoryEntry, platform: "win32" });
+  await provider.getCurrentKey();
+  const rotated = await Promise.all([
+    provider.rotateKey(),
+    provider.rotateKey(),
+    provider.rotateKey()
+  ]);
+  const current = await provider.getCurrentKey();
+  assert.ok(rotated.some(item => item.keyId === current.keyId));
+  for (const item of rotated) {
+    assert.deepEqual(await provider.getKey(item.keyId), item.key);
+  }
+});
