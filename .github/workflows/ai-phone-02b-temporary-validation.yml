@@ -17,13 +17,7 @@ concurrency:
 
 jobs:
   authorize-execution:
-    # Defense in depth: only a marker addition/modification in the HEAD commit authorizes the heavy job.
-    if: >-
-      github.ref == 'refs/heads/validation/phone-02b-p2-61-isolated' &&
-      (
-        contains(github.event.head_commit.added, '.validation/EXECUTE_PHONE_02B_VALIDATION') ||
-        contains(github.event.head_commit.modified, '.validation/EXECUTE_PHONE_02B_VALIDATION')
-      )
+    # Always evaluate authorization when this workflow starts; the heavy job remains gated on this job's success.
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout push event commit for marker authorization
@@ -33,15 +27,38 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Require exact explicit Phone-02B authorization marker
+      - name: Require marker change in this push and exact explicit authorization
+        env:
+          HEAD_COMMIT_ADDED_JSON: ${{ toJSON(github.event.head_commit.added) }}
+          HEAD_COMMIT_MODIFIED_JSON: ${{ toJSON(github.event.head_commit.modified) }}
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$GITHUB_REF" = "refs/heads/validation/phone-02b-p2-61-isolated"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          printf '%s\n' 'AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1' > "$RUNNER_TEMP/expected-phone-02b-marker"
-          cmp "$RUNNER_TEMP/expected-phone-02b-marker" .validation/EXECUTE_PHONE_02B_VALIDATION
+
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          marker = ".validation/EXECUTE_PHONE_02B_VALIDATION"
+          added = json.loads(os.environ.get("HEAD_COMMIT_ADDED_JSON") or "[]") or []
+          modified = json.loads(os.environ.get("HEAD_COMMIT_MODIFIED_JSON") or "[]") or []
+          if marker not in added and marker not in modified:
+              print("Authorization denied: marker was not added or modified in this push's HEAD commit.", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
+          expected='AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1'
+          printf '%s' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-no-eol"
+          printf '%s\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
+          if ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \
+             && ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-lf"; then
+            echo "Authorization denied: marker content is not an exact allowed value." >&2
+            exit 1
+          fi
 
   phone-02b-validation:
     needs: authorize-execution
@@ -110,8 +127,15 @@ jobs:
           WORKFLOW_CHECKOUT_SHA="$(git -C "$WORKFLOW_SOURCE_DIR" rev-parse HEAD)"
           test "$WORKFLOW_CHECKOUT_SHA" = "$EVENT_SHA"
           WORKFLOW_FILE_BLOB="$(git -C "$WORKFLOW_SOURCE_DIR" rev-parse "HEAD:$WORKFLOW_PATH")"
-          printf '%s\n' 'AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1' > "$RUNNER_TEMP/expected-phone-02b-marker"
-          git -C "$WORKFLOW_SOURCE_DIR" show "$EVENT_SHA:$EXECUTION_MARKER_PATH" | cmp - "$RUNNER_TEMP/expected-phone-02b-marker"
+          expected='AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1'
+          printf '%s' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-no-eol"
+          printf '%s\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
+          git -C "$WORKFLOW_SOURCE_DIR" show "$EVENT_SHA:$EXECUTION_MARKER_PATH" > "$RUNNER_TEMP/event-phone-02b-marker"
+          if ! cmp -s "$RUNNER_TEMP/event-phone-02b-marker" "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \
+             && ! cmp -s "$RUNNER_TEMP/event-phone-02b-marker" "$RUNNER_TEMP/expected-phone-02b-marker-lf"; then
+            echo "Authorization denied: event commit marker content is not exact." >&2
+            exit 1
+          fi
           [[ "$EVENT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$WORKFLOW_FILE_BLOB" =~ ^[a-f0-9]{40}$ ]]
           [[ "$HARNESS_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
