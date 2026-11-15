@@ -80,6 +80,13 @@ jobs:
           test "$SERVICE_INSPECTED_IMAGE_ID" = "$SERVICE_IMAGE_ID"
           printf '%s' "$SERVICE_REPO_DIGESTS" | grep -Fq 'sha256:2d5c77ae9b0e0944ffb92f8d8fc2fa2edb215cb0976da8bac34df917af417e87'
 
+          {
+            printf 'POSTGRES_PORT_BINDINGS '
+            docker inspect --format '{{json .HostConfig.PortBindings}}' "$SERVICE_CONTAINER_ID"
+            printf 'POSTGRES_NETWORK_PORTS '
+            docker inspect --format '{{json .NetworkSettings.Ports}}' "$SERVICE_CONTAINER_ID"
+          } | tee attestation-evidence/container-port-publication.txt
+
           NONCE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
           test "$(printf '%s' "$NONCE" | wc -c)" -eq 43
           APP_NAME="ai-phone-02-$NONCE"
@@ -115,6 +122,7 @@ jobs:
           [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           python3 - <<'PY'
+          import ipaddress
           import json, os, re, sys
           with open("attestation-evidence/database-session.json", encoding="utf-8") as f:
               db = json.load(f)
@@ -135,6 +143,17 @@ jobs:
               number = int(value)
               return number > 0 and number <= (2**63 - 1) and str(number) == value
 
+          def is_exact_ipv4_loopback(value):
+              try:
+                  interface = ipaddress.ip_interface(value)
+              except (ValueError, TypeError):
+                  return False
+              return (
+                  interface.version == 4
+                  and interface.ip == ipaddress.IPv4Address("127.0.0.1")
+                  and interface.network.prefixlen == 32
+              )
+
           required = {
               "database_name": db.get("database_name") == "attestation",
               "database_oid": bool(re.fullmatch(r"[0-9]+", str(db.get("database_oid", "")))),
@@ -146,7 +165,7 @@ jobs:
               "transaction_read_only": db.get("transaction_read_only") == "on",
               "server_version": bool(db.get("server_version")),
               "server_version_num": bool(re.fullmatch(r"[0-9]+", str(db.get("server_version_num", "")))),
-              "server_addr": db.get("server_addr") == "127.0.0.1",
+              "server_addr": is_exact_ipv4_loopback(db.get("server_addr")),
               "server_port": db.get("server_port") == 5432,
               "postmaster_start_time": bool(db.get("postmaster_start_time")),
               "system_identifier_present": valid_system_identifier(db.get("system_identifier")),
@@ -270,7 +289,8 @@ jobs:
 
           test -s attestation-evidence/attestation.json
           test -s attestation-evidence/database-session.json
-          (cd attestation-evidence && sha256sum attestation.json database-session.json > SHA256SUMS)
+          test -s attestation-evidence/container-port-publication.txt
+          (cd attestation-evidence && sha256sum attestation.json database-session.json container-port-publication.txt > SHA256SUMS)
           test -s attestation-evidence/SHA256SUMS
           (cd attestation-evidence && sha256sum --check SHA256SUMS)
           echo "LOCAL_CONTROLS_PASS: all local controls and package integrity verified; external attestation remains NOT_VALIDATED."
