@@ -250,7 +250,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     for permission in ["phone.provision", "phone.message.send", "phone.pair.grant"] {
         grant(&pool, tenant, room, sender_principal, permission).await;
     }
-    let (sender_session, sender_execution) =
+    let (sender_session, _sender_execution) =
         add_session(&pool, tenant, room, sender_principal, sender_participant).await;
     sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
         .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(sender_participant).bind(sender_principal).bind(sender_session)
@@ -265,6 +265,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         &axum::body::to_bytes(sender_provision.into_body(), 100_000).await.unwrap()
     ).unwrap();
     let sender_phone_id = Uuid::parse_str(sender_phone["ai_phone_id"].as_str().unwrap()).unwrap();
+    assert_ne!(sender_phone_id, first.phone.ai_phone_id, "sender and recipient must be distinct phones");
     let pair_grant = http_call(
         &app, "POST", "/ai-phone/pair/grant", Some(&sender_token),
         Some(serde_json::json!({"recipient_ai_phone_id":first.phone.ai_phone_id}))
