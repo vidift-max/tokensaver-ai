@@ -49,6 +49,7 @@ export class PhoneRuntimeWorker {
     const messageId = message.message_id;
     let record = await this.resultStore.get(messageId);
     this.assertRunning();
+    const recovered = Boolean(record);
 
     if (!record) {
       let result;
@@ -98,7 +99,7 @@ export class PhoneRuntimeWorker {
         error
       );
     }
-    return { messageId, state: "ACKNOWLEDGED", recovered: false };
+    return { messageId, state: "ACKNOWLEDGED", recovered };
   }
 
   async runOnce() {
