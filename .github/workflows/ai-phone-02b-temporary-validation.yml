@@ -24,13 +24,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Require marker change in this push and exact explicit authorization
-        env:
-          HEAD_COMMIT_ADDED_JSON: ${{ toJSON(github.event.head_commit.added) }}
-          HEAD_COMMIT_MODIFIED_JSON: ${{ toJSON(github.event.head_commit.modified) }}
+      - name: Require marker change in event commit and exact explicit authorization
         shell: bash
         run: |
           set -euo pipefail
@@ -39,22 +36,53 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
           python3 - <<'PY'
-          import json
           import os
+          import re
+          import subprocess
           import sys
 
           marker = ".validation/EXECUTE_PHONE_02B_VALIDATION"
-          added = json.loads(os.environ.get("HEAD_COMMIT_ADDED_JSON") or "[]") or []
-          modified = json.loads(os.environ.get("HEAD_COMMIT_MODIFIED_JSON") or "[]") or []
-          if marker not in added and marker not in modified:
-              print("Authorization denied: marker was not added or modified in this push's HEAD commit.", file=sys.stderr)
+          event_sha = os.environ.get("GITHUB_SHA", "")
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], stderr=subprocess.STDOUT)
+
+          if not re.fullmatch(r"[0-9a-f]{40}", event_sha):
+              raise SystemExit("Authorization denied: GITHUB_SHA is not a full commit SHA.")
+
+          try:
+              verified_sha = git("rev-parse", "--verify", f"{event_sha}^{{commit}}").decode().strip()
+              if verified_sha != event_sha:
+                  raise ValueError("resolved commit does not equal GITHUB_SHA")
+
+              commit_line = git("rev-list", "--parents", "-n", "1", event_sha).decode().split()
+              if not commit_line or commit_line[0] != event_sha or len(commit_line) != 2:
+                  raise ValueError("event commit must resolve to exactly one verifiable parent")
+              parent_sha = commit_line[1]
+              if git("rev-parse", "--verify", f"{parent_sha}^{{commit}}").decode().strip() != parent_sha:
+                  raise ValueError("event commit parent cannot be verified")
+
+              changed_raw = git(
+                  "diff-tree", "--no-commit-id", "--name-only", "-r", "-z",
+                  parent_sha, event_sha
+              )
+              changed_paths = changed_raw.split(b"\\0")
+              if marker.encode() not in changed_paths:
+                  raise ValueError("marker is not changed by the GITHUB_SHA commit")
+              git("cat-file", "-e", f"{event_sha}:{marker}")
+          except (subprocess.CalledProcessError, ValueError) as exc:
+              print(f"Authorization denied: cannot prove marker change in event commit: {exc}", file=sys.stderr)
               raise SystemExit(1)
+
+          print(f"WORKFLOW_EVENT_COMMIT_SHA={event_sha}")
+          print(f"EVENT_COMMIT_PARENT_SHA={parent_sha}")
+          print(f"EVENT_COMMIT_CHANGED_MARKER={marker}")
           PY
 
           expected='AUTHORIZE_PHONE_02B_VALIDATION=c9abe2d65cb2139a8136bc2a59f86f91a5382bd1'
           printf '%s' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-no-eol"
-          printf '%s\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
-          if ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \
+          printf '%s\\n' "$expected" > "$RUNNER_TEMP/expected-phone-02b-marker-lf"
+          if ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-no-eol" \\
              && ! cmp -s .validation/EXECUTE_PHONE_02B_VALIDATION "$RUNNER_TEMP/expected-phone-02b-marker-lf"; then
             echo "Authorization denied: marker content is not an exact allowed value." >&2
             exit 1
