@@ -97,7 +97,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
         .bind(ai_id).bind(tenant).execute(&pool).await.unwrap();
 
-    for permission in ["phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
+    for permission in ["phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","phone.pair.grant","task.read"] {
         grant(&pool,tenant,room,principal,permission).await;
     }
 
@@ -115,13 +115,61 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
 
     let response=http_call(&app,"GET","/ai-phone/me",Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"GET /me is read-only and does not provision a phone");
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"explicit authorized provision creates the phone");
     let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
     let provisioned:Value=serde_json::from_slice(&bytes).unwrap();
     let first = get_my_phone(&pool,&identity_a,None).await.expect("read explicitly provisioned permanent phone");
     assert_eq!(provisioned["ai_phone_id"],first.phone.ai_phone_id.to_string());
-    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_a),
+
+    // A second AI in tenant A proves actual same-tenant AI-to-AI delivery.
+    let second_ai_id=Uuid::new_v4();
+    let second_principal=Uuid::new_v4();
+    let second_participant=Uuid::new_v4();
+    let second_endpoint=Uuid::new_v4();
+    let second_subject=format!("second-ai-subject-{second_principal}");
+    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-SECONDARY')")
+        .bind(second_ai_id).bind(format!("test:ai-phone:secondary:{second_ai_id}")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','ai-phone-test',$3)")
+        .bind(second_principal).bind(tenant).bind(&second_subject).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-SECONDARY')")
+        .bind(second_participant).bind(tenant).bind(second_principal).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(second_principal).bind(&second_subject).execute(&pool).await.unwrap();
+    let (second_session,_second_execution)=add_session(&pool,tenant,room,second_principal,second_participant).await;
+    sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
+        .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(second_participant).bind(second_principal).bind(second_session)
+        .execute(&pool).await.unwrap();
+    for permission in ["ai.identity.provision","phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
+        grant(&pool,tenant,room,second_principal,permission).await;
+    }
+    let token_second=bearer_for(&pool,second_session).await;
+    let response=http_call(&app,"POST","/ai-phone/identities",Some(&token_second),Some(serde_json::json!({
+        "identity_key":format!("test:ai-phone:secondary:{second_ai_id}"),"identity_kind":"TEST",
+        "display_label":"AI-PHONE-TEST-SECONDARY","tenant_id":tenant,"principal_id":second_principal
+    }))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"second AI binds independently inside tenant A");
+    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_second),Some(serde_json::json!({}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"second AI receives its own tenant phone");
+    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_second),None).await;
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+    let second_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
+    let second_phone=Uuid::parse_str(second_snapshot["phone"]["ai_phone_id"].as_str().unwrap()).unwrap();
+    assert_ne!(second_phone,first.phone.ai_phone_id,"two AI identities in one tenant have independent phones");
+    let (grant_response_status,grant_response_body)={
+        let response=http_call(&app,"POST","/ai-phone/pair-grants",Some(&token_second),Some(serde_json::json!({
+            "destination_ai_phone_id":first.phone.ai_phone_id
+        }))).await;
+        let status=response.status();
+        let body=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
+        (status,body)
+    };
+    assert_eq!(grant_response_status,axum::http::StatusCode::CREATED,"Phone #2 receives an explicit directional grant to Phone #1");
+    let reverse_pair_grant:Value=serde_json::from_slice(&grant_response_body).unwrap();
+    assert_eq!(reverse_pair_grant["source_ai_phone_id"],second_phone.to_string());
+    assert_eq!(reverse_pair_grant["destination_ai_phone_id"],first.phone.ai_phone_id.to_string());
+    let response=http_call(&app,"POST",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),
         Some(serde_json::json!({"idempotency_key":"offline-queued","content":{"text":"persist while endpoint is offline"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"offline message is durably queued before endpoint attach");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":principal}))).await;
@@ -190,7 +238,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     let http_message=inbox.iter().find(|m|m["idempotency_key"]=="http-e2e-1").unwrap();
     assert_eq!(http_message["message_state"],"DELIVERED");
     let message_id=http_message["message_id"].as_str().unwrap();
-    let response=http_call(&app,"GET","/ai-phone/sent",Some(&token_a),None).await;
+    let response=http_call(&app,"GET","/ai-phone/sent",Some(&token_second),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"durable sender history is available");
     let bytes=axum::body::to_bytes(response.into_body(),1_000_000).await.unwrap();
     let sent:Vec<Value>=serde_json::from_slice(&bytes).unwrap();
@@ -243,7 +291,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B binds the same stable global AI identity");
     let (provision_a,provision_b)=tokio::join!(
-        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal}))),
+        http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({}))),
         http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":foreign_principal})))
     );
     let statuses=[provision_a.status(),provision_b.status()];
@@ -288,47 +336,16 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     }))).await;
     assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED,"revoked endpoint credential cannot reattach");
 
-    // A second AI in tenant A proves actual same-tenant AI-to-AI delivery.
-    let second_ai_id=Uuid::new_v4();
-    let second_principal=Uuid::new_v4();
-    let second_participant=Uuid::new_v4();
-    let second_endpoint=Uuid::new_v4();
-    let second_subject=format!("second-ai-subject-{second_principal}");
-    sqlx::query("INSERT INTO ai_identities(ai_id,identity_key,identity_kind,display_label) VALUES($1,$2,'TEST','AI-PHONE-TEST-SECONDARY')")
-        .bind(second_ai_id).bind(format!("test:ai-phone:secondary:{second_ai_id}")).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO principals(principal_id,tenant_id,principal_kind,provider,external_subject) VALUES($1,$2,'AI','ai-phone-test',$3)")
-        .bind(second_principal).bind(tenant).bind(&second_subject).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO participants(participant_id,tenant_id,principal_id,display_name) VALUES($1,$2,$3,'AI-PHONE-SECONDARY')")
-        .bind(second_participant).bind(tenant).bind(second_principal).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO workload_identities(workload_id,tenant_id,principal_id,issuer,subject,status) VALUES($1,$2,$3,'ai-phone-test',$4,'ACTIVE')")
-        .bind(Uuid::new_v4()).bind(tenant).bind(second_principal).bind(&second_subject).execute(&pool).await.unwrap();
-    let (second_session,_second_execution)=add_session(&pool,tenant,room,second_principal,second_participant).await;
-    sqlx::query("INSERT INTO room_memberships(membership_id,tenant_id,room_id,participant_id,principal_id,session_id,status) VALUES($1,$2,$3,$4,$5,$6,'ACTIVE')")
-        .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(second_participant).bind(second_principal).bind(second_session)
-        .execute(&pool).await.unwrap();
-    for permission in ["ai.identity.provision","phone.read","phone.provision","phone.attach","phone.detach","phone.transfer","phone.heartbeat","phone.message.read","phone.message.send","phone.message.ack","task.read"] {
-        grant(&pool,tenant,room,second_principal,permission).await;
-    }
-    let token_second=bearer_for(&pool,second_session).await;
-    let response=http_call(&app,"POST","/ai-phone/identities",Some(&token_second),Some(serde_json::json!({
-        "identity_key":format!("test:ai-phone:secondary:{second_ai_id}"),"identity_kind":"TEST",
-        "display_label":"AI-PHONE-TEST-SECONDARY","tenant_id":tenant,"principal_id":second_principal
-    }))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"second AI binds independently inside tenant A");
-    let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_second),Some(serde_json::json!({"principal_id":second_principal}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"second AI receives its own tenant phone");
-    let response=http_call(&app,"GET","/ai-phone/me",Some(&token_second),None).await;
-    assert_eq!(response.status(),axum::http::StatusCode::OK);
-    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
-    let second_snapshot:Value=serde_json::from_slice(&bytes).unwrap();
-    let second_phone=Uuid::parse_str(second_snapshot["phone"]["ai_phone_id"].as_str().unwrap()).unwrap();
-    assert_ne!(second_phone,first.phone.ai_phone_id,"two AI identities in one tenant have independent phones");
     let response=http_call(&app,"GET",&format!("/ai-phone/{}/messages",first.phone.ai_phone_id),Some(&token_second),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"second AI cannot read the first AI's mailbox");
     let response=http_call(&app,"GET",&format!("/ai-phone/{second_phone}/messages"),Some(&token_a),None).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"first AI cannot read the second AI's mailbox");
     let second_endpoint_credential=format!("second-ai-endpoint-{}",Uuid::new_v4());
     seed_endpoint_credential(&pool,tenant,second_ai_id,second_phone,second_endpoint,&second_endpoint_credential,"second-ai-endpoint").await;
+    let grant_1_to_2=http_call(&app,"POST","/ai-phone/pair-grants",Some(&token_a),Some(serde_json::json!({
+        "destination_ai_phone_id":second_phone
+    }))).await;
+    assert_eq!(grant_1_to_2.status(),axum::http::StatusCode::CREATED,"Phone #1 receives a separate directional grant to Phone #2");
     let response=http_call(&app,"POST",&format!("/ai-phone/{second_phone}/messages"),Some(&token_a),Some(serde_json::json!({
         "idempotency_key":"ai-to-ai-offline-1","content":{"text":"durable message from AI-X to AI-Y"}
     }))).await;
@@ -385,11 +402,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         Some(serde_json::json!({"idempotency_key":"cross-tenant-send-b","content":{"text":"must be rejected"}}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant B cannot send to tenant A phone");
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages"),Some(&token_c),
-        Some(serde_json::json!({"idempotency_key":"tenant-b-own-message","content":{"text":"tenant B own message"}}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::CREATED,"tenant B can send to its own phone");
-    let bytes=axum::body::to_bytes(response.into_body(),100_000).await.unwrap();
-    let foreign_message:Value=serde_json::from_slice(&bytes).unwrap();
-    let foreign_message_id=foreign_message["message_id"].as_str().unwrap().to_string();
+        Some(serde_json::json!({"idempotency_key":"tenant-b-self-message","content":{"text":"self-send is not a phone pair"}}))).await;
+    assert_eq!(response.status(),axum::http::StatusCode::BAD_REQUEST,"a phone cannot send to itself; an explicit distinct peer is required");
+    let foreign_message_id=Uuid::new_v4().to_string();
     let response=http_call_endpoint(&app,"GET",&format!("/ai-phone/{foreign_phone}/messages"),&token_c,&foreign_endpoint_credential,None).await;
     assert_eq!(response.status(),axum::http::StatusCode::OK,"tenant B can read its own inbox with its endpoint credential");
     let response=http_call(&app,"POST",&format!("/ai-phone/{foreign_phone}/messages/{foreign_message_id}/ack"),Some(&token_a),None).await;
@@ -407,9 +422,9 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         response.status()
     );
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_a),Some(serde_json::json!({"principal_id":foreign_principal}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant A cannot provision tenant B identity");
+    assert_eq!(response.status(),axum::http::StatusCode::UNPROCESSABLE_ENTITY,"client principal_id is rejected rather than used to provision a foreign identity");
     let response=http_call(&app,"POST","/ai-phone/provision",Some(&token_c),Some(serde_json::json!({"principal_id":principal}))).await;
-    assert_eq!(response.status(),axum::http::StatusCode::NOT_FOUND,"tenant B cannot provision tenant A identity");
+    assert_eq!(response.status(),axum::http::StatusCode::UNPROCESSABLE_ENTITY,"client principal_id is rejected rather than used to provision a foreign identity");
 
     let response=http_call(&app,"POST","/ai-phone/mission",Some(&token_a),Some(serde_json::json!({"task_id":foreign_task}))).await;
     assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN,"cross-tenant task cannot be linked to tenant-A phone");
@@ -535,7 +550,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
     assert_eq!(membership_moved.rows_affected(),1,"new endpoint session takes over the active Team Room membership");
     let identity_b2=AuthenticatedIdentity {
         tenant_id:tenant,room_id:room,principal_id:principal,participant_id:participant,
-        session_id:session_b2,execution_id:execution_b2,worker_subject:"ai-phone-postgres-test".into(),
+        session_id:session_b2,execution_id:execution_b2,issuer:"test-only".into(),subject:"ai-phone-postgres-test".into(),
     };
     let old_token_b=token_b.clone();
     let token_b2=bearer_for(&pool,session_b2).await;
