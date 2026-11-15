@@ -8,7 +8,7 @@ The normative development and validation toolchain for this service is pinned to
 - `rustfmt`: `1.11.0`
 - Channel: `stable`, selected by the exact numeric toolchain version `1.100.0`
 
-The version is intentionally numeric. Do not replace it with the moving `stable` channel. The adjacent `rust-toolchain.toml` is the source of truth for local rustup selection and installs the `rustfmt` component.
+The version is intentionally numeric. Do not replace it with the moving `stable` channel. The upstream `rustfmt --version` output currently includes the suffix `-stable`; this is the release-channel label for rustfmt 1.11.0, not a different version. The adjacent `rust-toolchain.toml` is the source of truth for local rustup selection and installs the `rustfmt` component.
 
 Run service commands from this directory so rustup discovers the service-local toolchain file:
 
