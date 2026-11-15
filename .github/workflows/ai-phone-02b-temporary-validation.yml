@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - validation/phone-02b-p2-61-isolated
+    paths:
+      - .validation/EXECUTE_PHONE_02B_VALIDATION
 
 permissions:
   contents: read
@@ -60,6 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           EVENT_SHA="${GITHUB_SHA:?missing workflow event SHA}"
           TARGET_HEAD="$(git rev-parse HEAD)"
           test "$TARGET_HEAD" = "$PHONE_02B_TARGET_SHA"
@@ -156,6 +159,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           {
             echo "WORKFLOW_EVENT_COMMIT_SHA=$GITHUB_SHA"
             echo "PHONE_02B_TARGET_SHA=$PHONE_02B_TARGET_SHA"
