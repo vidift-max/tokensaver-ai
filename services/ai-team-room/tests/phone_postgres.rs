@@ -248,7 +248,7 @@ async fn phone_identity_survives_session_rotation_and_endpoint_change() {
         .bind(sender_ai_id).bind(tenant).bind(sender_principal).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO ai_identity_tenants(ai_id,tenant_id) VALUES($1,$2)")
         .bind(sender_ai_id).bind(tenant).execute(&pool).await.unwrap();
-    for permission in ["phone.provision", "phone.message.send", "phone.pair.grant"] {
+    for permission in ["phone.provision", "phone.message.send", "phone.message.read", "phone.pair.grant"] {
         grant(&pool, tenant, room, sender_principal, permission).await;
     }
     let (sender_session, _sender_execution) =
