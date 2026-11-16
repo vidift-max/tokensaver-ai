@@ -18,7 +18,7 @@ jobs:
       - name: Checkout experimental branch
         uses: actions/checkout@v4
         with:
-          ref: \${{ github.ref }}
+          ref: ${{ github.ref }}
 
       - name: Rounds 1–2 — verify runner and prepare isolated identity
         shell: pwsh
@@ -59,7 +59,7 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'phone02-identity-poa'
           $source = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-identity-poa.cpp'
           $exe = Join-Path $out 'phone02-identity-poa.exe'
-          $vswhere = Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path $source)) { throw 'Experimental harness source missing' }
           if (-not (Test-Path $vswhere)) { throw 'vswhere missing' }
           $vs = (& $vswhere -latest -products '*' -property installationPath).Trim()
@@ -67,7 +67,8 @@ jobs:
           if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
           "ROUND_3_SUPERVISOR=single-run native C++ harness; no service installation"
           $buildLog = Join-Path $out 'build.log'
-          & cmd.exe /d /s /c "\`"$vcvars\`" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE \`"$source\`" /Fe:\`"$exe\`" advapi32.lib userenv.lib" 2>&1 | Tee-Object -FilePath $buildLog
+          $command = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "' + $source + '" /Fe:"' + $exe + '" advapi32.lib userenv.lib
+          & cmd.exe /d /s /c $command 2>&1 | Tee-Object -FilePath $buildLog
           if ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
           "ROUND_4_CLIENT=child process created with PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES"
           "ROUND_5_IDENTITY=Supervisor impersonates named-pipe client and reads OS token"
@@ -87,5 +88,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: phone02-windows-identity-poa-evidence
-          path: \${{ runner.temp }}/phone02-identity-poa
+          path: ${{ runner.temp }}/phone02-identity-poa
           if-no-files-found: warn
