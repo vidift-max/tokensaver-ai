@@ -96,8 +96,8 @@ jobs:
       - run: npm run test:missions
       - run: npm run test:phone-runtime
       - run: npm run test:phone-worker
-      - name: Probe Windows PowerShell stdin transport independently
-        run: node --test tests/phone-powershell-stdin.test.mjs
+      - name: Probe Windows PowerShell stdin transport independently (capture exit, stdout and stderr)
+        run: node --test --test-reporter=spec tests/phone-powershell-stdin.test.mjs
       - run: npm run test:phone-store
       - run: npm run test:phone-windows-acl
       - run: npm run test:phone-key-provider
