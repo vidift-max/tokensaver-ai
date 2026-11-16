@@ -65,13 +65,19 @@ public static class PhoneAclNative
     public static void Apply(string path, bool isDirectory, string[] allowedSids)
     {
         DiscretionaryAcl dacl = new DiscretionaryAcl(isDirectory, false, allowedSids.Length);
-        AceFlags flags = isDirectory ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit) : AceFlags.None;
+        InheritanceFlags inheritance = isDirectory
+            ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit)
+            : InheritanceFlags.None;
         foreach (string sidText in allowedSids)
         {
             SecurityIdentifier sid = new SecurityIdentifier(sidText);
-            CommonAce ace = new CommonAce(flags, AceQualifier.AccessAllowed, FULL_CONTROL, sid, false, null);
-            dacl.InsertAce(dacl.Count, ace);
+            dacl.AddAccess(AccessControlType.Allow, sid, FULL_CONTROL, inheritance, PropagationFlags.None);
         }
+
+        // AddAccess may merge equivalent entries; fail closed unless all three distinct SIDs
+        // remain represented by exactly one ACE each.
+        if (dacl.Count != allowedSids.Length)
+            throw new InvalidOperationException("ACL construction merged or omitted an authorized SID");
 
         byte[] binary = new byte[dacl.BinaryLength];
         dacl.GetBinaryForm(binary, 0);
@@ -155,8 +161,8 @@ public static class PhoneAclNative
     }
 }
 '@
+Write-Output ("PHONE_RESULT_ACL_RUNTIME=" + $PSVersionTable.PSVersion.ToString() + "; Edition=" + $PSVersionTable.PSEdition + "; CLR=" + [System.Environment]::Version.ToString())
 Add-Type -TypeDefinition $nativeAclSource -Language CSharp -ErrorAction Stop
-Write-Output ("PHONE_RESULT_ACL_RUNTIME=" + $PSVersionTable.PSVersion.ToString() + "; CLR=" + [System.Environment]::Version.ToString())
 
 if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
   $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
