@@ -202,7 +202,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
   const runner = options.execFileSync ?? execFileSync;
   const encoded = Buffer.from(POWERSHELL_SCRIPT, "utf16le").toString("base64");
   try {
-    const output = runner("pwsh.exe", [
+    const output = runner("powershell.exe", [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded
     ], {
       encoding: "utf8",
