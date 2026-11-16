@@ -17,6 +17,10 @@ static void Log(const std::wstring&s){
  std::wstring path=(n&&n<32768)?std::wstring(p)+L"\\PhoneSupervisor-P236-client.log":L"PhoneSupervisor-P236-client.log";
  std::wofstream f(path,std::ios::app);if(f){f<<s<<L"\n";f.flush();}wprintf(L"%s\n",s.c_str());fflush(stdout);wprintf(L"%s\n",s.c_str());fflush(stdout);
 }
+static RPC_STATUS SafeBegin(handle_t b,wchar_t* corr,wchar_t** sid,wchar_t** nonce,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{BeginSession(b,corr,sid,nonce,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
+static RPC_STATUS SafeAuthorize(handle_t b,wchar_t* corr,wchar_t* sid,wchar_t* nonce,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{Authorize(b,corr,sid,nonce,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
+static RPC_STATUS SafeHeartbeat(handle_t b,wchar_t* corr,wchar_t* sid,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{Heartbeat(b,corr,sid,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
+static RPC_STATUS SafeClose(handle_t b,wchar_t* corr,wchar_t* sid,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{CloseSession(b,corr,sid,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
 int wmain(int argc,wchar_t**argv){
  RPC_WSTR str=nullptr;RPC_BINDING_HANDLE binding=nullptr;
  RPC_STATUS rc=RpcStringBindingComposeW(nullptr,(RPC_WSTR)L"ncalrpc",nullptr,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",nullptr,&str);
@@ -27,10 +31,7 @@ int wmain(int argc,wchar_t**argv){
  Log(L"CLIENT_START=TRUE");
  GUID g{};CoCreateGuid(&g);wchar_t corr[64]{};StringFromGUID2(g,corr,64);
  wchar_t*session=nullptr;wchar_t*nonce=nullptr;long status=99;
- RPC_STATUS callStatus=RPC_S_OK;
- RpcTryExcept { BeginSession(binding,corr,&session,&nonce,&status); }
- RpcExcept(1) { callStatus=RpcExceptionCode(); }
- RpcEndExcept
+ RPC_STATUS callStatus=SafeBegin(binding,corr,&session,&nonce,&status)
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_BEGIN_RPC_EXCEPTION="+std::to_wstring(callStatus));RpcBindingFree(&binding);return 16;}
  if(argc>1&&wcscmp(argv[1],L"--common")==0){
   Log(status==RPC_ACCESS_DENIED?L"COMMON_PROCESS_REJECT=PASS":L"COMMON_PROCESS_REJECT=FAIL");
@@ -39,15 +40,15 @@ int wmain(int argc,wchar_t**argv){
  }
  if(status!=RPC_OK||!session||!nonce){Log(L"LEGITIMATE_APPCONTAINER=FAIL");RpcBindingFree(&binding);return 12;}
  Log(L"LEGITIMATE_APPCONTAINER=PASS");
- callStatus=RPC_S_OK;RpcTryExcept { Authorize(binding,corr,session,nonce,&status); } RpcExcept(1) { callStatus=RpcExceptionCode(); } RpcEndExcept
+ callStatus=SafeAuthorize(binding,corr,session,nonce,&status)
  SecureZeroMemory(nonce,wcslen(nonce)*sizeof(wchar_t));midl_user_free(nonce);
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_AUTHORIZE_RPC_EXCEPTION="+std::to_wstring(callStatus));midl_user_free(session);RpcBindingFree(&binding);return 17;}
  if(status!=RPC_OK){Log(L"AUTHORIZATION_ALLOW=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 13;}
  Log(L"WINDOWS_IDENTITY=PASS");Log(L"AUTHORIZATION_ALLOW=PASS");
- callStatus=RPC_S_OK;RpcTryExcept { Heartbeat(binding,corr,session,&status); } RpcExcept(1) { callStatus=RpcExceptionCode(); } RpcEndExcept
+ callStatus=SafeHeartbeat(binding,corr,session,&status)
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_HEARTBEAT_RPC_EXCEPTION="+std::to_wstring(callStatus));midl_user_free(session);RpcBindingFree(&binding);return 18;}
  if(status!=RPC_OK){Log(L"HEARTBEAT=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 14;}
- Log(L"HEARTBEAT=PASS");callStatus=RPC_S_OK;RpcTryExcept { CloseSession(binding,corr,session,&status); } RpcExcept(1) { callStatus=RpcExceptionCode(); } RpcEndExcept
+ Log(L"HEARTBEAT=PASS");callStatus=SafeClose(binding,corr,session,&status)
  midl_user_free(session);RpcBindingFree(&binding);if(callStatus!=RPC_S_OK){Log(L"CLIENT_CLOSE_RPC_EXCEPTION="+std::to_wstring(callStatus));return 19;}
  if(status!=RPC_OK){Log(L"CLOSE_SESSION=FAIL");return 15;}Log(L"CLOSE_SESSION=PASS");return 0;
 }
