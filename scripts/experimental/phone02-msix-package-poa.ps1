@@ -166,11 +166,11 @@ public static class PackageActivator {
     if(-not $actual -or $actual -ine $expected){throw "Activated PID $activatedProcessId path mismatch"}
     return [uint32]$activatedProcessId
   }
-  function Start-Supervisor([string]$caseName,[string]$customPipeName=''){
+  function Start-Supervisor([string]$caseName,[string]$customPipeName='',[uint32]$expectedPid=0){
     $out=Join-Path $root "$caseName.supervisor.log";$err=Join-Path $root "$caseName.supervisor.err"
     $expectedPath=Join-Path $package.InstallLocation 'client.exe'
     $pipeName=if($customPipeName){$customPipeName}else{"\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$caseName"}
-    $args=@('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$expectedPath,$caseName,$pipeName) | ForEach-Object { '"'+$_+'"' }
+    $args=@('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$expectedPath,$caseName,$pipeName,[string]$expectedPid) | ForEach-Object { '"'+$_+'"' }
     $sp=Start-Process -FilePath (Join-Path $root 'supervisor.exe') -ArgumentList ($args -join ' ') -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
     $deadline=(Get-Date).AddSeconds(10); $ready=$false
     do {
@@ -190,7 +190,7 @@ public static class PackageActivator {
   Write-Host 'ROUND_6 — legitimate MSIX client and same-user ordinary process'
   $activatedPid=Activate-PackagedClient
   $legitPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$activatedPid"
-  $s=Start-Supervisor 'legitimate-msix' $legitPipe
+  $s=Start-Supervisor 'legitimate-msix' $legitPipe $activatedPid
   $legit=Finish-Case $s 'legitimate-msix'
   $oldProcessDeadline=(Get-Date).AddSeconds(5)
   do { Start-Sleep -Milliseconds 100; $oldProcess=Get-Process -Id $activatedPid -ErrorAction SilentlyContinue } while($oldProcess -and (Get-Date) -lt $oldProcessDeadline)
@@ -210,15 +210,15 @@ public static class PackageActivator {
   }
   $spoofPid=Activate-PackagedClient 'spoof-all'
   $spoofPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$spoofPid"
-  $s=Start-Supervisor 'packaged-client-spoof' $spoofPipe
+  $s=Start-Supervisor 'packaged-client-spoof' $spoofPipe $spoofPid
   $packagedSpoof=Finish-Case $s 'packaged-client-spoof'
   if($packagedSpoof.ExitCode -eq 0 -or $packagedSpoof.Content -match 'AUTHORIZATION_RESULT=ALLOW' -or $packagedSpoof.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw 'Packaged client with false protocol declarations was not safely rejected'}
   Write-Host "PACKAGED_CLIENT_SPOOF_REJECTED=TRUE PID=$spoofPid"
   Write-Host 'ROUND_8 — two package activations and instance identity assessment'
   $pid1=Activate-PackagedClient
-  $s1=Start-Supervisor 'instance-1' "\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$pid1"
+  $s1=Start-Supervisor 'instance-1' "\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$pid1" $pid1
   $pid2=Activate-PackagedClient
-  $s2=Start-Supervisor 'instance-2' "\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$pid2"
+  $s2=Start-Supervisor 'instance-2' "\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$pid2" $pid2
   Write-Host "INSTANCE_ACTIVATION_PIDS=$pid1,$pid2"
   $r1=Finish-Case $s1 'instance-1'
   $r2=Finish-Case $s2 'instance-2'
@@ -238,7 +238,7 @@ public static class PackageActivator {
   if($rejected.ExitCode -eq 0 -or $rejected.Content -match 'AUTHORIZATION_RESULT=ALLOW'){throw 'FAIL: common process authorized after reconnect'}
   $reconnectPid=Activate-PackagedClient
   $reconnectPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$reconnectPid"
-  $s=Start-Supervisor 'reconnect-legitimate' $reconnectPipe
+  $s=Start-Supervisor 'reconnect-legitimate' $reconnectPipe $reconnectPid
   $reconnected=Finish-Case $s 'reconnect-legitimate'
   if($reconnected.ExitCode -ne 0 -or $reconnected.Content -notmatch "PIPE_CLIENT_PID=$reconnectPid(\s|$)"){throw 'Legitimate reconnect failed or PID mismatch'}
   if($reconnectPid -eq $activatedPid){throw 'Reconnect reused the original client PID'}

@@ -46,16 +46,29 @@ static int Client(const std::wstring&mode,const std::wstring&family,const std::w
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
  wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
 }
-static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName,const std::wstring&pipeName){
+static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName,const std::wstring&pipeName,DWORD expectedPid){
  PIPE_NAME=pipeName;
  HANDLE self=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&self))return 4;
  std::wstring userSid=TokenSid(self,TokenUser);CloseHandle(self);
- std::wstring sddl=L"D:P(A;;GA;;;"+userSid+L")(A;;GA;;;"+expectedSid+L")S:(ML;;NW;;;LW)";
+ std::wstring aclSid=expectedSid,activationSid=L"UNAVAILABLE",activationFamily=L"UNAVAILABLE",activationFull=L"UNAVAILABLE";DWORD activationApp=0;
+ if(expectedPid){
+   HANDLE activated=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,expectedPid);
+   if(!activated){wprintf(L"ACTIVATED_PROCESS_OPEN_FAIL PID=%lu ERROR=%lu\n",expectedPid,GetLastError());return 31;}
+   HANDLE activatedToken=nullptr;
+   if(!OpenProcessToken(activated,TOKEN_QUERY,&activatedToken)){wprintf(L"ACTIVATED_TOKEN_OPEN_FAIL PID=%lu ERROR=%lu\n",expectedPid,GetLastError());CloseHandle(activated);return 32;}
+   activationApp=TokenApp(activatedToken);activationSid=TokenSid(activatedToken,TokenAppContainerSid);
+   activationFamily=PackageValue(activatedToken,false);activationFull=PackageValue(activatedToken,true);
+   CloseHandle(activatedToken);CloseHandle(activated);
+   wprintf(L"ACTIVATED_PROCESS_PID=%lu ACTIVATED_TOKEN_IS_APPCONTAINER=%u OBSERVED_APPCONTAINER_SID=%s OBSERVED_PACKAGE_FAMILY=%s OBSERVED_PACKAGE_FULL_NAME=%s\n",expectedPid,activationApp,activationSid.c_str(),activationFamily.c_str(),activationFull.c_str());
+   if(activationApp!=1||activationSid==L"UNAVAILABLE"){wprintf(L"ACTIVATED_PROCESS_NOT_APP_CONTAINER=TRUE\n");return 33;}
+   aclSid=activationSid;
+ }
+ std::wstring sddl=L"D:P(A;;GA;;;"+userSid+L")(A;;GA;;;"+aclSid+L")S:(ML;;NW;;;LW)";
  PSECURITY_DESCRIPTOR sd=nullptr;if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){wprintf(L"SDDL_FAIL=%lu\n",GetLastError());return 6;}
  SECURITY_ATTRIBUTES sa{sizeof(sa),sd,FALSE};
  HANDLE pipe=CreateNamedPipeW(PIPE_NAME.c_str(),PIPE_ACCESS_DUPLEX,PIPE_TYPE_MESSAGE|PIPE_READMODE_MESSAGE|PIPE_WAIT|PIPE_REJECT_REMOTE_CLIENTS,1,4096,4096,10000,&sa);LocalFree(sd);
  if(pipe==INVALID_HANDLE_VALUE){wprintf(L"PIPE_CREATE_FAIL=%lu\n",GetLastError());return 7;}
- wprintf(L"SUPERVISOR_READY CASE=%s USER_SID=%s EXPECTED_APPCONTAINER_SID=%s DACL_SAME_USER_LIMITATION=TRUE\n",caseName.c_str(),userSid.c_str(),expectedSid.c_str());fflush(stdout);
+ wprintf(L"SUPERVISOR_READY CASE=%s PIPE=%s USER_SID=%s EXPECTED_APPCONTAINER_SID=%s ACL_APPCONTAINER_SID=%s EXPECTED_ACTIVATED_PID=%lu DACL_SAME_USER_LIMITATION=TRUE\n",caseName.c_str(),PIPE_NAME.c_str(),userSid.c_str(),expectedSid.c_str(),aclSid.c_str(),expectedPid);fflush(stdout);
  BOOL connected=ConnectNamedPipe(pipe,nullptr)?TRUE:(GetLastError()==ERROR_PIPE_CONNECTED);
  if(!connected){wprintf(L"PIPE_CONNECT_FAIL=%lu\n",GetLastError());CloseHandle(pipe);return 8;}
  ULONG clientPid=0;BOOL pidOk=GetNamedPipeClientProcessId(pipe,&clientPid);
@@ -69,11 +82,12 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  HANDLE process=nullptr,processToken=nullptr;std::wstring processPath=L"UNAVAILABLE",processUser=L"UNAVAILABLE",processSid=L"UNAVAILABLE",processFull=L"UNAVAILABLE",processFamily=L"UNAVAILABLE";DWORD processApp=0;BOOL processTokenOk=FALSE;
  if(pidOk&&clientPid){process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,clientPid);if(process){processPath=ProcessPath(process);processTokenOk=OpenProcessToken(process,TOKEN_QUERY,&processToken);if(processTokenOk){processUser=TokenSid(processToken,TokenUser);processSid=TokenSid(processToken,TokenAppContainerSid);processApp=TokenApp(processToken);processFull=PackageValue(processToken,true);processFamily=PackageValue(processToken,false);}}}
  std::string wireMessage(msg,rd?got:0);
- bool correlated=pidOk&&clientPid&&process&&processTokenOk&&Same(observedUser,processUser)&&app==processApp&&observedSid==processSid&&observedFull==processFull&&observedFamily==processFamily;
+ bool activationPidMatch=(expectedPid==0)||(pidOk&&clientPid==expectedPid);
+ bool correlated=pidOk&&clientPid&&process&&processTokenOk&&Same(observedUser,processUser)&&app==processApp&&observedSid==processSid&&observedFull==processFull&&observedFamily==processFamily&&activationPidMatch;
  bool claimsMatch=ClaimValue(wireMessage,"CLAIMED_PACKAGE_FAMILY")==ToUtf8(observedFamily)&&ClaimValue(wireMessage,"CLAIMED_PACKAGE_FULL_NAME")==ToUtf8(observedFull)&&ClaimValue(wireMessage,"CLAIMED_APPCONTAINER_SID")==ToUtf8(observedSid);
  bool pathMatch=processPath!=L"UNAVAILABLE"&&_wcsicmp(processPath.c_str(),expectedPath.c_str())==0;
  bool allow=opened&&correlated&&claimsMatch&&pathMatch&&app==1&&Same(observedSid,expectedSid)&&Same(observedFamily,expectedFamily)&&Same(observedFull,expectedFull);
- wprintf(L"PIPE_CLIENT_PID=%lu PID_API_OK=%u\n",clientPid,pidOk);
+ wprintf(L"PIPE_CLIENT_PID=%lu PID_API_OK=%u EXPECTED_ACTIVATED_PID=%lu ACTIVATION_PID_MATCH=%s\n",clientPid,pidOk,expectedPid,activationPidMatch?L"TRUE":L"FALSE");
  wprintf(L"TOKEN_USER_SID=%s\nTOKEN_IS_APPCONTAINER=%u\nOBSERVED_APPCONTAINER_SID=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PACKAGE_FAMILY_NAME=%s\n",observedUser.c_str(),app,observedSid.c_str(),observedFull.c_str(),observedFamily.c_str());
  wprintf(L"PROCESS_IMAGE=%s\nPROCESS_TOKEN_USER_SID=%s\nPROCESS_TOKEN_IS_APPCONTAINER=%u\nPROCESS_TOKEN_APPCONTAINER_SID=%s\nPROCESS_TOKEN_PACKAGE_FULL_NAME=%s\nPROCESS_TOKEN_PACKAGE_FAMILY_NAME=%s\n",processPath.c_str(),processUser.c_str(),processApp,processSid.c_str(),processFull.c_str(),processFamily.c_str());
  wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nPROTOCOL_CLAIMS_MATCH_OBSERVED=%s\nPACKAGE_SID_OBSERVED=NOT_AVAILABLE_IN_THIS_TOKEN_QUERY\nPROCESS_INSTALL_PATH_MATCH=%s\nEXPECTED_PROCESS_PATH=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",claimsMatch?L"TRUE":L"FALSE",pathMatch?L"TRUE":L"FALSE",expectedPath.c_str(),expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
@@ -83,7 +97,7 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  return allow?0:10;
 }
 int wmain(int argc,wchar_t**argv){
- if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<8)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);}
+ if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<9)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],(DWORD)_wtoi(argv[8]));}
  if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",mode=argc>4?argv[4]:L"legit";
  if(family.empty()||sid.empty()||full.empty()){
