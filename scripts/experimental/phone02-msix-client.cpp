@@ -19,6 +19,16 @@ static std::wstring ProcessPath(HANDLE p){wchar_t b[32768]{};DWORD n=32768;retur
 static bool Same(const std::wstring&a,const std::wstring&b){return a!=L"UNAVAILABLE"&&a!=L"NO_PACKAGE_IDENTITY"&&a!=L"API_UNAVAILABLE"&&a!=L"QUERY_FAILED"&&a==b;}
 static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);s.pop_back();return s;}
 static std::string ClaimValue(const std::string&message,const char*key){std::string prefix=std::string(key)+"=";size_t p=message.find(prefix);if(p==std::string::npos)return {};p+=prefix.size();size_t e=message.find(';',p);return message.substr(p,e==std::string::npos?std::string::npos:e-p);}
+static void ClientDiagnostic(const std::wstring& message){
+ wchar_t base[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,32768);
+ if(!n||n>=32768)return;
+ std::wstring path=std::wstring(base)+L"\\Phone02-MsixPoA-client-"+std::to_wstring(GetCurrentProcessId())+L".log";
+ HANDLE file=CreateFileW(path.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+ if(file==INVALID_HANDLE_VALUE)return;
+ std::wstring line=message+L"\r\n";int bytes=WideCharToMultiByte(CP_UTF8,0,line.c_str(),(int)line.size(),nullptr,0,nullptr,nullptr);
+ if(bytes>0){std::string utf8(bytes,'\\0');WideCharToMultiByte(CP_UTF8,0,line.c_str(),(int)line.size(),utf8.data(),bytes,nullptr,nullptr);DWORD written=0;WriteFile(file,utf8.data(),(DWORD)utf8.size(),&written,nullptr);}
+ CloseHandle(file);
+}
 static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
  std::wstring f=family,s=sid,ps=sid,pfn=full,hs=L"MSIX_TEST_CLIENT_HELLO";
  if(mode==L"spoof-package")f=L"Fake.Package_1234567890";
@@ -41,10 +51,12 @@ static int Client(const std::wstring&mode,const std::wstring&family,const std::w
    WaitNamedPipeW(PIPE_NAME.c_str(),100);
    Sleep(100);
  }
- if(h==INVALID_HANDLE_VALUE){wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s PIPE=%s\n",GetLastError(),mode.c_str(),PIPE_NAME.c_str());return 20;}
+ if(h==INVALID_HANDLE_VALUE){DWORD error=GetLastError();wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s PIPE=%s\\n",error,mode.c_str(),PIPE_NAME.c_str());ClientDiagnostic(L"CLIENT_PIPE_OPEN=DENY ERROR="+std::to_wstring(error)+L" MODE="+mode+L" PIPE="+PIPE_NAME);return 20;}
+ ClientDiagnostic(L"CLIENT_PIPE_OPEN=ALLOW MODE="+mode+L" PIPE="+PIPE_NAME);
  std::string msg=MessageFor(mode,family,sid,full);DWORD sent=0;BOOL wr=WriteFile(h,msg.data(),(DWORD)msg.size(),&sent,nullptr);
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
- wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
+ ClientDiagnostic(L"CLIENT_PIPE_RESULT WRITE="+std::to_wstring(wr)+L" SENT="+std::to_wstring(sent)+L" ACK="+std::to_wstring(rd));
+ wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
 }
 static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName,const std::wstring&pipeName,DWORD expectedPid){
  PIPE_NAME=pipeName;
