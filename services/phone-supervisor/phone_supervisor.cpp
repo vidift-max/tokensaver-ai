@@ -90,7 +90,16 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   out.appSid=SidText(reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(container.data())->TokenAppContainer);
   if(out.userSid.empty()){localReason=L"USER_SID_EMPTY";break;}
   if(out.appSid.empty()){localReason=L"APPCONTAINER_SID_EMPTY";break;}
-  tokenObserved=true;localReason=L"OK";
+  UINT32 size=0;Log(L"RPC_PACKAGE_FAMILY_BEGIN");LONG rc=GetPackageFamilyName(process,&size,nullptr);
+  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FAMILY_QUERY_ERROR_"+std::to_wstring(rc);break;}
+  std::vector<wchar_t>family(size);
+  if(GetPackageFamilyName(process,&size,family.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FAMILY_READ_ERROR_"+std::to_wstring(GetLastError());break;}
+  out.family=family.data();Log(L"RPC_PACKAGE_FAMILY_OK");
+  size=0;Log(L"RPC_PACKAGE_FULL_BEGIN");rc=GetPackageFullName(process,&size,nullptr);
+  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FULL_QUERY_ERROR_"+std::to_wstring(rc);break;}
+  std::vector<wchar_t>full(size);
+  if(GetPackageFullName(process,&size,full.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FULL_READ_ERROR_"+std::to_wstring(GetLastError());break;}
+  out.full=full.data();Log(L"RPC_PACKAGE_FULL_OK");tokenObserved=true;localReason=L"OK";
  }while(false);
  if(token)CloseHandle(token);
  RPC_STATUS revertStatus=RpcRevertToSelf();Log(L"RPC_REVERT status="+std::to_wstring(revertStatus));
@@ -99,22 +108,12 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   Log(L"RPC_PROCESS_TIMES_BEGIN");FILETIME exitTime{},kernelTime{},userTime{};
   if(!GetProcessTimes(process,&out.created,&exitTime,&kernelTime,&userTime)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
   else Log(L"RPC_PROCESS_TIMES_OK");
-  if(tokenObserved){
-   UINT32 size=0;Log(L"RPC_PACKAGE_FAMILY_BEGIN");LONG rc=GetPackageFamilyName(process,&size,nullptr);
-   if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FAMILY_QUERY_ERROR_"+std::to_wstring(rc);tokenObserved=false;}
-   else{std::vector<wchar_t>family(size);if(GetPackageFamilyName(process,&size,family.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FAMILY_READ_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}else{out.family=family.data();Log(L"RPC_PACKAGE_FAMILY_OK");}}
-  }
-  if(tokenObserved){
-   UINT32 size=0;Log(L"RPC_PACKAGE_FULL_BEGIN");LONG rc=GetPackageFullName(process,&size,nullptr);
-   if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FULL_QUERY_ERROR_"+std::to_wstring(rc);tokenObserved=false;}
-   else{std::vector<wchar_t>full(size);if(GetPackageFullName(process,&size,full.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FULL_READ_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}else{out.full=full.data();Log(L"RPC_PACKAGE_FULL_OK");}}
-  }
-  if(tokenObserved&&out.userSid!=gExpectedUserSid){localReason=L"USER_SID_PIN_MISMATCH";tokenObserved=false;}
-  if(tokenObserved&&out.appSid!=gExpectedAppSid){localReason=L"APPCONTAINER_SID_PIN_MISMATCH";tokenObserved=false;}
-  if(tokenObserved&&out.family!=gExpectedFamily){localReason=L"PACKAGE_FAMILY_PIN_MISMATCH";tokenObserved=false;}
-  if(tokenObserved&&out.full!=gExpectedFull){localReason=L"PACKAGE_FULL_PIN_MISMATCH";tokenObserved=false;}
-  if(tokenObserved)localReason=L"OK";
  }
+ if(tokenObserved&&out.userSid!=gExpectedUserSid){localReason=L"USER_SID_PIN_MISMATCH";tokenObserved=false;}
+ if(tokenObserved&&out.appSid!=gExpectedAppSid){localReason=L"APPCONTAINER_SID_PIN_MISMATCH";tokenObserved=false;}
+ if(tokenObserved&&out.family!=gExpectedFamily){localReason=L"PACKAGE_FAMILY_PIN_MISMATCH";tokenObserved=false;}
+ if(tokenObserved&&out.full!=gExpectedFull){localReason=L"PACKAGE_FULL_PIN_MISMATCH";tokenObserved=false;}
+ if(tokenObserved)localReason=L"OK";
  if(process)CloseHandle(process);
  if(reason)*reason=localReason;
  if(out.pid){
