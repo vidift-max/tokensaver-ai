@@ -120,6 +120,14 @@ static HANDLE CreatePoAPipe(const std::wstring& userSid, const std::wstring& app
 }
 
 static bool InspectConnection(HANDLE pipe, const std::wstring& expectedAppSid, const wchar_t* label, bool expectedAuthorized) {
+    // Windows requires the server to read a client message before impersonation.
+    char msg[2048]{};
+    DWORD read = 0;
+    BOOL readOk = ReadFile(pipe, msg, sizeof(msg) - 1, &read, nullptr);
+    if (!readOk) {
+        wprintf(L"PROTOCOL_READ_FAILED label=%s win32=%lu\n", label, GetLastError());
+        return false;
+    }
     BOOL impersonated = ImpersonateNamedPipeClient(pipe);
     if (!impersonated) {
         wprintf(L"IDENTITY_INSPECTION_FAILED label=%s win32=%lu\n", label, GetLastError());
@@ -133,9 +141,6 @@ static bool InspectConnection(HANDLE pipe, const std::wstring& expectedAppSid, c
     std::wstring app = got ? TokenSid(threadToken, TokenAppContainerSid, true) : L"UNAVAILABLE";
     std::wstring package = L"NOT_TESTED_NO_MSIX_PACKAGE_IDENTITY";
     bool authorized = got && gotAppFlag && isApp && app == expectedAppSid;
-    char msg[2048]{};
-    DWORD read = 0;
-    BOOL readOk = ReadFile(pipe, msg, sizeof(msg) - 1, &read, nullptr);
     RevertToSelf();
     if (threadToken) CloseHandle(threadToken);
 
