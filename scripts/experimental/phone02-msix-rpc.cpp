@@ -70,13 +70,20 @@ static std::wstring MakeClaims(const std::wstring&mode,const std::wstring&family
 }
 #if defined(PHONE02_RPC_SERVER_ONLY)
 static RPC_STATUS RPC_ENTRY Phone02SecurityCallback(RPC_IF_HANDLE,void* context){
+ wprintf(L"RPC_SECURITY_CALLBACK_ENTER=TRUE\\n");fflush(stdout);
  RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
  RPC_STATUS s=RpcServerInqCallAttributesW(reinterpret_cast<RPC_BINDING_HANDLE>(context),&a);
- if(s!=RPC_S_OK)return RPC_S_ACCESS_DENIED;
- if(a.ProtocolSequence!=RPC_PROTSEQ_LRPC||a.IsClientLocal!=rcclLocal||
-    a.AuthenticationLevel<RPC_C_AUTHN_LEVEL_PKT_PRIVACY||
-    a.AuthenticationService!=RPC_C_AUTHN_WINNT||a.NullSession||a.ClientPID==nullptr)
-   return RPC_S_ACCESS_DENIED;
+ if(s!=RPC_S_OK){wprintf(L"RPC_SECURITY_CALLBACK_ATTR_QUERY=FAIL STATUS=%lu\\n",s);fflush(stdout);return RPC_S_ACCESS_DENIED;}
+ bool protocolOk=a.ProtocolSequence==RPC_PROTSEQ_LRPC;
+ bool localityOk=a.IsClientLocal==rcclLocal;
+ bool authLevelOk=a.AuthenticationLevel>=RPC_C_AUTHN_LEVEL_PKT_PRIVACY;
+ bool authServiceOk=a.AuthenticationService==RPC_C_AUTHN_WINNT;
+ bool sessionOk=!a.NullSession;
+ bool pidOk=a.ClientPID!=nullptr;
+ wprintf(L"RPC_SECURITY_CALLBACK_ATTRS=PASS PID=%lu PROTOCOL=%lu LOCALITY=%u AUTH_LEVEL=%lu AUTH_SERVICE=%lu NULL_SESSION=%u\\n",static_cast<unsigned long>(reinterpret_cast<ULONG_PTR>(a.ClientPID)),a.ProtocolSequence,a.IsClientLocal,a.AuthenticationLevel,a.AuthenticationService,a.NullSession);
+ wprintf(L"RPC_SECURITY_CALLBACK_CHECKS PROTOCOL=%s LOCAL=%s AUTH_LEVEL=%s AUTH_SERVICE=%s NON_NULL_SESSION=%s PID=%s\\n",protocolOk?L"PASS":L"FAIL",localityOk?L"PASS":L"FAIL",authLevelOk?L"PASS":L"FAIL",authServiceOk?L"PASS":L"FAIL",sessionOk?L"PASS":L"FAIL",pidOk?L"PASS":L"FAIL");fflush(stdout);
+ if(!protocolOk||!localityOk||!authLevelOk||!authServiceOk||!sessionOk||!pidOk)return RPC_S_ACCESS_DENIED;
+ wprintf(L"RPC_SECURITY_CALLBACK_RESULT=ALLOW\\n");fflush(stdout);
  return RPC_S_OK;
 }
 extern "C" void Phone02BeginSession(handle_t hBinding,wchar_t**nonce){
@@ -150,12 +157,13 @@ static int RpcSupervisor(const std::wstring&family,const std::wstring&sid,const 
  std::wstring sddl=L"D:P(A;;GA;;;"+gUserSid+L")(A;;GA;;;"+gExpectedSid+L")";
  PSECURITY_DESCRIPTOR sd=nullptr;if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){wprintf(L"RPC_SDDL_FAIL=%lu\n",GetLastError());return 52;}
  RPC_STATUS s=RpcServerUseProtseqEpW(reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),RPC_C_PROTSEQ_MAX_REQS_DEFAULT,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),sd);
- LocalFree(sd);
- if(s!=RPC_S_OK){wprintf(L"RPC_ENDPOINT_CREATE=FAIL STATUS=%lu\n",s);return 53;}
+ if(s!=RPC_S_OK){LocalFree(sd);wprintf(L"RPC_ENDPOINT_CREATE=FAIL STATUS=%lu\\n",s);return 53;}
  s=RpcServerRegisterAuthInfoW(nullptr,RPC_C_AUTHN_WINNT,nullptr,nullptr);
- if(s!=RPC_S_OK){wprintf(L"RPC_AUTH_REGISTER=FAIL STATUS=%lu\n",s);return 54;}
- s=RpcServerRegisterIf3(Phone02Ipc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,static_cast<unsigned int>(-1),Phone02SecurityCallback,nullptr);
- if(s!=RPC_S_OK){wprintf(L"RPC_INTERFACE_REGISTER=FAIL STATUS=%lu\n",s);return 55;}
+ if(s!=RPC_S_OK){LocalFree(sd);wprintf(L"RPC_AUTH_REGISTER=FAIL STATUS=%lu\\n",s);return 54;}
+ s=RpcServerRegisterIf3(Phone02Ipc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,static_cast<unsigned int>(-1),Phone02SecurityCallback,sd);
+ LocalFree(sd);
+ if(s!=RPC_S_OK){wprintf(L"RPC_INTERFACE_REGISTER=FAIL STATUS=%lu\\n",s);return 55;}
+ wprintf(L"RPC_INTERFACE_SECURITY_DESCRIPTOR=EXPLICIT_USER_AND_APPCONTAINER_SID\\n");fflush(stdout);
  wprintf(L"RPC_SERVER_READY=TRUE PROTOCOL=ncalrpc ENDPOINT=%s USER_SID=%s EXPECTED_APPCONTAINER_SID=%s PACKAGE_FAMILY=%s PACKAGE_FULL_NAME=%s EXPECTED_CLIENT_PATH=%s\n",endpoint.c_str(),gUserSid.c_str(),sid.c_str(),family.c_str(),full.c_str(),path.c_str());fflush(stdout);
  s=RpcServerListen(1,RPC_C_LISTEN_MAX_CALLS_DEFAULT,FALSE);
  wprintf(L"RPC_SERVER_LISTEN_EXIT=%lu\n",s);
