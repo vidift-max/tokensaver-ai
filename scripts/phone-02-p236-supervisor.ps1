@@ -248,6 +248,6 @@ finally {
  $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
  if(-not $cleanup){$final='BLOCKED'}
- ('P2.36_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
+ ('P2.36.1_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  Stop-Transcript|Out-Null
 }
