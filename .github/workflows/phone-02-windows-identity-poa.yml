@@ -13,7 +13,7 @@ jobs:
   msix-package-poa:
     name: Windows MSIX package and activation PoA
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - name: Checkout experimental branch
         uses: actions/checkout@v4
