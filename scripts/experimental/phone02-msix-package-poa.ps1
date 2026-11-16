@@ -129,14 +129,24 @@ public interface IApplicationActivationManager {
   [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
     [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
 }
-[ComImport, Guid("45BA127D-10A8-46D7-ABED-1E1A2B9F78F"), ClassInterface(ClassInterfaceType.None)]
+[ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C"), ClassInterface(ClassInterfaceType.None)]
 public class ApplicationActivationManager { }
 public static class PackageActivator {
+  [DllImport("ole32.dll")] private static extern int CoInitializeEx(IntPtr reserved, uint coInit);
+  [DllImport("ole32.dll")] private static extern void CoUninitialize();
   public static uint Activate(string appUserModelId, string arguments) {
-    var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-    uint pid; int hr = manager.ActivateApplication(appUserModelId, arguments, 0, out pid);
-    if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-    return pid;
+    int initHr = CoInitializeEx(IntPtr.Zero, 0x2);
+    if (initHr < 0 && initHr != unchecked((int)0x80010106)) Marshal.ThrowExceptionForHR(initHr);
+    IApplicationActivationManager manager = null;
+    try {
+      manager = (IApplicationActivationManager)new ApplicationActivationManager();
+      uint pid; int hr = manager.ActivateApplication(appUserModelId, arguments, 0, out pid);
+      if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+      return pid;
+    } finally {
+      if (manager != null && Marshal.IsComObject(manager)) Marshal.ReleaseComObject(manager);
+      if (initHr >= 0) CoUninitialize();
+    }
   }
 }
 '@
