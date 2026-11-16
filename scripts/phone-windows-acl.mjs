@@ -62,8 +62,11 @@ public static class PhoneAclNative
         }
     }
 
-    public static void Apply(string path, bool isDirectory, string[] allowedSids)
+    private static DiscretionaryAcl BuildDacl(bool isDirectory, string[] allowedSids)
     {
+        if (allowedSids == null || allowedSids.Length != 3)
+            throw new InvalidOperationException("Exactly three authorized SIDs are required");
+
         DiscretionaryAcl dacl = new DiscretionaryAcl(isDirectory, false, allowedSids.Length);
         InheritanceFlags inheritance = isDirectory
             ? (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit)
@@ -76,9 +79,43 @@ public static class PhoneAclNative
 
         // AddAccess may merge equivalent entries; fail closed unless all three distinct SIDs
         // remain represented by exactly one ACE each.
-        if (dacl.Count != allowedSids.Length)
+        if (dacl.Count != 3)
             throw new InvalidOperationException("ACL construction merged or omitted an authorized SID");
+        return dacl;
+    }
 
+    public static void VerifyConstructedDacl(bool isDirectory, string[] allowedSids)
+    {
+        DiscretionaryAcl dacl = BuildDacl(isDirectory, allowedSids);
+        System.Collections.Generic.HashSet<string> expected =
+            new System.Collections.Generic.HashSet<string>(allowedSids, StringComparer.OrdinalIgnoreCase);
+        if (expected.Count != 3)
+            throw new InvalidOperationException("Authorized SID list contains duplicates");
+
+        AceFlags expectedFlags = isDirectory
+            ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit)
+            : AceFlags.None;
+        System.Collections.Generic.HashSet<string> observed =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < dacl.Count; i++)
+        {
+            GenericAce generic = dacl[i];
+            QualifiedAce ace = generic as QualifiedAce;
+            if (ace == null || generic.AceType != AceType.AccessAllowed ||
+                ace.AceQualifier != AceQualifier.AccessAllowed || ace.IsCallback ||
+                ace.AccessMask != FULL_CONTROL || generic.AceFlags != expectedFlags)
+                throw new InvalidOperationException("Constructed DACL contains an unexpected ACE");
+            string sid = ace.SecurityIdentifier.Value;
+            if (!expected.Contains(sid) || !observed.Add(sid))
+                throw new InvalidOperationException("Constructed DACL contains an extra or duplicate SID");
+        }
+        if (observed.Count != 3 || !expected.SetEquals(observed))
+            throw new InvalidOperationException("Constructed DACL does not contain exactly the authorized SIDs");
+    }
+
+    public static void Apply(string path, bool isDirectory, string[] allowedSids)
+    {
+        DiscretionaryAcl dacl = BuildDacl(isDirectory, allowedSids);
         byte[] binary = new byte[dacl.BinaryLength];
         dacl.GetBinaryForm(binary, 0);
 
@@ -163,6 +200,13 @@ public static class PhoneAclNative
 '@
 Write-Output ("PHONE_RESULT_ACL_RUNTIME=" + $PSVersionTable.PSVersion.ToString() + "; Edition=" + $PSVersionTable.PSEdition + "; CLR=" + [System.Environment]::Version.ToString())
 Add-Type -TypeDefinition $nativeAclSource -Language CSharp -ErrorAction Stop
+
+if ($env:TOKENSAVER_PHONE_ACL_CONSTRUCTION_TEST) {
+  [PhoneAclNative]::VerifyConstructedDacl($false, $allowed)
+  [PhoneAclNative]::VerifyConstructedDacl($true, $allowed)
+  Write-Output 'PHONE_RESULT_ACL_CONSTRUCTION_OK'
+  exit 0
+}
 
 if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
   $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
@@ -249,6 +293,21 @@ export function secureWindowsResultDirectory(directory, options = {}) {
   const output = invokeAclScript(directory, {}, options);
   if (!output.includes("PHONE_RESULT_ACL_OK")) {
     const error = new Error("Windows ACL verification marker missing");
+    error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+    throw error;
+  }
+}
+
+export function verifyWindowsAclConstruction(directory, options = {}) {
+  if (process.platform !== "win32" && options.platform !== "win32") return;
+  if (typeof directory !== "string" || !directory.trim()) {
+    throw new TypeError("A result directory is required for Windows ACL construction verification");
+  }
+  const output = invokeAclScript(directory, {
+    TOKENSAVER_PHONE_ACL_CONSTRUCTION_TEST: "1"
+  }, options);
+  if (!output.includes("PHONE_RESULT_ACL_CONSTRUCTION_OK")) {
+    const error = new Error("Windows ACL construction verification marker missing");
     error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
     throw error;
   }
