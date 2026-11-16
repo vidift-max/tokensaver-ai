@@ -33,7 +33,7 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       return "PHONE_RESULT_ACL_OK";
     }
   });
-  assert.equal(captured.command, "pwsh.exe");
+  assert.equal(captured.command, "powershell.exe");
   assert.equal(captured.args.includes("-EncodedCommand"), true);
   assert.equal(captured.options.timeout, 60000);
 });
