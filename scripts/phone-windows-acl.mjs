@@ -271,9 +271,9 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
 
   const stdout = String(result.stdout ?? "");
   const stderr = String(result.stderr ?? "");
-  const runtime = stdout.split(/\\r?\\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
-  if (runtime) process.stdout.write(runtime + "\\n");
-  if (stderr) process.stderr.write(stderr.endsWith("\\n") ? stderr : stderr + "\\n");
+  const runtime = stdout.split(/\r?\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
+  if (runtime) process.stdout.write(runtime + "\n");
+  if (stderr) process.stderr.write(stderr.endsWith("\n") ? stderr : stderr + "\n");
 
   if (result.error || result.status !== 0) {
     const cause = result.error ?? new Error("PowerShell exited with status " + String(result.status));
@@ -286,7 +286,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
       stderr,
       "cause:",
       cause?.stack || cause?.message || String(cause)
-    ].join("\\n");
+    ].join("\n");
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage: " + detail,
       { cause }
