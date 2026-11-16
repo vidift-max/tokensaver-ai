@@ -70,9 +70,8 @@ try {
   Write-Host 'CERT_IMPORT_BEGIN=TrustedPeople'
   Invoke-BoundedTool -FilePath (Join-Path $env:SystemRoot 'System32\certutil.exe') -Arguments ('-user -f -addstore TrustedPeople "'+$certPath+'"') -Label 'certutil-TrustedPeople' -TimeoutSeconds 30
   Write-Host 'CERT_IMPORT_END=TrustedPeople'
-  Write-Host 'CERT_IMPORT_BEGIN=Root'
-  Invoke-BoundedTool -FilePath (Join-Path $env:SystemRoot 'System32\certutil.exe') -Arguments ('-user -f -addstore Root "'+$certPath+'"') -Label 'certutil-Root' -TimeoutSeconds 30
-  Write-Host 'CERT_IMPORT_END=Root'
+  Write-Host 'CERT_TRUST_STORE=CurrentUser\TrustedPeople'
+  Write-Host 'ROOT_STORE_IMPORT=NOT_REQUIRED_FOR_PER_USER_PACKAGE_TRUST'
   $msix=Join-Path $root 'Phone02IdentityPoA-52881.msix'
   Write-Host 'MAKEAPPX_PACK_BEGIN=TRUE'
   Invoke-BoundedTool -FilePath $makeappx -Arguments ('pack /d "'+$pkg+'" /p "'+$msix+'" /o') -Label 'MakeAppx-pack' -TimeoutSeconds 120
@@ -115,7 +114,7 @@ using System;
 using System.Runtime.InteropServices;
 [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IApplicationActivationManager {
-  int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+  [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
     [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
 }
 [ComImport, Guid("45BA127D-10A8-46D7-ABED-1E1A2B9F78F"), ClassInterface(ClassInterfaceType.None)]

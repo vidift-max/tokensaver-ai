@@ -18,6 +18,7 @@ static std::wstring PackageValue(HANDLE t,bool full){HMODULE mod=GetModuleHandle
 static std::wstring ProcessPath(HANDLE p){wchar_t b[32768]{};DWORD n=32768;return QueryFullProcessImageNameW(p,0,b,&n)?std::wstring(b,n):L"UNAVAILABLE";}
 static bool Same(const std::wstring&a,const std::wstring&b){return a!=L"UNAVAILABLE"&&a!=L"NO_PACKAGE_IDENTITY"&&a!=L"API_UNAVAILABLE"&&a!=L"QUERY_FAILED"&&a==b;}
 static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);s.pop_back();return s;}
+static std::string ClaimValue(const std::string&message,const char*key){std::string prefix=std::string(key)+"=";size_t p=message.find(prefix);if(p==std::string::npos)return {};p+=prefix.size();size_t e=message.find(';',p);return message.substr(p,e==std::string::npos?std::string::npos:e-p);}
 static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
  std::wstring f=family,s=sid,ps=sid,pfn=full,hs=L"MSIX_TEST_CLIENT_HELLO";
  if(mode==L"spoof-package")f=L"Fake.Package_1234567890";
@@ -59,13 +60,15 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  std::wstring observedFamily=opened?PackageValue(threadToken,false):L"UNAVAILABLE";
  HANDLE process=nullptr,processToken=nullptr;std::wstring processPath=L"UNAVAILABLE",processUser=L"UNAVAILABLE",processSid=L"UNAVAILABLE",processFull=L"UNAVAILABLE",processFamily=L"UNAVAILABLE";DWORD processApp=0;BOOL processTokenOk=FALSE;
  if(pidOk&&clientPid){process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,clientPid);if(process){processPath=ProcessPath(process);processTokenOk=OpenProcessToken(process,TOKEN_QUERY,&processToken);if(processTokenOk){processUser=TokenSid(processToken,TokenUser);processSid=TokenSid(processToken,TokenAppContainerSid);processApp=TokenApp(processToken);processFull=PackageValue(processToken,true);processFamily=PackageValue(processToken,false);}}}
+ std::string wireMessage(msg,rd?got:0);
  bool correlated=pidOk&&clientPid&&process&&processTokenOk&&Same(observedUser,processUser)&&app==processApp&&observedSid==processSid&&observedFull==processFull&&observedFamily==processFamily;
+ bool claimsMatch=ClaimValue(wireMessage,"CLAIMED_PACKAGE_FAMILY")==ToUtf8(observedFamily)&&ClaimValue(wireMessage,"CLAIMED_PACKAGE_FULL_NAME")==ToUtf8(observedFull)&&ClaimValue(wireMessage,"CLAIMED_APPCONTAINER_SID")==ToUtf8(observedSid);
  bool pathMatch=processPath!=L"UNAVAILABLE"&&_wcsicmp(processPath.c_str(),expectedPath.c_str())==0;
- bool allow=opened&&correlated&&pathMatch&&app==1&&Same(observedSid,expectedSid)&&Same(observedFamily,expectedFamily)&&Same(observedFull,expectedFull);
+ bool allow=opened&&correlated&&claimsMatch&&pathMatch&&app==1&&Same(observedSid,expectedSid)&&Same(observedFamily,expectedFamily)&&Same(observedFull,expectedFull);
  wprintf(L"PIPE_CLIENT_PID=%lu PID_API_OK=%u\n",clientPid,pidOk);
  wprintf(L"TOKEN_USER_SID=%s\nTOKEN_IS_APPCONTAINER=%u\nOBSERVED_APPCONTAINER_SID=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PACKAGE_FAMILY_NAME=%s\n",observedUser.c_str(),app,observedSid.c_str(),observedFull.c_str(),observedFamily.c_str());
  wprintf(L"PROCESS_IMAGE=%s\nPROCESS_TOKEN_USER_SID=%s\nPROCESS_TOKEN_IS_APPCONTAINER=%u\nPROCESS_TOKEN_APPCONTAINER_SID=%s\nPROCESS_TOKEN_PACKAGE_FULL_NAME=%s\nPROCESS_TOKEN_PACKAGE_FAMILY_NAME=%s\n",processPath.c_str(),processUser.c_str(),processApp,processSid.c_str(),processFull.c_str(),processFamily.c_str());
- wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nPROCESS_INSTALL_PATH_MATCH=%s\nEXPECTED_PROCESS_PATH=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",pathMatch?L"TRUE":L"FALSE",expectedPath.c_str(),expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
+ wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nPROTOCOL_CLAIMS_MATCH_OBSERVED=%s\nPACKAGE_SID_OBSERVED=NOT_AVAILABLE_IN_THIS_TOKEN_QUERY\nPROCESS_INSTALL_PATH_MATCH=%s\nEXPECTED_PROCESS_PATH=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",claimsMatch?L"TRUE":L"FALSE",pathMatch?L"TRUE":L"FALSE",expectedPath.c_str(),expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
  Sleep(2000);
  const char* ack="ACK";DWORD wrote=0;WriteFile(pipe,ack,3,&wrote,nullptr);FlushFileBuffers(pipe);
  if(processToken)CloseHandle(processToken);if(process)CloseHandle(process);if(threadToken)CloseHandle(threadToken);if(imp)RevertToSelf();DisconnectNamedPipe(pipe);CloseHandle(pipe);
