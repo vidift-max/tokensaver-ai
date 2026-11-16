@@ -68,6 +68,24 @@ test("Windows ACL helper fails closed if ACL application or verification fails",
   );
 });
 
+test("Windows ACL helper preserves complete PowerShell stdout and stderr on failure", () => {
+  assert.throws(
+    () => secureWindowsResultDirectory("C:\\\\unsafe\\\\results", {
+      platform: "win32",
+      execFileSync() {
+        const error = new Error("PowerShell exited unsuccessfully");
+        error.code = "EACCES";
+        error.stdout = Buffer.from("STDOUT_FULL_DIAGNOSTIC");
+        error.stderr = Buffer.from("STDERR_FULL_DIAGNOSTIC");
+        throw error;
+      }
+    }),
+    error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" &&
+      error.message.includes("STDOUT_FULL_DIAGNOSTIC") &&
+      error.message.includes("STDERR_FULL_DIAGNOSTIC")
+  );
+});
+
 test("Windows ACL helper fails closed when the success marker is absent", () => {
   assert.throws(
     () => secureWindowsResultDirectory("C:\\\\safe\\\\results", {
