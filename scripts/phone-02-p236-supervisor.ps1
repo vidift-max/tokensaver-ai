@@ -126,6 +126,51 @@ public static class P236Activator {
  Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_LIFECYCLE'
  $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
  Check ($LASTEXITCODE -eq 0 -and (Get-Content $common -Raw) -match 'COMMON_PROCESS_REJECT=PASS') 'COMMON_PROCESS_REJECT'
+ $svcLog=Join-Path $root 'supervisor.conf.log';$commonServiceLog=Get-Content $svcLog -Raw
+ Check ($commonServiceLog -match 'token_is_appcontainer=0' -and $commonServiceLog -match 'reason=TOKEN_IS_NOT_APPCONTAINER' -and $commonServiceLog -match 'user_sid=S-1-5-21-') 'COMMON_PROCESS_WINDOWS_IDENTITY'
+ Copy-Item $svcLog (Join-Path $evidence 'service-allow-and-common-reject.log') -Force
+ $idlText=Get-Content (Join-Path $env:GITHUB_WORKSPACE 'services\phone-supervisor\phone_supervisor_rpc.idl') -Raw
+ Check ($idlText -notmatch '(?im)^\s*\[(?:in|in,out)[^\]]*\]\s*(?:unsigned\s+)?(?:long|wchar_t\s*\*)\s*(?:pid|user_sid|appcontainer_sid|package_family|package_full|ai_phone_id|ai_id)\b') 'CLIENT_IDENTITY_CLAIMS_ABSENT'
+ $expectedUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+ $mismatchCases=@(
+  @{Name='USER_SID_MISMATCH';UserSid='S-1-5-21-1-2-3-999';AppSid=$appSid;Reason='USER_SID_PIN_MISMATCH'},
+  @{Name='APPCONTAINER_SID_MISMATCH';UserSid=$expectedUser;AppSid='S-1-15-2-1-2-3-4-5-6-7';Reason='APPCONTAINER_SID_PIN_MISMATCH'}
+ )
+ foreach($tc in $mismatchCases){
+  & sc.exe stop $service 2>&1|Out-Host
+  $deadline=(Get-Date).AddSeconds(15);$state=''
+  do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
+  Check ($state -eq 'Stopped' -and (Get-Content $svcLog -Raw) -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0') ($tc.Name+'_PREVIOUS_SESSION_CLEAN')
+  Copy-Item $svcLog (Join-Path $evidence ('service-before-'+$tc.Name+'.log')) -Force
+  @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$($tc.AppSid)","SERVICE_SID=$serviceSid","USER_SID=$($tc.UserSid)")|Set-Content $config -Encoding ASCII
+  Remove-Item $svcLog -Force -ErrorAction SilentlyContinue
+  & sc.exe start $service|Out-Host;if($LASTEXITCODE -ne 0){throw ('SCM restart failed for '+$tc.Name)}
+  $s=$null;for($i=0;$i -lt 40;$i++){Start-Sleep -Milliseconds 250;$s=Get-CimInstance Win32_Service -Filter "Name='$service'";if($s.State -eq 'Running'){break}}
+  Check ($s.State -eq 'Running') ($tc.Name+'_SERVICE_START')
+  $servicePid=[int]$s.ProcessId
+  $deadline=(Get-Date).AddSeconds(15)
+  while((-not(Test-Path $svcLog) -or (Get-Content $svcLog -Raw) -notmatch 'RPC_ENDPOINT=READY') -and (Get-Date) -lt $deadline){Start-Sleep -Milliseconds 250}
+  Check ((Test-Path $svcLog) -and (Get-Content $svcLog -Raw) -match 'RPC_ENDPOINT=READY') ($tc.Name+'_RPC_ENDPOINT')
+  Remove-Item $fallbackLog -Force -ErrorAction SilentlyContinue
+  if(Test-Path $clientRoot){Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Remove-Item -Force -ErrorAction SilentlyContinue}
+  $activationPid=[P236Activator]::Activate($aumid,"")
+  $deadline=(Get-Date).AddSeconds(20);$rejectLog=$null;$rejectText=''
+  do{Start-Sleep -Milliseconds 250
+   if(Test-Path $fallbackLog){$rejectLog=Get-Item $fallbackLog}
+   if(-not $rejectLog){$rejectLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
+   if($rejectLog){$rejectText=Get-Content $rejectLog.FullName -Raw -ErrorAction SilentlyContinue}
+  }while($rejectText -notmatch 'LEGITIMATE_APPCONTAINER=FAIL' -and (Get-Date) -lt $deadline)
+  Check ($rejectText -match 'LEGITIMATE_APPCONTAINER=FAIL' -and $rejectText -notmatch 'AUTHORIZATION_ALLOW=PASS') ($tc.Name+'_CLIENT_DENIED')
+  $mismatchLog=Get-Content $svcLog -Raw
+  Check ($mismatchLog -match $tc.Reason -and $mismatchLog -match 'RPC_BEGIN result=REJECT') ($tc.Name+'_WINDOWS_IDENTITY_REJECT')
+  Copy-Item $rejectLog.FullName (Join-Path $evidence ($tc.Name+'-client.log')) -Force
+  & sc.exe stop $service|Out-Host
+  $deadline=(Get-Date).AddSeconds(15);$state=''
+  do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
+  $mismatchLog=Get-Content $svcLog -Raw
+  Check ($state -eq 'Stopped' -and $mismatchLog -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0') ($tc.Name+'_SERVICE_CLEANUP')
+  Copy-Item $svcLog (Join-Path $evidence ($tc.Name+'-service.log')) -Force
+ }
  $final='PASS'
 }
 catch {Write-Host ('P236_FAILURE='+$_.Exception.Message);throw}
