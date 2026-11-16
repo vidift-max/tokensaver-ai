@@ -254,20 +254,31 @@ Write-Output 'PHONE_RESULT_ACL_OK'
 function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
   const runner = options.spawnSync ?? spawnSync;
   const input = POWERSHELL_SCRIPT;
-  const result = runner("powershell.exe", [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
-  ], {
-    encoding: "utf8",
-    input,
-    windowsHide: true,
-    timeout: 60000,
-    env: {
-      ...process.env,
-      TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
-      ...extraEnvironment
-    },
-    stdio: ["pipe", "pipe", "pipe"]
-  });
+  let result;
+  try {
+    result = runner("powershell.exe", [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
+    ], {
+      encoding: "utf8",
+      input,
+      windowsHide: true,
+      timeout: 60000,
+      env: {
+        ...process.env,
+        TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
+        ...extraEnvironment
+      },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+  } catch (cause) {
+    const error = new Error(
+      "Unable to start Windows ACL PowerShell process: " +
+      (cause?.stack || cause?.message || String(cause)),
+      { cause }
+    );
+    error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+    throw error;
+  }
 
   const stdout = String(result.stdout ?? "");
   const stderr = String(result.stderr ?? "");
@@ -275,9 +286,18 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
   if (runtime) process.stdout.write(runtime + "\n");
   if (stderr) process.stderr.write(stderr.endsWith("\n") ? stderr : stderr + "\n");
 
-  if (result.error || result.status !== 0) {
-    const cause = result.error ?? new Error("PowerShell exited with status " + String(result.status));
+  const expectedMarker = extraEnvironment.TOKENSAVER_PHONE_ACL_CONSTRUCTION_TEST
+    ? "PHONE_RESULT_ACL_CONSTRUCTION_OK"
+    : extraEnvironment.TOKENSAVER_PHONE_ACL_AUDIT_ITEMS
+      ? "PHONE_RESULT_ACL_AUDIT_OK"
+      : "PHONE_RESULT_ACL_OK";
+  if (result.error || result.status !== 0 || stderr.length > 0 || !stdout.includes(expectedMarker)) {
+    const cause = result.error ??
+      (stderr.length > 0
+        ? new Error("PowerShell emitted stderr despite exit code " + String(result.status))
+        : new Error("PowerShell did not emit required marker " + expectedMarker));
     const detail = [
+      "expectedMarker=" + expectedMarker,
       "exitCode=" + String(result.status),
       "signal=" + String(result.signal ?? ""),
       "stdout:",
