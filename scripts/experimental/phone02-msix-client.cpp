@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <wchar.h>
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
 static const wchar_t* PIPE_NAME=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881";
@@ -16,7 +17,7 @@ static DWORD TokenApp(HANDLE t){DWORD v=0,n=0;return GetTokenInformation(t,Token
 static std::wstring PackageValue(HANDLE t,bool full){HMODULE mod=GetModuleHandleW(L"kernel32.dll");const char* name=full?"GetPackageFullNameFromToken":"GetPackageFamilyNameFromToken";using QueryFn=LONG(WINAPI*)(HANDLE,UINT32*,PWSTR);auto fn=reinterpret_cast<QueryFn>(GetProcAddress(mod,name));if(!fn)return L"API_UNAVAILABLE";UINT32 n=0;LONG rc=fn(t,&n,nullptr);if(rc!=ERROR_INSUFFICIENT_BUFFER||!n)return L"NO_PACKAGE_IDENTITY";std::vector<wchar_t>b(n);rc=fn(t,&n,b.data());return rc==ERROR_SUCCESS?std::wstring(b.data()):L"QUERY_FAILED";}
 static std::wstring ProcessPath(HANDLE p){wchar_t b[32768]{};DWORD n=32768;return QueryFullProcessImageNameW(p,0,b,&n)?std::wstring(b,n):L"UNAVAILABLE";}
 static bool Same(const std::wstring&a,const std::wstring&b){return a!=L"UNAVAILABLE"&&a!=L"NO_PACKAGE_IDENTITY"&&a!=L"API_UNAVAILABLE"&&a!=L"QUERY_FAILED"&&a==b;}
-static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,s.data(),n,nullptr,nullptr);s.pop_back();return s;}
+static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);s.pop_back();return s;}
 static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid){
  std::wstring f=family,s=sid,ps=sid,hs=L"MSIX_TEST_CLIENT_HELLO";
  if(mode==L"spoof-package")f=L"Fake.Package_1234567890";
