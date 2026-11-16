@@ -45,7 +45,7 @@ static bool ConstantEqual(const std::vector<UCHAR>&a,const std::vector<UCHAR>&b)
 static std::wstring Hex(const UCHAR*p,size_t n){static const wchar_t*h=L"0123456789abcdef";std::wstring s;for(size_t i=0;i<n;i++){s.push_back(h[p[i]>>4]);s.push_back(h[p[i]&15]);}return s;}
 static bool RandomHex(size_t bytes,std::wstring&out){std::vector<UCHAR>b(bytes);if(BCryptGenRandom(nullptr,b.data(),(ULONG)b.size(),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)return false;out=Hex(b.data(),b.size());SecureZeroMemory(b.data(),b.size());return true;}
 static bool ObserveCaller(handle_t binding,ObservedIdentity&out){
- RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID|RPC_QUERY_IS_CLIENT_LOCAL|RPC_QUERY_AUTHN_INFO|RPC_QUERY_PROTOCOL_SEQUENCE;
+ RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID|RPC_QUERY_IS_CLIENT_LOCAL;
  if(RpcServerInqCallAttributesW(binding,&a)!=RPC_S_OK||a.ProtocolSequence!=RPC_PROTSEQ_LRPC||a.IsClientLocal!=rcclLocal||a.AuthenticationService!=RPC_C_AUTHN_WINNT||a.AuthenticationLevel<RPC_C_AUTHN_LEVEL_PKT_PRIVACY||a.NullSession)return false;
  out.pid=(DWORD)(ULONG_PTR)a.ClientPID;if(!out.pid)return false;HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,out.pid);if(!process)return false;HANDLE token=nullptr;bool ok=false;
  do{if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)||!ProcessIdToSessionId(out.pid,&out.windowsSession)||!OpenProcessToken(process,TOKEN_QUERY,&token))break;
@@ -90,12 +90,12 @@ static void WINAPI ServiceMain(DWORD,LPWSTR*){
  gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}PSECURITY_DESCRIPTOR sd=nullptr;
  if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GR;;;AU)",SDDL_REVISION_1,&sd,nullptr)){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
  RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",sd);LocalFree(sd);
- if(rc==RPC_S_OK)rc=RpcServerRegisterIfEx(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,0,nullptr);
+ if(rc==RPC_S_OK)rc=RpcServerRegisterIfEx(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,nullptr);
  if(rc==RPC_S_OK)rc=RpcServerRegisterAuthInfoW(nullptr,RPC_C_AUTHN_WINNT,nullptr,nullptr);
  if(rc==RPC_S_OK)rc=RpcServerListen(1,RPC_C_LISTEN_MAX_CALLS_DEFAULT,TRUE);
  if(rc!=RPC_S_OK){Log(L"RPC_ENDPOINT=FAIL STATUS="+std::to_wstring(rc));SetState(SERVICE_STOPPED,rc);CloseHandle(gStopEvent);return;}
  SetState(SERVICE_RUNNING);Log(L"RPC_ENDPOINT=READY TRANSPORT=ncalrpc AUTH=WINNT PACKET_PRIVACY");DWORD wait=WaitForSingleObject(gStopEvent,INFINITE);
- RpcMgmtStopServerListening(nullptr);RpcServerWaitForCallsToComplete(nullptr);RpcServerUnregisterIf(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,TRUE);
+ RpcMgmtStopServerListening(nullptr);RpcMgmtWaitServerListen();RpcServerUnregisterIf(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,TRUE);
  {std::lock_guard<std::mutex>l(gMutex);for(auto&kv:gSessions)SecureZeroMemory(kv.second.nonceHash.data(),kv.second.nonceHash.size());gSessions.clear();}
  Log(L"SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0");CloseHandle(gStopEvent);gStopEvent=nullptr;SetState(SERVICE_STOPPED,wait==WAIT_OBJECT_0?NO_ERROR:ERROR_GEN_FAILURE);
 }
