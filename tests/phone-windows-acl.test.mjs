@@ -16,7 +16,8 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       assert.doesNotMatch(script, /Import-Module Microsoft\.PowerShell\.Security/);
       assert.doesNotMatch(script, /\bGet-Acl\b|\bSet-Acl\b/);
       assert.match(script, /GetFileSecurityW/);
-      assert.match(script, /SetFileSecurityW/);
+      assert.match(script, /SetNamedSecurityInfoW/);
+      assert.doesNotMatch(script, /SetFileSecurityW/);
       assert.match(script, /RawSecurityDescriptor/);
       assert.match(script, /DiscretionaryAcl/);
       assert.match(script, /Unexpected or duplicate ACL SID/);
