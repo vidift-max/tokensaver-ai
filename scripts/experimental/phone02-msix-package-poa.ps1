@@ -187,6 +187,13 @@ public static class PackageActivator {
     Write-Host "CASE_BEGIN=$caseName";Write-Host $content;Write-Host "SUPERVISOR_EXIT=$($s.Process.ExitCode)";Write-Host "CASE_END=$caseName"
     return @{Content=$content;ExitCode=$s.Process.ExitCode}
   }
+  Write-Host 'ROUND_6A — full-trust pipe visibility control before AppContainer connection'
+  $probePipe="\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881.fulltrust-probe"
+  $probeSupervisor=Start-Supervisor 'fulltrust-pipe-probe' $probePipe
+  $probeClient=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','common',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$probeSupervisor.PipeName) -PassThru -Wait -WindowStyle Hidden
+  $probeResult=Finish-Case $probeSupervisor 'fulltrust-pipe-probe'
+  if($probeClient.ExitCode -ne 0 -or $probeResult.ExitCode -eq 0 -or $probeResult.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS' -or $probeResult.Content -notmatch 'AUTHORIZATION_RESULT=REJECT'){throw 'Full-trust visibility control failed; cannot interpret AppContainer pipe visibility'}
+  Write-Host "FULLTRUST_PIPE_VISIBILITY=PASS CLIENT_EXIT=$($probeClient.ExitCode) SUPERVISOR_EXIT=$($probeResult.ExitCode)"
   Write-Host 'ROUND_6 — legitimate MSIX client and same-user ordinary process'
   $activatedPid=Activate-PackagedClient
   $legitPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$activatedPid"
