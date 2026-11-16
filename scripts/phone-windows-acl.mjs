@@ -134,6 +134,7 @@ public static class PhoneAclNative
 }
 '@
 Add-Type -TypeDefinition $nativeAclSource -Language CSharp -ErrorAction Stop
+Write-Output ("PHONE_RESULT_ACL_RUNTIME=" + $PSVersionTable.PSVersion.ToString() + "; CLR=" + [System.Environment]::Version.ToString())
 
 if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
   $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
@@ -195,7 +196,10 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
-    return String(output);
+    const result = String(output);
+    const runtime = result.split(/\\r?\\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
+    if (runtime) process.stdout.write(runtime + "\\n");
+    return result;
   } catch (cause) {
     const detail = cause?.stderr?.toString?.("utf8") || cause?.message || String(cause);
     const code = cause?.code ? " [" + cause.code + "]" : "";
