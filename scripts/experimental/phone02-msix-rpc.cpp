@@ -10,12 +10,18 @@
 #include <vector>
 #include <sstream>
 #include <iostream>
+#include <fstream>
 #include <cwchar>
 #include <cwctype>
 #include <cstdint>
 #include "phone02-msix-rpc.h"
 
 static std::wstring gExpectedFamily,gExpectedSid,gExpectedFull,gExpectedPath,gUserSid,gEndpoint;
+static void ClientLog(const std::wstring&line){
+ wchar_t local[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
+ if(n&&n<32768){std::wstring file=std::wstring(local)+L"\\Phone02-MsixPoA-rpc-client-"+std::to_wstring(GetCurrentProcessId())+L".log";std::wofstream out(file,std::ios::app);if(out){out<<line<<L"\n";out.flush();}}
+ wprintf(L"%s\n",line.c_str());fflush(stdout);
+}
 static bool Same(const std::wstring&a,const std::wstring&b){return _wcsicmp(a.c_str(),b.c_str())==0;}
 static std::wstring SidString(PSID sid){if(!sid)return L"UNAVAILABLE";LPWSTR p=nullptr;if(!ConvertSidToStringSidW(sid,&p))return L"UNAVAILABLE";std::wstring s=p;LocalFree(p);return s;}
 static std::wstring TokenSid(HANDLE token,TOKEN_INFORMATION_CLASS cls){
@@ -118,21 +124,23 @@ static int RpcSupervisor(const std::wstring&family,const std::wstring&sid,const 
  return s==RPC_S_OK?0:56;
 }
 static int RpcClient(const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&mode,const std::wstring&endpoint){
+ ClientLog(L"RPC_CLIENT_MAIN PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(ProcessSession(GetCurrentProcessId())));
+ ClientLog(L"RPC_CLIENT_PROCESS_IMAGE="+ProcessPath(GetCurrentProcess()));
  std::wstring claims=MakeClaims(mode,family,sid,full);
  RPC_WSTR stringBinding=nullptr;RPC_BINDING_HANDLE binding=nullptr;
  RPC_STATUS s=RpcStringBindingComposeW(nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),nullptr,&stringBinding);
- if(s!=RPC_S_OK){wprintf(L"RPC_CLIENT_BINDING=FAIL STAGE=COMPOSE STATUS=%lu\n",s);return 61;}
+ if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_BINDING=FAIL STAGE=COMPOSE STATUS="+std::to_wstring(s));return 61;}
  s=RpcBindingFromStringBindingW(stringBinding,&binding);RpcStringFreeW(&stringBinding);
- if(s!=RPC_S_OK){wprintf(L"RPC_CLIENT_BINDING=FAIL STAGE=FROM_STRING STATUS=%lu\n",s);return 62;}
+ if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_BINDING=FAIL STAGE=FROM_STRING STATUS="+std::to_wstring(s));return 62;}
  s=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);
- if(s!=RPC_S_OK){wprintf(L"RPC_CLIENT_AUTH=FAIL STATUS=%lu\n",s);RpcBindingFree(&binding);return 63;}
+ if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_AUTH=FAIL STATUS="+std::to_wstring(s));RpcBindingFree(&binding);return 63;}
  long authorized=-1;RPC_STATUS callStatus=RPC_S_OK;
  RpcTryExcept{Phone02Authorize(binding,const_cast<wchar_t*>(claims.c_str()),&authorized);}
  RpcExcept(1){callStatus=RpcExceptionCode();}
  RpcEndExcept
  RpcBindingFree(&binding);
- wprintf(L"RPC_CLIENT_BINDING=PASS ENDPOINT=%s MODE=%s PID=%lu\n",endpoint.c_str(),mode.c_str(),GetCurrentProcessId());
- wprintf(L"RPC_CLIENT_CALL_STATUS=%lu RPC_CLIENT_AUTHORIZATION=%s RESULT=%ld\n",callStatus,authorized==1?L"ALLOW":L"REJECT",authorized);
+ ClientLog(L"RPC_CLIENT_BINDING=PASS ENDPOINT="+endpoint+L" MODE="+mode+L" PID="+std::to_wstring(GetCurrentProcessId()));
+ ClientLog(L"RPC_CLIENT_CALL_STATUS="+std::to_wstring(callStatus)+L" RPC_CLIENT_AUTHORIZATION="+(authorized==1?std::wstring(L"ALLOW"):std::wstring(L"REJECT"))+L" RESULT="+std::to_wstring(authorized));
  return callStatus==RPC_S_OK?0:64;
 }
 int wmain(int argc,wchar_t**argv){
