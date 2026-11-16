@@ -162,7 +162,7 @@ public static class P236Activator {
   }while($rejectText -notmatch 'LEGITIMATE_APPCONTAINER=FAIL' -and (Get-Date) -lt $deadline)
   Check ($rejectText -match 'LEGITIMATE_APPCONTAINER=FAIL' -and $rejectText -notmatch 'AUTHORIZATION_ALLOW=PASS') ($tc.Name+'_CLIENT_DENIED')
   $mismatchLog=Get-Content $svcLog -Raw
-  Check ($mismatchLog -match $tc.Reason -and $mismatchLog -match 'RPC_BEGIN result=REJECT') ($tc.Name+'_WINDOWS_IDENTITY_REJECT')
+  Check ($mismatchLog -match $tc.Reason -and $mismatchLog -match 'RPC_BEGIN .*result=REJECT') ($tc.Name+'_WINDOWS_IDENTITY_REJECT')
   Copy-Item $rejectLog.FullName (Join-Path $evidence ($tc.Name+'-client.log')) -Force
   & sc.exe stop $service|Out-Host
   $deadline=(Get-Date).AddSeconds(15);$state=''
