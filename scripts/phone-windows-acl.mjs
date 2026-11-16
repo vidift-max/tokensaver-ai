@@ -218,7 +218,16 @@ if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
   $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
   $auditPaths = @($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS | ConvertFrom-Json)
   foreach ($path in $auditPaths) {
-    $attributes = [System.IO.File]::GetAttributes($path)
+    try {
+      $attributes = [System.IO.File]::GetAttributes($path)
+    } catch {
+      $pathText = [string]$path
+      $pathUtf16 = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($pathText))
+      Write-Output ("PHONE_ACL_AUDIT_PATH_TYPE=" + $path.GetType().FullName)
+      Write-Output ("PHONE_ACL_AUDIT_PATH_LENGTH=" + $pathText.Length)
+      Write-Output ("PHONE_ACL_AUDIT_PATH_UTF16_BASE64=" + $pathUtf16)
+      throw
+    }
     if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
       throw "Reparse point found during ACL audit: $path"
     }
