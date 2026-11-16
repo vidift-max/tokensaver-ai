@@ -76,7 +76,7 @@ try {
   $aumid="$($package.PackageFamilyName)!App"; $shell=New-Object -ComObject Shell.Application
   function Start-Supervisor([string]$caseName){
     $out=Join-Path $root "$caseName.supervisor.log";$err=Join-Path $root "$caseName.supervisor.err"
-    $sp=Start-Process -FilePath (Join-Path $root 'supervisor.exe') -ArgumentList @('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$caseName) -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+    $sp=Start-Process -FilePath (Join-Path $root 'supervisor.exe') -ArgumentList @('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,(Join-Path $package.InstallLocation 'client.exe'),$caseName) -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
     Start-Sleep -Milliseconds 800
     return @{Process=$sp;Out=$out;Err=$err}
   }
@@ -90,7 +90,7 @@ try {
   $s=Start-Supervisor 'legitimate-msix'
   $shell.ShellExecute("shell:AppsFolder\$aumid","$($package.PackageFamilyName) $expectedSid",'','open',1)
   $legit=Finish-Case $s 'legitimate-msix'
-  if($legit.ExitCode -ne 0 -or $legit.Content -notmatch 'AUTHORIZATION_RESULT=ALLOW'){throw 'Legitimate packaged client failed authorization; stop adversarial interpretation.'}
+  if($legit.ExitCode -ne 0 -or $legit.Content -notmatch 'AUTHORIZATION_RESULT=ALLOW' -or $legit.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS' -or $legit.Content -notmatch 'PROCESS_INSTALL_PATH_MATCH=TRUE'){throw 'Legitimate packaged client failed identity/PID/path authorization; stop adversarial interpretation.'}
   Write-Host 'ROUND_7 — protocol spoof matrix'
   $modes=@('common','spoof-package','spoof-appcontainer','spoof-package-sid','spoof-handshake','spoof-all')
   foreach($mode in $modes){
@@ -98,7 +98,7 @@ try {
     $cp=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary',$mode,$package.PackageFamilyName,$expectedSid) -PassThru -WindowStyle Hidden
     $result=Finish-Case $s $mode
     if($result.ExitCode -eq 0 -or $result.Content -match 'AUTHORIZATION_RESULT=ALLOW'){throw "FAIL: unauthorized common process allowed in case $mode"}
-    if($result.Content -notmatch 'TOKEN_IS_APPCONTAINER=0'){throw "Common process token not proven non-AppContainer in case $mode"}
+    if($result.Content -notmatch 'TOKEN_IS_APPCONTAINER=0' -or $result.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw "Common process token/correlation not proven in case $mode"}
     Write-Host "COMMON_PROCESS_REJECTED=$mode"
   }
   Write-Host 'ROUND_8 — two package activations and instance identity assessment'
@@ -114,7 +114,7 @@ try {
   Write-Host 'NO_UNIQUE_INSTANCE_IDENTITY=TRUE — package/AppContainer identity is shared, not a per-process credential.'
   Write-Host 'ROUND_9 — supervisor closure, reconnect and PID/token revalidation'
   $noServer=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','spoof-all',$package.PackageFamilyName,$expectedSid) -PassThru -Wait
-  Write-Host "RECONNECT_WITHOUT_SUPERVISOR_EXIT=$($noServer.ExitCode) (nonzero expected)"
+  Write-Host "RECONNECT_WITHOUT_SUPERVISOR_EXIT=$($noServer.ExitCode) (nonzero expected)"; if($noServer.ExitCode -eq 0){throw 'Unexpected successful connection without a Supervisor'}
   $s=Start-Supervisor 'reconnect-common'
   $common=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','spoof-all',$package.PackageFamilyName,$expectedSid) -PassThru
   $rejected=Finish-Case $s 'reconnect-common'
