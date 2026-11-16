@@ -3,7 +3,7 @@ $root=Join-Path $env:RUNNER_TEMP 'phone02-p236'
 $evidence=Join-Path $env:RUNNER_TEMP 'phone02-p236-evidence'
 $build=Join-Path $root 'build';$pkg=Join-Path $root 'package'
 New-Item -ItemType Directory -Force -Path $build,$pkg,$evidence|Out-Null
-$service='TokenSaverPhone02Supervisor';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date
+$service='TokenSaverPhone02Supervisor';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date;$testPrivateKeyUniqueName=$null;$testPrivateKeyProvider=$null
 Start-Transcript -Path (Join-Path $evidence 'transcript.log') -Force|Out-Null
 function Check($ok,$label){Write-Host ($label+'='+$(if($ok){'PASS'}else{'FAIL'}));if(-not $ok){throw ($label+' failed')}}
 try {
@@ -42,6 +42,10 @@ try {
  Add-Type -AssemblyName System.Drawing
  foreach($n in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')){$bmp=New-Object System.Drawing.Bitmap 64,64;$bmp.Save((Join-Path $pkg ('Assets\'+$n)),[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose()}
  $cert=New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2)
+ $rsa=[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+ if($rsa -is [System.Security.Cryptography.RSACng]){$testPrivateKeyUniqueName=$rsa.Key.UniqueName;$testPrivateKeyProvider=$rsa.Key.Provider}
+ if($rsa){$rsa.Dispose()}
+ if(-not $testPrivateKeyUniqueName -or -not $testPrivateKeyProvider){throw 'Could not identify disposable MSIX signing private key for cleanup verification'}
  $cer=Join-Path $root 'test.cer';Export-Certificate -Cert $cert -FilePath $cer|Out-Null
  & certutil.exe -f -addstore TrustedPeople $cer|Out-Host;if($LASTEXITCODE -ne 0){throw 'Test certificate trust failed'}
  $msix=Join-Path $root 'phone02-p236.msix'
@@ -175,7 +179,7 @@ public static class P236Activator {
 }
 catch {Write-Host ('P236_FAILURE='+$_.Exception.Message);throw}
 finally {
- $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$tempGone=$false
+ $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$privateKeyGone=$false;$tempGone=$false
  if($created){
   & sc.exe stop $service 2>&1|Out-Host
   $deadline=(Get-Date).AddSeconds(20);$state=''
@@ -221,6 +225,10 @@ finally {
    if(Get-ChildItem $store -ErrorAction SilentlyContinue|Where-Object Thumbprint -EQ $cert.Thumbprint){$certificateGone=$false}
   }
  }
+ if($testPrivateKeyUniqueName -and $testPrivateKeyProvider){
+  try{$k=[System.Security.Cryptography.CngKey]::Open($testPrivateKeyUniqueName,$testPrivateKeyProvider,[System.Security.Cryptography.CngKeyOpenOptions]::UserKey);$k.Delete();$k.Dispose()}catch{}
+  try{$k2=[System.Security.Cryptography.CngKey]::Open($testPrivateKeyUniqueName,$testPrivateKeyProvider,[System.Security.Cryptography.CngKeyOpenOptions]::UserKey);$k2.Dispose();$privateKeyGone=$false}catch{$privateKeyGone=$true}
+ }
  if(-not $serviceGraceful){
   $eventPath=Join-Path $evidence 'windows-events.txt'
   foreach($ln in @('Application','System')){
@@ -233,10 +241,11 @@ finally {
  Write-Host ('CLIENT_PROCESSES_REMOVED='+$(if($clientGone){'PASS'}else{'FAIL'}))
  Write-Host ('MSIX_REMOVED='+$(if($packageGone){'PASS'}else{'FAIL'}))
  Write-Host ('TEST_CERT_REMOVED='+$(if($certificateGone){'PASS'}else{'FAIL'}))
+ Write-Host ('TEST_PRIVATE_KEY_REMOVED='+$(if($privateKeyGone){'PASS'}else{'FAIL'}))
  Write-Host ('TEMP_DIRECTORY_REMOVED='+$(if($tempGone){'PASS'}else{'FAIL'}))
  $logText='';if(Test-Path (Join-Path $evidence 'service.log')){$logText=Get-Content (Join-Path $evidence 'service.log') -Raw}
  $sessionClean=($logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
- $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $tempGone -and $sessionClean)
+ $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
  if(-not $cleanup){$final='BLOCKED'}
  ('P2.36_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
