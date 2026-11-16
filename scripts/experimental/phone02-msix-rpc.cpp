@@ -24,13 +24,17 @@ static std::wstring gExpectedFamily,gExpectedSid,gExpectedFull,gExpectedPath,gUs
 static std::wstring gSessionNonce;static DWORD gSessionPid=0;static bool gNonceIssued=false,gNonceUsed=false;static std::mutex gNonceMutex;
 extern "C" void* __RPC_USER midl_user_allocate(size_t n){return std::malloc(n);}
 extern "C" void __RPC_USER midl_user_free(void*p){std::free(p);}
+#if defined(PHONE02_RPC_SERVER_ONLY)
 static std::wstring RandomNonce(){UCHAR bytes[16]{};if(BCryptGenRandom(nullptr,bytes,sizeof(bytes),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)return L"";static const wchar_t*h=L"0123456789abcdef";std::wstring s;for(UCHAR b:bytes){s.push_back(h[b>>4]);s.push_back(h[b&15]);}return s;}
 static DWORD RpcClientPid(handle_t binding){RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;if(RpcServerInqCallAttributesW(binding,&a)!=RPC_S_OK)return 0;return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(a.ClientPID));}
+#endif
+#if defined(PHONE02_RPC_CLIENT_ONLY)
 static void ClientLog(const std::wstring&line){
  wchar_t local[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
  if(n&&n<32768){std::wstring file=std::wstring(local)+L"\\Phone02-MsixPoA-rpc-client-"+std::to_wstring(GetCurrentProcessId())+L".log";std::wofstream out(file,std::ios::app);if(out){out<<line<<L"\n";out.flush();}}
  wprintf(L"%s\n",line.c_str());fflush(stdout);
 }
+#endif
 static bool Same(const std::wstring&a,const std::wstring&b){return _wcsicmp(a.c_str(),b.c_str())==0;}
 static std::wstring SidString(PSID sid){if(!sid)return L"UNAVAILABLE";LPWSTR p=nullptr;if(!ConvertSidToStringSidW(sid,&p))return L"UNAVAILABLE";std::wstring s=p;LocalFree(p);return s;}
 static std::wstring TokenSid(HANDLE token,TOKEN_INFORMATION_CLASS cls){
@@ -64,6 +68,7 @@ static std::wstring MakeClaims(const std::wstring&mode,const std::wstring&family
  if(mode==L"spoof-full"||mode==L"spoof-all")claimedFull=L"Fake.Package_9.9.9.9_x64__fake";
  return L"PID="+pid+L";APP="+app+L";SID="+claimedSid+L";FAMILY="+claimedFamily+L";FULL="+claimedFull+L";";
 }
+#if defined(PHONE02_RPC_SERVER_ONLY)
 static RPC_STATUS RPC_ENTRY Phone02SecurityCallback(RPC_IF_HANDLE,void* context){
  RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
  RPC_STATUS s=RpcServerInqCallAttributesW(reinterpret_cast<RPC_BINDING_HANDLE>(context),&a);
@@ -82,6 +87,8 @@ extern "C" void Phone02BeginSession(handle_t hBinding,wchar_t**nonce){
  if(nonce){size_t bytes=(value.size()+1)*sizeof(wchar_t);*nonce=static_cast<wchar_t*>(midl_user_allocate(bytes));if(*nonce)memcpy(*nonce,value.c_str(),bytes);}
  wprintf(L"RPC_NONCE_ISSUED=TRUE CLIENT_PID=%lu NONCE=%s\n",pid,value.c_str());fflush(stdout);
 }
+#endif
+#if defined(PHONE02_RPC_CLIENT_ONLY)
 // Keep RPC SEH boundaries in leaf functions with no C++ objects requiring unwinding.
 static RPC_STATUS SafePhone02BeginSession(RPC_BINDING_HANDLE binding,wchar_t**nonce){
  RPC_STATUS status=RPC_S_OK;
@@ -97,6 +104,8 @@ static RPC_STATUS SafePhone02Authorize(RPC_BINDING_HANDLE binding,wchar_t*nonce,
  RpcEndExcept
  return status;
 }
+#endif
+#if defined(PHONE02_RPC_SERVER_ONLY)
 extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*nonce,wchar_t*claims,long*authorized){
  if(authorized)*authorized=0;
  RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
@@ -153,6 +162,8 @@ static int RpcSupervisor(const std::wstring&family,const std::wstring&sid,const 
  RpcServerUnregisterIf(Phone02Ipc_v1_0_s_ifspec,nullptr,TRUE);
  return s==RPC_S_OK?0:56;
 }
+#endif
+#if defined(PHONE02_RPC_CLIENT_ONLY)
 static int RpcClient(const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&mode,const std::wstring&endpoint){
  ClientLog(L"RPC_CLIENT_MAIN PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(ProcessSession(GetCurrentProcessId())));
  ClientLog(L"RPC_CLIENT_PROCESS_IMAGE="+ProcessPath(GetCurrentProcess()));
@@ -186,10 +197,19 @@ static int RpcReplayClient(const std::wstring&family,const std::wstring&sid,cons
  wprintf(L"RPC_REPLAY_ATTEMPT=TRUE STALE_NONCE=%s CALL_STATUS=%lu AUTHORIZATION=%s\n",staleNonce.c_str(),callStatus,authorized==1?L"ALLOW":L"REJECT");
  return callStatus==RPC_S_OK?0:74;
 }
+#endif
+#if defined(PHONE02_RPC_SERVER_ONLY)
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--rpc-supervisor")==0){if(argc<7)return 10;return RpcSupervisor(argv[2],argv[3],argv[4],argv[5],argv[6]);}
+ return 13;
+}
+#elif defined(PHONE02_RPC_CLIENT_ONLY)
+int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--rpc-client")==0){if(argc<7)return 11;return RpcClient(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  if(argc>1&&wcscmp(argv[1],L"--rpc-replay")==0){if(argc<7)return 12;return RpcReplayClient(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  if(argc>=6){return RpcClient(argv[1],argv[2],argv[3],argv[4],argv[5]);}
  return 13;
 }
+#else
+#error Define exactly one of PHONE02_RPC_SERVER_ONLY or PHONE02_RPC_CLIENT_ONLY
+#endif
