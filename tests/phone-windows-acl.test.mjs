@@ -183,3 +183,49 @@ test("real Windows ACL application protects existing nested items and newly inhe
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("real Windows ACL hardening rejects a directory junction placed at the Result Store root", async t => {
+  if (process.platform !== "win32") return t.skip("Windows root-junction integration requires a Windows runner");
+
+  const sandbox = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-root-junction-"));
+  const target = path.join(sandbox, "legitimate-target");
+  const resultStoreRoot = path.join(sandbox, "private-results");
+  let primaryError;
+
+  try {
+    await mkdir(target);
+    // The junction itself occupies the exact path passed to the production
+    // Result Store root-protection operation; no child path is involved.
+    await symlink(target, resultStoreRoot, "junction");
+
+    const linkStat = await import("node:fs/promises").then(({ lstat }) => lstat(resultStoreRoot));
+    assert.equal(linkStat.isSymbolicLink(), true, "fixture must be a directory junction/reparse point");
+
+    assert.throws(
+      () => secureWindowsResultDirectory(resultStoreRoot),
+      error =>
+        error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" &&
+        /Reparse point found in result storage; refusing to follow it/.test(error.message),
+      "production root protection must reject the root junction as a reparse point"
+    );
+
+    console.log("PHONE_RESULT_ROOT_JUNCTION_REJECTION_OK");
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      // Remove the link itself before removing its target/sandbox. This does
+      // not traverse the junction or touch anything outside this test sandbox.
+      await rm(resultStoreRoot, { recursive: true, force: true });
+      await rm(sandbox, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (primaryError) {
+        primaryError.cleanupError = cleanupError;
+      } else {
+        throw cleanupError;
+      }
+    }
+  }
+});
