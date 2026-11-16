@@ -215,8 +215,8 @@ if ($env:TOKENSAVER_PHONE_ACL_CONSTRUCTION_TEST) {
 }
 
 if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
-  $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
-  $auditPaths = @($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS | ConvertFrom-Json)
+  $existingPaths = ConvertFrom-Json -InputObject $env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS
+  $auditPaths = ConvertFrom-Json -InputObject $env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS
   foreach ($path in $auditPaths) {
     try {
       $attributes = [System.IO.File]::GetAttributes($path)
