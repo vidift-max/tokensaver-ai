@@ -76,8 +76,8 @@ function Invoke-CommonCase([string]$case,[string]$mode){
 }
 try{
  # Resume guard: rounds 01-14 were recorded in Run 43901240165; do not execute or recount them.
- $current=(git branch --show-current).Trim();if($current -ne $branch){throw "Wrong branch: $current"}
- $head=(git rev-parse HEAD).Trim();git merge-base --is-ancestor 'e837055c7a3263d2cae797a35a40b684b32a1716' HEAD;if($LASTEXITCODE -ne 0){throw "Audited resume HEAD is not an ancestor of $head"};Write-Host "RESUME_COMMIT=$head AUDITED_RESUME_HEAD=e837055c7a3263d2cae797a35a40b684b32a1716"
+ $current=$env:GITHUB_REF_NAME;if($current -ne $branch){throw "Wrong GitHub ref name: $current"}
+ $head=(git rev-parse HEAD).Trim();if($head -ne $env:GITHUB_SHA){throw "Checked out HEAD $head does not equal event SHA $env:GITHUB_SHA"};git merge-base --is-ancestor 'e837055c7a3263d2cae797a35a40b684b32a1716' HEAD;if($LASTEXITCODE -ne 0){throw "Audited resume HEAD is not an ancestor of $head"};Write-Host "RESUME_BRANCH=$current RESUME_COMMIT=$head EVENT_SHA=$env:GITHUB_SHA AUDITED_RESUME_HEAD=e837055c7a3263d2cae797a35a40b684b32a1716"
  git merge-base --is-ancestor $baseline HEAD;if($LASTEXITCODE -ne 0){throw 'Baseline ancestry failed'}
  $status=(git status --porcelain);if($status){throw "Dirty checkout: $status"}
  $changed=@(git diff --name-only "$baseline..HEAD");$unexpected=@($changed|Where-Object {$_ -notlike 'scripts/experimental/*' -and $_ -ne '.github/workflows/phone-02-windows-identity-poa.yml'});if($unexpected.Count){throw "Unexpected production file changes: $unexpected"}
