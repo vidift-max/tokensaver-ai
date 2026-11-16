@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: phone02-p236-supervisor-${{ github.ref }}
+  group: phone02-p236-supervisor-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   supervisor-windows-service:
