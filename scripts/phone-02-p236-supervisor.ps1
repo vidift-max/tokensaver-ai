@@ -65,7 +65,7 @@ try {
  & sc.exe sidtype $service unrestricted|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM Service SID setup failed'}
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
  if(-not $serviceSid){throw 'Service SID not returned by SCM'}
- @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid")|Set-Content $config -Encoding ASCII
+ @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)")|Set-Content $config -Encoding ASCII
  $serviceAce='NT SERVICE\'+$service+':(OI)(CI)M'
  & icacls.exe $root /inheritance:r /grant 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' $serviceAce|Out-Host
  if($LASTEXITCODE -ne 0){throw 'Service working directory ACL failed'}
