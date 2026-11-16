@@ -4,10 +4,29 @@ $pkg = Join-Path $root 'package'
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
 $log = Join-Path $root 'mission-52881.log'
 Start-Transcript -Path $log -Force | Out-Null
+function Invoke-BoundedTool([string]$FilePath,[string]$Arguments,[string]$Label,[int]$TimeoutSeconds=120) {
+  $safe=($Label -replace '[^A-Za-z0-9_-]','_')
+  $stdout=Join-Path $root "$safe.stdout.log"; $stderr=Join-Path $root "$safe.stderr.log"
+  Write-Host "PROCESS_BEGIN=$Label FILE=$FilePath ARGUMENTS=$Arguments TIMEOUT_SECONDS=$TimeoutSeconds"
+  $proc=Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  if(-not $proc.WaitForExit($TimeoutSeconds*1000)) {
+    try { $proc.Kill() } catch {}
+    Write-Host "PROCESS_TIMEOUT=$Label PID=$($proc.Id)"
+    if(Test-Path $stdout){Get-Content $stdout -Raw | Write-Host}
+    if(Test-Path $stderr){Get-Content $stderr -Raw | Write-Host}
+    throw "Timed out after $TimeoutSeconds seconds: $Label"
+  }
+  if(Test-Path $stdout){Get-Content $stdout -Raw | Write-Host}
+  if(Test-Path $stderr){Get-Content $stderr -Raw | Write-Host}
+  Write-Host "PROCESS_END=$Label EXIT_CODE=$($proc.ExitCode)"
+  if($proc.ExitCode -ne 0){throw "$Label failed with exit code $($proc.ExitCode)"}
+}
 $cert=$null; $package=$null
 try {
   Write-Host 'ROUND_1 — prior run state and immutable evidence boundary'
-  Write-Host 'PRIOR_RUN=43817698805; last observed IN_PROGRESS; verify its final state independently.'
+  $prior=Invoke-RestMethod -Uri 'https://api.github.com/repos/vidift-max/tokensaver-ai/actions/runs/43818990389' -Headers @{ 'User-Agent'='TokenSaver-Phone02-Identity-PoA'; 'Accept'='application/vnd.github+json' }
+  Write-Host "PRIOR_RUN=43818990389 STATUS=$($prior.status) CONCLUSION=$($prior.conclusion) SHA=$($prior.head_sha)"
+  if($prior.head_sha -ne 'f8fecdf39222d0349afcf008afe6a25df7577d12' -or $prior.conclusion -ne 'cancelled'){throw 'Prior Run evidence state differs from independently audited GitHub API result.'}
   $branch=(git branch --show-current).Trim(); $sha=(git rev-parse HEAD).Trim()
   if($branch -ne 'security/phone-02-windows-identity-poa'){throw "Wrong branch: $branch"}
   Write-Host "BRANCH=$branch"; Write-Host "SHA=$sha"
@@ -51,16 +70,17 @@ try {
   Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
   Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
   $msix=Join-Path $root 'Phone02IdentityPoA-52881.msix'
-  & $makeappx pack /d $pkg /p $msix /o
-  if($LASTEXITCODE -ne 0){throw "MakeAppx failed: $LASTEXITCODE"}
-  & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint $msix
-  if($LASTEXITCODE -ne 0){throw "SignTool signing failed: $LASTEXITCODE"}
-  & $signtool verify /pa /v $msix
-  if($LASTEXITCODE -ne 0){throw "SignTool verification failed: $LASTEXITCODE"}
+  Invoke-BoundedTool -FilePath $makeappx -Arguments ('pack /d "'+$pkg+'" /p "'+$msix+'" /o') -Label 'MakeAppx-pack' -TimeoutSeconds 120
+  if(-not (Test-Path $msix)){throw 'MakeAppx returned success but MSIX file is missing'}
+  Write-Host "MSIX_CREATED=TRUE SIZE=$((Get-Item $msix).Length)"
+  Invoke-BoundedTool -FilePath $signtool -Arguments ('sign /fd SHA256 /sha1 '+$cert.Thumbprint+' "'+$msix+'"') -Label 'SignTool-sign' -TimeoutSeconds 120
+  Invoke-BoundedTool -FilePath $signtool -Arguments ('verify /pa /v "'+$msix+'"') -Label 'SignTool-verify' -TimeoutSeconds 120
   Get-FileHash $msix -Algorithm SHA256 | Format-List
   Write-Host 'SIGNATURE_CREATED=TRUE'; Write-Host 'SIGNATURE_VALIDATED=TRUE'
   Write-Host "CERT_SUBJECT=$($cert.Subject)"; Write-Host "CERT_THUMBPRINT=$($cert.Thumbprint)"
-  Add-AppxPackage -Path $msix -ForceUpdateFromAnyVersion
+  $installCode="Add-AppxPackage -Path '"+$msix.Replace("'","''")+"' -ForceUpdateFromAnyVersion -ErrorAction Stop"
+  $installEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($installCode))
+  Invoke-BoundedTool -FilePath (Join-Path $PSHOME 'pwsh.exe') -Arguments ("-NoLogo -NoProfile -NonInteractive -EncodedCommand "+$installEncoded) -Label 'Add-AppxPackage-install' -TimeoutSeconds 180
   $package=Get-AppxPackage -Name 'TokenSaver.Phone02.IdentityPoA'
   if(-not $package){throw 'Windows package registration not found'}
   $package | Select-Object Name,PackageFullName,PackageFamilyName,Publisher,Version,InstallLocation | Format-List
@@ -76,8 +96,16 @@ try {
   $aumid="$($package.PackageFamilyName)!App"; $shell=New-Object -ComObject Shell.Application
   function Start-Supervisor([string]$caseName){
     $out=Join-Path $root "$caseName.supervisor.log";$err=Join-Path $root "$caseName.supervisor.err"
-    $sp=Start-Process -FilePath (Join-Path $root 'supervisor.exe') -ArgumentList @('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,(Join-Path $package.InstallLocation 'client.exe'),$caseName) -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-    Start-Sleep -Milliseconds 800
+    $expectedPath=Join-Path $package.InstallLocation 'client.exe'
+    $args=@('--supervisor',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$expectedPath,$caseName) | ForEach-Object { '"'+($_ -replace '"','\\"')+'"' }
+    $sp=Start-Process -FilePath (Join-Path $root 'supervisor.exe') -ArgumentList ($args -join ' ') -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+    $deadline=(Get-Date).AddSeconds(10); $ready=$false
+    do {
+      Start-Sleep -Milliseconds 100
+      if($sp.HasExited){throw "Supervisor exited before pipe readiness: $caseName"}
+      $ready=(Get-Content $out -Raw -ErrorAction SilentlyContinue) -match 'SUPERVISOR_READY'
+    } while(-not $ready -and (Get-Date) -lt $deadline)
+    if(-not $ready){Stop-Process -Id $sp.Id -Force;throw "Supervisor did not publish readiness: $caseName"}
     return @{Process=$sp;Out=$out;Err=$err}
   }
   function Finish-Case($s,[string]$caseName){
@@ -88,14 +116,14 @@ try {
   }
   Write-Host 'ROUND_6 — legitimate MSIX client and same-user ordinary process'
   $s=Start-Supervisor 'legitimate-msix'
-  $shell.ShellExecute("shell:AppsFolder\$aumid","$($package.PackageFamilyName) $expectedSid",'','open',1)
+  $shell.ShellExecute("shell:AppsFolder\$aumid","$($package.PackageFamilyName) $expectedSid $($package.PackageFullName)",'','open',1)
   $legit=Finish-Case $s 'legitimate-msix'
   if($legit.ExitCode -ne 0 -or $legit.Content -notmatch 'AUTHORIZATION_RESULT=ALLOW' -or $legit.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS' -or $legit.Content -notmatch 'PROCESS_INSTALL_PATH_MATCH=TRUE'){throw 'Legitimate packaged client failed identity/PID/path authorization; stop adversarial interpretation.'}
   Write-Host 'ROUND_7 — protocol spoof matrix'
-  $modes=@('common','spoof-package','spoof-appcontainer','spoof-package-sid','spoof-handshake','spoof-all')
+  $modes=@('common','spoof-package','spoof-package-full','spoof-appcontainer','spoof-package-sid','spoof-handshake','spoof-all')
   foreach($mode in $modes){
     $s=Start-Supervisor $mode
-    $cp=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary',$mode,$package.PackageFamilyName,$expectedSid) -PassThru -WindowStyle Hidden
+    $cp=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary',$mode,$package.PackageFamilyName,$expectedSid,$package.PackageFullName) -PassThru -WindowStyle Hidden
     $result=Finish-Case $s $mode
     if($result.ExitCode -eq 0 -or $result.Content -match 'AUTHORIZATION_RESULT=ALLOW'){throw "FAIL: unauthorized common process allowed in case $mode"}
     if($result.Content -notmatch 'TOKEN_IS_APPCONTAINER=0' -or $result.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw "Common process token/correlation not proven in case $mode"}
@@ -111,9 +139,10 @@ try {
     if($result.ExitCode -ne 0){throw "Legitimate activation failed during instance test $i"}
   }
   Write-Host "INSTANCE_PIDS=$($instancePids -join ',')"
+  Write-Host 'INSTANCE_MODE=SEQUENTIAL; SIMULTANEOUS_INSTANCES=NOT_TESTED'
   Write-Host 'NO_UNIQUE_INSTANCE_IDENTITY=TRUE — package/AppContainer identity is shared, not a per-process credential.'
   Write-Host 'ROUND_9 — supervisor closure, reconnect and PID/token revalidation'
-  $noServer=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','spoof-all',$package.PackageFamilyName,$expectedSid) -PassThru -Wait
+  $noServer=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','spoof-all',$package.PackageFamilyName,$expectedSid,$package.PackageFullName) -PassThru -Wait
   Write-Host "RECONNECT_WITHOUT_SUPERVISOR_EXIT=$($noServer.ExitCode) (nonzero expected)"; if($noServer.ExitCode -eq 0){throw 'Unexpected successful connection without a Supervisor'}
   $s=Start-Supervisor 'reconnect-common'
   $common=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','spoof-all',$package.PackageFamilyName,$expectedSid) -PassThru

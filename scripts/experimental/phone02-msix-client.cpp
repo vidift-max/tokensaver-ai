@@ -18,18 +18,21 @@ static std::wstring PackageValue(HANDLE t,bool full){HMODULE mod=GetModuleHandle
 static std::wstring ProcessPath(HANDLE p){wchar_t b[32768]{};DWORD n=32768;return QueryFullProcessImageNameW(p,0,b,&n)?std::wstring(b,n):L"UNAVAILABLE";}
 static bool Same(const std::wstring&a,const std::wstring&b){return a!=L"UNAVAILABLE"&&a!=L"NO_PACKAGE_IDENTITY"&&a!=L"API_UNAVAILABLE"&&a!=L"QUERY_FAILED"&&a==b;}
 static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);s.pop_back();return s;}
-static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid){
- std::wstring f=family,s=sid,ps=sid,hs=L"MSIX_TEST_CLIENT_HELLO";
+static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
+ std::wstring f=family,s=sid,ps=sid,pfn=full,hs=L"MSIX_TEST_CLIENT_HELLO";
  if(mode==L"spoof-package")f=L"Fake.Package_1234567890";
+ if(mode==L"spoof-package-full")pfn=L"Fake.Package_1234567890_1.0.0.0_x64__fake";
  if(mode==L"spoof-appcontainer")s=L"S-1-15-2-111-222-333";
  if(mode==L"spoof-package-sid")ps=L"S-1-15-2-111-222-333";
- std::wstring w=L"CLAIMED_PACKAGE_FAMILY="+f+L";CLAIMED_APPCONTAINER_SID="+s+L";CLAIMED_PACKAGE_SID="+ps+L";HANDSHAKE="+hs;
+ if(mode==L"spoof-handshake")hs=L"FORGED_HANDSHAKE";
+ if(mode==L"spoof-all"){f=L"Fake.Package_1234567890";pfn=L"Fake.Package_1234567890_1.0.0.0_x64__fake";s=L"S-1-15-2-111-222-333";ps=L"S-1-15-2-111-222-333";hs=L"FORGED_HANDSHAKE";}
+ std::wstring w=L"CLAIMED_PACKAGE_FAMILY="+f+L";CLAIMED_PACKAGE_FULL_NAME="+pfn+L";CLAIMED_APPCONTAINER_SID="+s+L";CLAIMED_PACKAGE_SID="+ps+L";HANDSHAKE="+hs;
  return ToUtf8(w);
 }
-static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid){
+static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
  HANDLE h=CreateFileW(PIPE_NAME,GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
  if(h==INVALID_HANDLE_VALUE){wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s\n",GetLastError(),mode.c_str());return 20;}
- std::string msg=MessageFor(mode,family,sid);DWORD sent=0;BOOL wr=WriteFile(h,msg.data(),(DWORD)msg.size(),&sent,nullptr);
+ std::string msg=MessageFor(mode,family,sid,full);DWORD sent=0;BOOL wr=WriteFile(h,msg.data(),(DWORD)msg.size(),&sent,nullptr);
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
  wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
 }
@@ -67,7 +70,7 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
 }
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<7)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6]);}
- if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<5)return 11;return Client(argv[2],argv[3],argv[4]);}
- std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"";
- return Client(L"legit",family,sid);
+ if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<6)return 11;return Client(argv[2],argv[3],argv[4],argv[5]);}
+ std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"";
+ return Client(L"legit",family,sid,full);
 }
