@@ -27,7 +27,7 @@ static SERVICE_STATUS_HANDLE gStatusHandle=nullptr;
 static SERVICE_STATUS gStatus{};
 static HANDLE gStopEvent=nullptr;
 static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gServiceSid,gExpectedUserSid;
-static std::mutex gMutex;
+static std::mutex gMutex;static std::mutex gLogMutex;static HANDLE gLogHandle=INVALID_HANDLE_VALUE;
 static bool gStopping=false;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
 struct ObservedIdentity{DWORD pid=0,windowsSession=0;FILETIME created{};bool isAppContainer=false;std::wstring userSid,appSid,family,full;};
@@ -35,7 +35,20 @@ struct Session{ObservedIdentity identity;std::vector<UCHAR>nonceHash;ULONGLONG e
 static std::map<std::wstring,Session>gSessions;
 extern "C" void* __RPC_USER midl_user_allocate(size_t n){return malloc(n);}
 extern "C" void __RPC_USER midl_user_free(void*p){free(p);}
-static void Log(const std::wstring&line){std::wofstream f(gLogPath,std::ios::app);if(f){f<<line<<L"\n";f.flush();}}
+static void Log(const std::wstring&line){
+ std::lock_guard<std::mutex>lock(gLogMutex);
+ if(gLogHandle!=INVALID_HANDLE_VALUE&&gLogHandle!=nullptr){
+  DWORD written=0;WriteFile(gLogHandle,line.c_str(),(DWORD)(line.size()*sizeof(wchar_t)),&written,nullptr);
+  const wchar_t nl[]=L"\r\n";WriteFile(gLogHandle,nl,sizeof(nl)-sizeof(wchar_t),&written,nullptr);FlushFileBuffers(gLogHandle);return;
+ }
+ std::wofstream f(gLogPath,std::ios::app);if(f){f<<line<<L"\n";f.flush();}
+}
+static LONG WINAPI SupervisorUnhandledException(EXCEPTION_POINTERS*e){
+ DWORD code=e&&e->ExceptionRecord?e->ExceptionRecord->ExceptionCode:0;
+ void*address=e&&e->ExceptionRecord?e->ExceptionRecord->ExceptionAddress:nullptr;
+ Log(L"SERVICE_UNHANDLED_EXCEPTION code="+std::to_wstring(code)+L" address="+std::to_wstring((ULONG_PTR)address));
+ return EXCEPTION_EXECUTE_HANDLER;
+}
 static std::wstring ReadValue(const std::wstring&key){std::wifstream f(gConfigPath);std::wstring line,prefix=key+L"=";while(std::getline(f,line))if(line.rfind(prefix,0)==0)return line.substr(prefix.size());return L"";}
 static std::wstring SidText(PSID sid){if(!sid)return L"";LPWSTR p=nullptr;if(!ConvertSidToStringSidW(sid,&p))return L"";std::wstring s=p;LocalFree(p);return s;}
 static bool TokenInfo(HANDLE token,TOKEN_INFORMATION_CLASS cls,std::vector<BYTE>&out){DWORD n=0;GetTokenInformation(token,cls,nullptr,0,&n);if(!n)return false;out.resize(n);return GetTokenInformation(token,cls,out.data(),n,&n)!=FALSE;}
@@ -51,13 +64,15 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
  if(callStatus!=RPC_S_OK)return fail(L"CALL_ATTRIBUTES");
  if(a.ProtocolSequence!=RPC_PROTSEQ_LRPC||a.IsClientLocal!=rcclLocal||a.AuthenticationService!=RPC_C_AUTHN_WINNT||a.AuthenticationLevel<RPC_C_AUTHN_LEVEL_PKT_PRIVACY||a.NullSession)return fail(L"RPC_SECURITY_ATTRIBUTES");
  out.pid=(DWORD)(ULONG_PTR)a.ClientPID;if(!out.pid)return fail(L"CLIENT_PID_ZERO");
- if(RpcImpersonateClient(binding)!=RPC_S_OK)return fail(L"RPC_IMPERSONATE_CLIENT");
+ Log(L"RPC_CALL_RECEIVED pid="+std::to_wstring(out.pid));
+ RPC_STATUS impersonateStatus=RpcImpersonateClient(binding);
+ if(impersonateStatus!=RPC_S_OK)return fail((L"RPC_IMPERSONATE_CLIENT_STATUS_"+std::to_wstring(impersonateStatus)).c_str());
  HANDLE process=nullptr,token=nullptr;bool ok=false;std::wstring localReason=L"UNKNOWN";
  do{
-  if(!OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,TRUE,&token)){localReason=L"OPEN_IMPERSONATED_THREAD_TOKEN";break;}
+  if(!OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,TRUE,&token)){localReason=L"OPEN_IMPERSONATED_THREAD_TOKEN_ERROR_"+std::to_wstring(GetLastError());break;}
   process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,out.pid);
-  if(!process){localReason=L"OPEN_PROCESS_AS_CALLER";break;}
-  if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)){localReason=L"PROCESS_CREATION_TIME";break;}
+  if(!process){localReason=L"OPEN_PROCESS_AS_CALLER_ERROR_"+std::to_wstring(GetLastError());break;}
+  if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());break;}
   if(!ProcessIdToSessionId(out.pid,&out.windowsSession)){localReason=L"WINDOWS_SESSION";break;}
   DWORD app=0,n=0;if(!GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&n)){localReason=L"TOKEN_IS_APPCONTAINER_QUERY";break;}
   out.isAppContainer=(app==1);if(!out.isAppContainer){localReason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
@@ -128,7 +143,7 @@ static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* conte
  return RPC_S_OK;
 }
 static void WINAPI ServiceMain(DWORD,LPWSTR*){
- gStatusHandle=RegisterServiceCtrlHandlerW(L"TokenSaverPhone02Supervisor",Handler);if(!gStatusHandle)return;SetState(SERVICE_START_PENDING,NO_ERROR,15000);int argc=0;LPWSTR*argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv||argc<3){if(argv)LocalFree(argv);SetState(SERVICE_STOPPED,ERROR_INVALID_PARAMETER);return;}gConfigPath=argv[2];LocalFree(argv);gLogPath=gConfigPath+L".log";
+ gStatusHandle=RegisterServiceCtrlHandlerW(L"TokenSaverPhone02Supervisor",Handler);if(!gStatusHandle)return;SetUnhandledExceptionFilter(SupervisorUnhandledException);SetState(SERVICE_START_PENDING,NO_ERROR,15000);int argc=0;LPWSTR*argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv||argc<3){if(argv)LocalFree(argv);SetState(SERVICE_STOPPED,ERROR_INVALID_PARAMETER);return;}gConfigPath=argv[2];LocalFree(argv);gLogPath=gConfigPath+L".log";gLogHandle=CreateFileW(gLogPath.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");
  if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gServiceSid.empty()||gExpectedUserSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
  if(!ServiceSidInToken()){Log(L"SERVICE_SID_IN_TOKEN=FAIL");SetState(SERVICE_STOPPED,ERROR_ACCESS_DENIED);return;}
@@ -147,6 +162,6 @@ static void WINAPI ServiceMain(DWORD,LPWSTR*){
  SetState(SERVICE_RUNNING);Log(L"RPC_ENDPOINT=READY TRANSPORT=ncalrpc AUTH=WINNT PACKET_PRIVACY");DWORD wait=WaitForSingleObject(gStopEvent,INFINITE);
  RpcMgmtStopServerListening(nullptr);RpcMgmtWaitServerListen();RpcServerUnregisterIf(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,TRUE);
  {std::lock_guard<std::mutex>l(gMutex);for(auto&kv:gSessions)SecureZeroMemory(kv.second.nonceHash.data(),kv.second.nonceHash.size());gSessions.clear();}
- Log(L"SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0");CloseHandle(gStopEvent);gStopEvent=nullptr;SetState(SERVICE_STOPPED,wait==WAIT_OBJECT_0?NO_ERROR:ERROR_GEN_FAILURE);
+ Log(L"SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0");CloseHandle(gStopEvent);gStopEvent=nullptr;SetState(SERVICE_STOPPED,wait==WAIT_OBJECT_0?NO_ERROR:ERROR_GEN_FAILURE);if(gLogHandle!=INVALID_HANDLE_VALUE){CloseHandle(gLogHandle);gLogHandle=INVALID_HANDLE_VALUE;}
 }
 int wmain(){SERVICE_TABLE_ENTRYW table[]={{(LPWSTR)L"TokenSaverPhone02Supervisor",ServiceMain},{nullptr,nullptr}};if(!StartServiceCtrlDispatcherW(table))return(int)GetLastError();return 0;}
