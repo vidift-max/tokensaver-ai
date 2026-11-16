@@ -2,92 +2,175 @@ import { execFileSync } from "node:child_process";
 
 const POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-# Load the security cmdlets explicitly, without -Force (which reloads an already loaded module).
-Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 $target = [System.IO.Path]::GetFullPath($env:TOKENSAVER_PHONE_RESULT_DIRECTORY)
-if (-not (Test-Path -LiteralPath $target -PathType Container)) {
-  throw 'Phone result directory does not exist'
+if ([string]::IsNullOrWhiteSpace($target) -or -not [System.IO.Directory]::Exists($target)) {
+  throw 'Phone result directory does not exist or is invalid'
+}
+$volumeRoot = [System.IO.Path]::GetPathRoot($target)
+if ($target.TrimEnd([char[]]@('\', '/')) -eq $volumeRoot.TrimEnd([char[]]@('\', '/'))) {
+  throw 'Refusing to apply result ACL policy to a volume root'
 }
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
-$uniqueAllowed = @($allowed | Select-Object -Unique)
-if ($uniqueAllowed.Count -ne 3) {
+if (@($allowed | Select-Object -Unique).Count -ne 3) {
   throw 'Current process SID overlaps a built-in allowed SID; refusing ambiguous ACL policy'
 }
-$inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-$fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
-$pending = [System.Collections.Generic.Stack[string]]::new()
-$pending.Push($target)
 
-function Set-RestrictedAcl([string]$path, [bool]$isDirectory) {
-  $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
-  $acl.SetAccessRuleProtection($true, $false)
-  foreach ($existing in @($acl.Access)) {
-    [void]$acl.RemoveAccessRuleAll($existing)
-  }
-  foreach ($sid in $allowed) {
-    $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
-    if ($isDirectory) {
-      $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $identity, $fullControl, $inheritance,
-        [System.Security.AccessControl.PropagationFlags]::None,
-        [System.Security.AccessControl.AccessControlType]::Allow
-      )
-    } else {
-      $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $identity, $fullControl,
-        [System.Security.AccessControl.AccessControlType]::Allow
-      )
+$nativeAclSource = @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+
+public static class PhoneAclNative
+{
+    private const uint DACL_SECURITY_INFORMATION = 0x00000004;
+    private const uint PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
+    private const int ERROR_INSUFFICIENT_BUFFER = 122;
+    private const int FULL_CONTROL = 0x001F01FF;
+
+    [DllImport("advapi32.dll", EntryPoint = "GetFileSecurityW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetFileSecurity(string fileName, uint requestedInformation, IntPtr securityDescriptor, uint length, out uint needed);
+
+    [DllImport("advapi32.dll", EntryPoint = "SetFileSecurityW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetFileSecurity(string fileName, uint securityInformation, IntPtr securityDescriptor);
+
+    private static RawSecurityDescriptor ReadDescriptor(string path)
+    {
+        uint needed;
+        bool first = GetFileSecurity(path, DACL_SECURITY_INFORMATION, IntPtr.Zero, 0, out needed);
+        int error = Marshal.GetLastWin32Error();
+        if (first || error != ERROR_INSUFFICIENT_BUFFER || needed == 0)
+            throw new Win32Exception(error, "GetFileSecurityW size query failed for " + path);
+
+        IntPtr buffer = Marshal.AllocHGlobal(checked((int)needed));
+        try
+        {
+            if (!GetFileSecurity(path, DACL_SECURITY_INFORMATION, buffer, needed, out needed))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileSecurityW failed for " + path);
+            byte[] binary = new byte[needed];
+            Marshal.Copy(buffer, binary, 0, checked((int)needed));
+            return new RawSecurityDescriptor(binary, 0);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
     }
-    [void]$acl.AddAccessRule($rule)
-  }
-  Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
-  $verified = Get-Acl -LiteralPath $path -ErrorAction Stop
-  if (-not $verified.AreAccessRulesProtected) {
-    throw "ACL inheritance remains enabled on protected item: $path"
-  }
-  $entries = @($verified.Access)
-  if ($entries.Count -ne 3) {
-    throw "Expected exactly three ACL entries on $path; found $($entries.Count)"
-  }
-  $seenSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-  foreach ($entry in $entries) {
-    $sid = $entry.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-    if (-not $seenSids.Add($sid)) {
-      throw "Duplicate ACL entry for SID $sid on $path"
+
+    public static void Apply(string path, bool isDirectory, string[] allowedSids)
+    {
+        DiscretionaryAcl dacl = new DiscretionaryAcl(false, false, allowedSids.Length);
+        AceFlags flags = isDirectory ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit) : AceFlags.None;
+        foreach (string sidText in allowedSids)
+        {
+            SecurityIdentifier sid = new SecurityIdentifier(sidText);
+            CommonAce ace = new CommonAce(flags, AceQualifier.AccessAllowed, FULL_CONTROL, sid, false, null);
+            dacl.InsertAce(dacl.Count, ace);
+        }
+
+        RawSecurityDescriptor descriptor = new RawSecurityDescriptor(
+            ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected,
+            null, null, null, dacl);
+        byte[] binary = new byte[descriptor.BinaryLength];
+        descriptor.GetBinaryForm(binary, 0);
+
+        IntPtr buffer = Marshal.AllocHGlobal(binary.Length);
+        try
+        {
+            Marshal.Copy(binary, 0, buffer, binary.Length);
+            uint securityInformation = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+            if (!SetFileSecurity(path, securityInformation, buffer))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileSecurityW failed for " + path);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        Verify(path, isDirectory, allowedSids, true, false);
     }
-    if ($allowed -notcontains $sid -or
-        $entry.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
-        $entry.FileSystemRights -ne $fullControl -or $entry.IsInherited) {
-      throw "Unexpected ACL entry on $path for SID $sid"
+
+    public static void Verify(string path, bool isDirectory, string[] allowedSids, bool expectProtected, bool expectInherited)
+    {
+        RawSecurityDescriptor descriptor = ReadDescriptor(path);
+        bool protectedDacl = (descriptor.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0;
+        if (protectedDacl != expectProtected)
+            throw new InvalidOperationException("Unexpected DACL protection state for " + path);
+        if (descriptor.DiscretionaryAcl == null)
+            throw new InvalidOperationException("DACL is absent for " + path);
+
+        if (descriptor.DiscretionaryAcl.Count != 3)
+            throw new InvalidOperationException("Expected exactly three ACEs for " + path);
+
+        System.Collections.Generic.HashSet<string> expected =
+            new System.Collections.Generic.HashSet<string>(allowedSids, StringComparer.OrdinalIgnoreCase);
+        System.Collections.Generic.HashSet<string> observed =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        AceFlags inheritanceFlags = isDirectory
+            ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit)
+            : AceFlags.None;
+        AceFlags expectedFlags = inheritanceFlags | (expectInherited ? AceFlags.Inherited : AceFlags.None);
+
+        for (int i = 0; i < descriptor.DiscretionaryAcl.Count; i++)
+        {
+            GenericAce generic = descriptor.DiscretionaryAcl[i];
+            QualifiedAce ace = generic as QualifiedAce;
+            if (ace == null || generic.AceType != AceType.AccessAllowed || ace.AceQualifier != AceQualifier.AccessAllowed ||
+                ace.IsCallback || ace.AccessMask != FULL_CONTROL || generic.AceFlags != expectedFlags)
+                throw new InvalidOperationException("Unexpected ACL ACE type, rights, inheritance or provenance for " + path);
+
+            string sid = ace.SecurityIdentifier.Value;
+            if (!expected.Contains(sid) || !observed.Add(sid))
+                throw new InvalidOperationException("Unexpected or duplicate ACL SID " + sid + " for " + path);
+        }
+
+        if (observed.Count != 3 || !expected.SetEquals(observed))
+            throw new InvalidOperationException("ACL SID set does not exactly match the authorized set for " + path);
     }
-    if ($isDirectory -and $entry.InheritanceFlags -ne $inheritance) {
-      throw "Directory ACL does not propagate to child files and directories: $path"
+}
+'@
+Add-Type -TypeDefinition $nativeAclSource -Language CSharp -ErrorAction Stop
+
+if ($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS) {
+  $existingPaths = @($env:TOKENSAVER_PHONE_ACL_EXISTING_ITEMS | ConvertFrom-Json)
+  $auditPaths = @($env:TOKENSAVER_PHONE_ACL_AUDIT_ITEMS | ConvertFrom-Json)
+  foreach ($path in $auditPaths) {
+    $attributes = [System.IO.File]::GetAttributes($path)
+    if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Reparse point found during ACL audit: $path"
     }
+    $isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+    $wasExisting = $existingPaths -contains $path
+    [PhoneAclNative]::Verify($path, $isDirectory, $allowed, $wasExisting, (-not $wasExisting))
   }
-  $missingSids = @($allowed | Where-Object { -not $seenSids.Contains($_) })
-  if ($seenSids.Count -ne 3 -or $missingSids.Count -ne 0) {
-    throw "ACL SID set does not exactly match the three authorized SIDs on $path"
-  }
+  Write-Output 'PHONE_RESULT_ACL_AUDIT_OK'
+  exit 0
 }
 
+$pending = [System.Collections.Generic.Stack[string]]::new()
+$pending.Push($target)
 while ($pending.Count -gt 0) {
   $current = $pending.Pop()
-  $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+  $attributes = [System.IO.File]::GetAttributes($current)
+  if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "Reparse point found in result storage; refusing to follow it: $current"
   }
-  $isDirectory = [bool]$item.PSIsContainer
-  Set-RestrictedAcl $current $isDirectory
+  $isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+  [PhoneAclNative]::Apply($current, $isDirectory, $allowed)
   if ($isDirectory) {
-    foreach ($child in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
-      if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Reparse point found in result storage; refusing to follow it: $($child.FullName)"
+    foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current)) {
+      $childAttributes = [System.IO.File]::GetAttributes($child)
+      if (($childAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Reparse point found in result storage; refusing to follow it: $child"
       }
-      if ($child.PSIsContainer) {
-        $pending.Push($child.FullName)
+      if (($childAttributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
+        $pending.Push($child)
       } else {
-        Set-RestrictedAcl $child.FullName $false
+        [PhoneAclNative]::Apply($child, $false, $allowed)
       }
     }
   }
@@ -95,37 +178,61 @@ while ($pending.Count -gt 0) {
 Write-Output 'PHONE_RESULT_ACL_OK'
 `;
 
-export function secureWindowsResultDirectory(directory, options = {}) {
-  if (process.platform !== "win32" && options.platform !== "win32") return;
-  if (typeof directory !== "string" || !directory.trim()) {
-    throw new TypeError("A result directory is required for Windows ACL protection");
-  }
+function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
   const runner = options.execFileSync ?? execFileSync;
   const encoded = Buffer.from(POWERSHELL_SCRIPT, "utf16le").toString("base64");
   try {
-    const output = runner("powershell.exe", [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand", encoded
+    const output = runner("pwsh.exe", [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded
     ], {
       encoding: "utf8",
       windowsHide: true,
       timeout: 60000,
-      env: { ...process.env, TOKENSAVER_PHONE_RESULT_DIRECTORY: directory },
+      env: {
+        ...process.env,
+        TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
+        ...extraEnvironment
+      },
       stdio: ["ignore", "pipe", "pipe"]
     });
-    if (!String(output).includes("PHONE_RESULT_ACL_OK")) {
-      throw new Error("Windows ACL verification marker missing");
-    }
+    return String(output);
   } catch (cause) {
     const detail = cause?.stderr?.toString?.("utf8") || cause?.message || String(cause);
     const code = cause?.code ? " [" + cause.code + "]" : "";
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
-      code + ": " + detail.trim().slice(-2000),
+      code + ": " + detail.trim().slice(-3000),
       { cause }
     );
+    error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+    throw error;
+  }
+}
+
+export function secureWindowsResultDirectory(directory, options = {}) {
+  if (process.platform !== "win32" && options.platform !== "win32") return;
+  if (typeof directory !== "string" || !directory.trim()) {
+    throw new TypeError("A result directory is required for Windows ACL protection");
+  }
+  const output = invokeAclScript(directory, {}, options);
+  if (!output.includes("PHONE_RESULT_ACL_OK")) {
+    const error = new Error("Windows ACL verification marker missing");
+    error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+    throw error;
+  }
+}
+
+export function verifyWindowsResultAcl(directory, existingPaths, auditPaths, options = {}) {
+  if (process.platform !== "win32" && options.platform !== "win32") return;
+  if (typeof directory !== "string" || !directory.trim()) {
+    throw new TypeError("A result directory is required for Windows ACL verification");
+  }
+  const output = invokeAclScript(directory, {
+    TOKENSAVER_PHONE_ACL_EXISTING_ITEMS: JSON.stringify(existingPaths),
+    TOKENSAVER_PHONE_ACL_AUDIT_ITEMS: JSON.stringify(auditPaths)
+  }, options);
+  if (!output.includes("PHONE_RESULT_ACL_AUDIT_OK")) {
+    const error = new Error("Windows ACL audit marker missing");
     error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
     throw error;
   }
