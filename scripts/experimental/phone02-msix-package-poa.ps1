@@ -12,12 +12,12 @@ try {
   if($os.BuildNumber -ne '26100'){throw "Unexpected Windows build: $($os.BuildNumber)"}
   $sdkRoot=Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
   $sdkVersion='10.0.26100.0'
-  $makeappx=Join-Path $sdkRoot "$sdkVersion\\x64\\MakeAppx.exe"
-  $signtool=Join-Path $sdkRoot "$sdkVersion\\x64\\SignTool.exe"
+  $makeappx=Join-Path $sdkRoot "$sdkVersion\x64\MakeAppx.exe"
+  $signtool=Join-Path $sdkRoot "$sdkVersion\x64\SignTool.exe"
   $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   $vs=(& $vswhere -latest -products '*' -property installationPath).Trim()
   $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-  $msbuild=Join-Path $vs 'MSBuild\\Current\\Bin\\MSBuild.exe'
+  $msbuild=Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
   [pscustomobject]@{Branch=$branch;SHA=$sha;Windows=$os.Caption;Version=$os.Version;Build=$os.BuildNumber;Architecture=$os.OSArchitecture;PowerShell=$PSVersionTable.PSVersion.ToString();Node=(& node --version);MakeAppx=$makeappx;SignTool=$signtool;VS=$vs;MSBuild=$msbuild;VCVars=$vcvars} | Format-List
   if(-not (Test-Path $makeappx) -or -not (Test-Path $signtool) -or -not (Test-Path $vcvars) -or -not (Test-Path $msbuild)){throw 'Required SDK/VS tool missing'}
   Write-Host 'ROUND_2 — package layout'
@@ -39,14 +39,14 @@ try {
   Set-Content -Path (Join-Path $pkg 'AppxManifest.xml') -Value $manifest -Encoding utf8
   New-Item -ItemType Directory -Force -Path (Join-Path $pkg 'Assets') | Out-Null
   Add-Type -AssemblyName System.Drawing
-  foreach($name in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')){ $bmp=New-Object System.Drawing.Bitmap 64,64; $bmp.Save((Join-Path $pkg "Assets\\$name"),[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose() }
+  foreach($name in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')){ $bmp=New-Object System.Drawing.Bitmap 64,64; $bmp.Save((Join-Path $pkg "Assets\$name"),[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose() }
   Write-Host 'ROUND_4 — TEST-ONLY certificate and signature'
   $cert=New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -FriendlyName 'DISPOSABLE TEST ONLY — Phone02 MSIX PoA' -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2)
   $certPath=Join-Path $root 'test-only.cer'; Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
   Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
   Write-Host "CERT_SUBJECT=$($cert.Subject)";Write-Host "CERT_THUMBPRINT=$($cert.Thumbprint)"
   Write-Host 'ROUND_5 — compile and package'
-  $buildCmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$exe+'" advapi32.lib'
+  $buildCmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$exe+'" advapi32.lib userenv.lib kernel32.lib'
   & cmd.exe /d /s /c $buildCmd
   if($LASTEXITCODE -ne 0){throw "C++ compile failed: $LASTEXITCODE"}
   $msix=Join-Path $root 'Phone02IdentityPoA.msix'
@@ -69,7 +69,7 @@ try {
   Start-Sleep -Milliseconds 700
   $aumid="$($p.PackageFamilyName)!App"
   $shell=New-Object -ComObject Shell.Application
-  $shell.ShellExecute("shell:AppsFolder\\$aumid",'','','open',1)
+  $shell.ShellExecute("shell:AppsFolder\$aumid",'','','open',1)
   Start-Sleep -Seconds 3
   $proc=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq (Join-Path $p.InstallLocation 'client.exe') } | Select-Object -First 1
   if(-not $proc){Write-Warning 'Package activation was requested, but process PID was not independently found.'}
