@@ -71,7 +71,8 @@ static std::wstring MakeClaims(const std::wstring&mode,const std::wstring&family
 #if defined(PHONE02_RPC_SERVER_ONLY)
 static RPC_STATUS RPC_ENTRY Phone02SecurityCallback(RPC_IF_HANDLE,void* context){
  wprintf(L"RPC_SECURITY_CALLBACK_ENTER=TRUE\\n");fflush(stdout);
- RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
+ RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID|RPC_QUERY_IS_CLIENT_LOCAL;
+ wprintf(L"RPC_SECURITY_CALLBACK_QUERY_FLAGS=CLIENT_PID|IS_CLIENT_LOCAL\\n");fflush(stdout);
  RPC_STATUS s=RpcServerInqCallAttributesW(reinterpret_cast<RPC_BINDING_HANDLE>(context),&a);
  if(s!=RPC_S_OK){wprintf(L"RPC_SECURITY_CALLBACK_ATTR_QUERY=FAIL STATUS=%lu\\n",s);fflush(stdout);return RPC_S_ACCESS_DENIED;}
  bool protocolOk=a.ProtocolSequence==RPC_PROTSEQ_LRPC;
