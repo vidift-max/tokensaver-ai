@@ -44,6 +44,7 @@ try {
   $cert=New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -FriendlyName 'DISPOSABLE TEST ONLY — Phone02 MSIX PoA' -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2)
   $certPath=Join-Path $root 'test-only.cer'; Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
   Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
+  Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
   Write-Host "CERT_SUBJECT=$($cert.Subject)";Write-Host "CERT_THUMBPRINT=$($cert.Thumbprint)"
   Write-Host 'ROUND_5 — compile and package'
   $buildCmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$exe+'" advapi32.lib userenv.lib kernel32.lib'
