@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FilePhoneResultStore } from "../scripts/phone-result-store.mjs";
@@ -122,6 +122,23 @@ test("fails closed when the key provider or referenced key is unavailable", asyn
     };
     await assert.rejects(() => new FilePhoneResultStore(directory, unavailable).get(id), /32 bytes of key material/);
   });
+});
+
+test("rejects a symlink as the result-store root before resolving it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-store-link-"));
+  try {
+    const realDirectory = path.join(root, "real-results");
+    const linkDirectory = path.join(root, "linked-results");
+    await mkdir(realDirectory);
+    await symlink(realDirectory, linkDirectory, "dir");
+    const store = new FilePhoneResultStore(linkDirectory, makeKeyProvider());
+    await assert.rejects(
+      () => store.initialize(),
+      /real directory, not a symlink or reparse point/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("creates a private directory and file on POSIX", async () => {
