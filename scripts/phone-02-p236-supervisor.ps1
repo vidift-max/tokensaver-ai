@@ -3,7 +3,7 @@ $root=Join-Path $env:RUNNER_TEMP 'phone02-p236'
 $evidence=Join-Path $env:RUNNER_TEMP 'phone02-p236-evidence'
 $build=Join-Path $root 'build';$pkg=Join-Path $root 'package'
 New-Item -ItemType Directory -Force -Path $build,$pkg,$evidence|Out-Null
-$service='TokenSaverPhone02Supervisor';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED'
+$service='TokenSaverPhone02Supervisor';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date
 Start-Transcript -Path (Join-Path $evidence 'transcript.log') -Force|Out-Null
 function Check($ok,$label){Write-Host ($label+'='+$(if($ok){'PASS'}else{'FAIL'}));if(-not $ok){throw ($label+' failed')}}
 try {
@@ -75,6 +75,7 @@ try {
  $query=(& sc.exe queryex $service 2>&1|Out-String);$scPid=[regex]::Match($query,'(?im)PID\s*:\s*(\d+)').Groups[1].Value
  $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($s.ProcessId)"
  Check ($s.StartName -match 'LocalService' -and $s.ProcessId -gt 0 -and $scPid -eq [string]$s.ProcessId -and $proc.ExecutablePath -ieq $svcExe) 'SERVICE_IDENTITY'
+ $servicePid=[int]$s.ProcessId
  Write-Host ('SERVICE_NAME='+$service);Write-Host ('SERVICE_SID='+$serviceSid);Write-Host ('SERVICE_ACCOUNT='+$s.StartName);Write-Host ('SERVICE_PID='+$s.ProcessId);Write-Host ('SERVICE_SESSION='+$proc.SessionId);Write-Host ('SERVICE_PATH='+$proc.ExecutablePath);Write-Host ('SERVICE_SHA256='+(Get-FileHash $proc.ExecutablePath -Algorithm SHA256).Hash);Write-Host ('SCM_STATE='+$s.State)
  $svcLog=$config+'.log';$deadline=(Get-Date).AddSeconds(20)
  while((-not(Test-Path $svcLog) -or (Get-Content $svcLog -Raw) -notmatch 'RPC_ENDPOINT=READY') -and (Get-Date) -lt $deadline){Start-Sleep -Milliseconds 250}
@@ -97,48 +98,70 @@ public static class P236Activator {
   IP236ApplicationActivationManager m=null; bool initialized=init>=0;
   try { m=(IP236ApplicationActivationManager)new P236ApplicationActivationManager(); uint pid;
    int hr=m.ActivateApplication(id,args,0,out pid); if(hr<0)Marshal.ThrowExceptionForHR(hr); return pid;
-  } finally { if(m!=null && Marshal.IsComObject(m))Marshal.ReleaseComObject(m); if(initialized)CoUninitialize(); }
- }
-}
-'@
- $aumid="$($app.PackageFamilyName)!App"
- $activationPid=[P236Activator]::Activate($aumid,"")
- Write-Host "ACTIVATED_APP_PID=$activationPid AUMID=$aumid"
- $clientRoot=Join-Path $env:LOCALAPPDATA ('Packages\'+$app.PackageFamilyName)
- $fallbackLog=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
- $deadline=(Get-Date).AddSeconds(45);$clientLog=$null;$cl=''
- do{
-  Start-Sleep -Milliseconds 250
-  if(Test-Path $fallbackLog){$clientLog=Get-Item $fallbackLog}
-  if(-not $clientLog){$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
-  if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}
- }while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
- if(-not $clientLog){$activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue;Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)";$eventPath=Join-Path $evidence 'app-activation-events.txt';foreach($ln in @('Microsoft-Windows-AppModel-Runtime/Admin','Microsoft-Windows-TWinUI/Operational','Microsoft-Windows-AppXDeploymentServer/Operational')){try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction Stop|Select-Object -First 20 TimeCreated,Id,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}};throw 'Packaged AppContainer client log not found'}
- Copy-Item $clientLog.FullName (Join-Path $evidence 'appcontainer.log') -Force
- Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
- Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
- Check ($cl -match 'AUTHORIZATION_ALLOW=PASS') 'AUTHORIZATION_ALLOW'
- Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_LIFECYCLE'
- $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
- Check ($LASTEXITCODE -eq 0 -and (Get-Content $common -Raw) -match 'COMMON_PROCESS_REJECT=PASS') 'COMMON_PROCESS_REJECT'
- $final='PASS'
-}
-catch {Write-Host ('P236_FAILURE='+$_.Exception.Message);throw}
-finally {
+  } finally {
+ $serviceGraceful=$false;$serviceGone=$false;$clientGone=$false;$packageGone=$false;$certificateGone=$true;$tempGone=$false
  if($created){
   & sc.exe stop $service 2>&1|Out-Host
-  $deadline=(Get-Date).AddSeconds(25);$state=''
+  $deadline=(Get-Date).AddSeconds(20);$state=''
   do{Start-Sleep -Milliseconds 500;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
-  Write-Host ('SERVICE_SHUTDOWN='+$(if($state -eq 'Stopped'){'PASS'}else{'FAIL'}))
   $svcLog=Join-Path $root 'supervisor.conf.log'
-  if(Test-Path $svcLog){$sl=Get-Content $svcLog -Raw;Write-Host ('CLEANUP_COMPLETE='+$(if($sl -match 'SERVICE_CLEANUP_COMPLETE=TRUE'){'PASS'}else{'FAIL'}));Copy-Item $svcLog (Join-Path $evidence 'service.log') -Force}
-  if($state -ne 'Stopped'){ $final='BLOCKED'; Write-Host 'SERVICE_SHUTDOWN=FAIL' }
-  $svcLog=Join-Path $root 'supervisor.conf.log'
-  if(-not(Test-Path $svcLog) -or (Get-Content $svcLog -Raw) -notmatch 'SERVICE_CLEANUP_COMPLETE=TRUE'){ $final='BLOCKED'; Write-Host 'CLEANUP_COMPLETE=FAIL' }
+  if(Test-Path $svcLog){
+   $sl=Get-Content $svcLog -Raw
+   Copy-Item $svcLog (Join-Path $evidence 'service.log') -Force
+   $serviceGraceful=($state -eq 'Stopped' -and $sl -match 'SERVICE_CLEANUP_COMPLETE=TRUE')
+  }
+  if(-not $serviceGraceful -and $servicePid -gt 0){
+   $sp=Get-CimInstance Win32_Process -Filter "ProcessId=$servicePid" -ErrorAction SilentlyContinue
+   if($sp){Stop-Process -Id $servicePid -Force -ErrorAction SilentlyContinue}
+  }
+  $deadline=(Get-Date).AddSeconds(10)
+  do{Start-Sleep -Milliseconds 250;$sp=if($servicePid -gt 0){Get-CimInstance Win32_Process -Filter "ProcessId=$servicePid" -ErrorAction SilentlyContinue}else{$null}}while($sp -and (Get-Date) -lt $deadline)
+  Write-Host ('SERVICE_SHUTDOWN='+$(if($serviceGraceful){'PASS'}else{'FAIL'}))
   & sc.exe delete $service|Out-Host
+  $deadline=(Get-Date).AddSeconds(10)
+  do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue}while($q -and (Get-Date) -lt $deadline)
+  $serviceGone=($null -eq $q)
  }
- if($installed){Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Remove-AppxPackage -ErrorAction SilentlyContinue;Write-Host 'MSIX_UNINSTALL=ATTEMPTED'}
- if($cert){Remove-Item ('Cert:\CurrentUser\My\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue;Remove-Item ('Cert:\LocalMachine\TrustedPeople\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue}
+ if($activationPid -gt 0){
+  $ap=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue
+  if($ap){Stop-Process -Id $activationPid -Force -ErrorAction SilentlyContinue}
+ }
+ $leftover=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) }
+ foreach($p in $leftover){Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue}
+ Start-Sleep -Milliseconds 500
+ $leftover=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) }
+ $clientGone=($null -eq $leftover)
+ if($installed){
+  Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Remove-AppxPackage -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 1
+  $packageGone=($null -eq (Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction SilentlyContinue|Select-Object -First 1))
+  Write-Host ('MSIX_UNINSTALL='+$(if($packageGone){'PASS'}else{'FAIL'}))
+ }else{$packageGone=$true}
+ if($cert){
+  foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
+   Remove-Item ($store+'\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue
+  }
+  $certificateGone=$true
+  foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
+   if(Get-ChildItem $store -ErrorAction SilentlyContinue|Where-Object Thumbprint -EQ $cert.Thumbprint){$certificateGone=$false}
+  }
+ }
+ $eventPath=Join-Path $evidence 'windows-events.txt'
+ foreach($ln in @('Application','System')){
+  try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=$testStart}|Where-Object {$_.ProviderName -match 'Application Error|Service Control Manager|Windows Error Reporting'}|Select-Object -First 30 TimeCreated,Id,ProviderName,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}
+ }
+ if(Test-Path $root){Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue}
+ $tempGone=(-not(Test-Path $root))
+ Write-Host ('SERVICE_REMOVED='+$(if($serviceGone){'PASS'}else{'FAIL'}))
+ Write-Host ('CLIENT_PROCESSES_REMOVED='+$(if($clientGone){'PASS'}else{'FAIL'}))
+ Write-Host ('MSIX_REMOVED='+$(if($packageGone){'PASS'}else{'FAIL'}))
+ Write-Host ('TEST_CERT_REMOVED='+$(if($certificateGone){'PASS'}else{'FAIL'}))
+ Write-Host ('TEMP_DIRECTORY_REMOVED='+$(if($tempGone){'PASS'}else{'FAIL'}))
+ $logText='';if(Test-Path (Join-Path $evidence 'service.log')){$logText=Get-Content (Join-Path $evidence 'service.log') -Raw}
+ $sessionClean=($logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
+ $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $tempGone -and $sessionClean)
+ Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
+ if(-not $cleanup){$final='BLOCKED'}
  ('P2.36_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  Stop-Transcript|Out-Null
 }
