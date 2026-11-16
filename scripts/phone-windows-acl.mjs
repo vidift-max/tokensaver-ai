@@ -282,8 +282,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
 
   const stdout = String(result.stdout ?? "");
   const stderr = String(result.stderr ?? "");
-  const runtime = stdout.split(/\r?\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
-  if (runtime) process.stdout.write(runtime + "\n");
+  if (stdout) process.stdout.write(stdout.endsWith("\n") ? stdout : stdout + "\n");
   if (stderr) process.stderr.write(stderr.endsWith("\n") ? stderr : stderr + "\n");
 
   const expectedMarker = extraEnvironment.TOKENSAVER_PHONE_ACL_CONSTRUCTION_TEST
