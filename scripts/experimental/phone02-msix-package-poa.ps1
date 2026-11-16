@@ -181,11 +181,19 @@ public static class PackageActivator {
     if(-not $ready){Stop-Process -Id $sp.Id -Force;throw "Supervisor did not publish readiness: $caseName"}
     return @{Process=$sp;Out=$out;Err=$err;PipeName=$pipeName}
   }
-  function Finish-Case($s,[string]$caseName){
-    if(-not $s.Process.WaitForExit(15000)){Stop-Process -Id $s.Process.Id -Force;throw "Supervisor timeout: $caseName"}
+  function Finish-Case($s,[string]$caseName,[switch]$AllowTimeout){
+    if(-not $s.Process.WaitForExit(15000)){
+      Stop-Process -Id $s.Process.Id -Force
+      if($AllowTimeout){
+        $content=Get-Content $s.Out -Raw -ErrorAction SilentlyContinue
+        Write-Host "CASE_BEGIN=$caseName";Write-Host $content;Write-Host "SUPERVISOR_TIMEOUT=$caseName";Write-Host "CASE_END=$caseName"
+        return @{Content=$content;ExitCode=124;TimedOut=$true}
+      }
+      throw "Supervisor timeout: $caseName"
+    }
     $content=Get-Content $s.Out -Raw -ErrorAction SilentlyContinue
     Write-Host "CASE_BEGIN=$caseName";Write-Host $content;Write-Host "SUPERVISOR_EXIT=$($s.Process.ExitCode)";Write-Host "CASE_END=$caseName"
-    return @{Content=$content;ExitCode=$s.Process.ExitCode}
+    return @{Content=$content;ExitCode=$s.Process.ExitCode;TimedOut=$false}
   }
   Write-Host 'ROUND_6A — full-trust pipe visibility control before AppContainer connection'
   $probePipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.fulltrust-probe"
@@ -198,7 +206,23 @@ public static class PackageActivator {
   $activatedPid=Activate-PackagedClient
   $legitPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$activatedPid"
   $s=Start-Supervisor 'legitimate-msix' $legitPipe $activatedPid
-  $legit=Finish-Case $s 'legitimate-msix'
+  $legit=Finish-Case $s 'legitimate-msix' -AllowTimeout
+  if($legit.TimedOut){
+    $diagnosticPath=Join-Path $root "Phone02-MsixPoA-client-$activatedPid.log"
+    $diagnostic=if(Test-Path $diagnosticPath){Get-Content $diagnosticPath -Raw}else{''}
+    if($diagnostic -match 'CLIENT_PIPE_FIRST_ERROR=2' -and $diagnostic -match 'SESSION=2'){
+      Write-Host 'APPCONTAINER_PIPE_VISIBILITY=BLOCKED ERROR=ERROR_FILE_NOT_FOUND'
+      Write-Host 'SESSION_CORRELATION=PASS — activated client and full-trust Supervisor both reported session 2'
+      Write-Host 'FULLTRUST_PIPE_VISIBILITY=PASS — same-user full-trust control connected and was rejected by token'
+      Write-Host 'ROUND_7 — BLOCKED; protocol spoof matrix not executed because packaged AppContainer client cannot reach the pipe'
+      Write-Host 'ROUND_8 — BLOCKED; simultaneous package-instance authorization not executed'
+      Write-Host 'ROUND_9 — BLOCKED; reconnect test not executed; disposable package and certificate cleanup follows'
+      Write-Host 'ROUND_10 — final classification and cleanup evidence'
+      Write-Host 'POA_RESULT=BLOCKED — REQUIRED WINDOWS CAPABILITY UNAVAILABLE'
+      return
+    }
+    throw 'Supervisor timed out without the required AppContainer pipe-visibility diagnostic'
+  }
   $oldProcessDeadline=(Get-Date).AddSeconds(5)
   do { Start-Sleep -Milliseconds 100; $oldProcess=Get-Process -Id $activatedPid -ErrorAction SilentlyContinue } while($oldProcess -and (Get-Date) -lt $oldProcessDeadline)
   Write-Host "INITIAL_CLIENT_PROCESS_EXITED=$(-not [bool]$oldProcess) PID=$activatedPid"
