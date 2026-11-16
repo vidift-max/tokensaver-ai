@@ -1,0 +1,14 @@
+[
+    uuid(9C85E0D1-6A4B-4D71-9C5F-3B91D3C4A234),
+    version(1.0),
+    explicit_handle,
+    pointer_default(unique)
+]
+interface Phone02Ipc
+{
+    void Phone02Authorize(
+        [in] handle_t hBinding,
+        [in, string] wchar_t *claims,
+        [out] long *authorized
+    );
+}
