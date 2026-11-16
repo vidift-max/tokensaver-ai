@@ -72,7 +72,7 @@ public static class PhoneAclNative
         }
 
         RawSecurityDescriptor descriptor = new RawSecurityDescriptor(
-            ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected,
+            ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected | ControlFlags.SelfRelative,
             null, null, null, dacl);
         byte[] binary = new byte[descriptor.BinaryLength];
         descriptor.GetBinaryForm(binary, 0);
