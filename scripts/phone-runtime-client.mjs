@@ -45,6 +45,7 @@ export class PhoneRuntimeClient {
     try {
       response = await this.fetch(this.baseUrl + route, {
         method,
+        redirect: "error",
         headers: {
           authorization: "Bearer " + this.sessionToken,
           "x-ai-phone-endpoint-credential": this.endpointCredential,
