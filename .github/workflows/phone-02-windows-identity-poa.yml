@@ -1,21 +1,17 @@
 name: Phone-02 Windows Identity PoA
-
 on:
   push:
     branches:
       - security/phone-02-windows-identity-poa
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: phone02-windows-identity-poa-${{ github.ref }}
+  group: phone02-msix-package-poa-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  windows-identity-poa:
-    name: Windows identity PoA — isolated experiment
+  msix-package-poa:
+    name: Windows MSIX package and activation PoA
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
@@ -24,74 +20,17 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
-
-      - name: Rounds 1–2 — verify runner and prepare isolated identity
+      - name: Execute ten-round isolated MSIX construction
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Join-Path $env:RUNNER_TEMP 'phone02-identity-poa'
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          $branch = (git branch --show-current).Trim()
-          $sha = (git rev-parse HEAD).Trim()
-          $os = Get-CimInstance Win32_OperatingSystem
-          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-          "ROUND_1_BRANCH=$branch"
-          "ROUND_1_SHA=$sha"
-          "ROUND_1_WINDOWS=$($os.Caption) $($os.Version) build=$($os.BuildNumber) arch=$($os.OSArchitecture)"
-          "ROUND_1_RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
-          if ($branch -ne 'security/phone-02-windows-identity-poa') { throw 'Wrong branch' }
-          if ($env:RUNNER_OS -ne 'Windows' -or $os.BuildNumber -ne '26100') { throw 'Unexpected Windows runner' }
-          $changed = git diff --name-only 3b614efc7ce4b1a83e05c94d55c42c0cf9c04cb1 HEAD
-          $allowed = @('.github/workflows/phone-02-windows-identity-poa.yml','scripts/experimental/phone02-identity-poa.cpp')
-          $unexpected = @($changed | Where-Object { $_ -notin $allowed })
-          "ROUND_1_EXPERIMENTAL_FILES=$($changed -join ',')"
-          if ($unexpected.Count) { throw "Non-experimental files changed: $($unexpected -join ',')" }
-          $inventory = [ordered]@{
-            branch=$branch; sha=$sha; runner_os=$env:RUNNER_OS; runner_arch=$env:RUNNER_ARCH
-            windows_caption=$os.Caption; windows_version=$os.Version; windows_build=$os.BuildNumber
-            os_architecture=$os.OSArchitecture; processor_architecture=$cpu.Architecture
-            powershell=$PSVersionTable.PSVersion.ToString(); node=(& node --version 2>&1 | Out-String).Trim()
-            changed_files=@($changed); secrets_referenced_by_workflow=$false
-            note='Workflow references no secrets; no production credentials or external services are used.'
-          }
-          $inventory | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'environment.json')
-          "ROUND_2_IDENTITY_SETUP=delegated_to_native_AppContainer_API_harness"
-
-      - name: Rounds 3–9 — compile and execute native token/pipe PoA
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Join-Path $env:RUNNER_TEMP 'phone02-identity-poa'
-          $source = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-identity-poa.cpp'
-          $exe = Join-Path $out 'phone02-identity-poa.exe'
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path $source)) { throw 'Experimental harness source missing' }
-          if (-not (Test-Path $vswhere)) { throw 'vswhere missing' }
-          $vs = (& $vswhere -latest -products '*' -property installationPath).Trim()
-          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
-          "ROUND_3_SUPERVISOR=single-run native C++ harness; no service installation"
-          $buildLog = Join-Path $out 'build.log'
-          $command = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "' + $source + '" /Fe:"' + $exe + '" advapi32.lib userenv.lib'
-          & cmd.exe /d /s /c $command 2>&1 | Tee-Object -FilePath $buildLog
-          if ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
-          "ROUND_4_CLIENT=child process created with PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES"
-          "ROUND_5_IDENTITY=Supervisor impersonates named-pipe client and reads OS token"
-          "ROUND_6_ADVERSARY=same-user unpackaged process sends identical protocol"
-          "ROUND_7_BYPASS=protocol spoof fields are sent but not used for authorization"
-          "ROUND_8_PIPE=DACL explicitly names current user SID and AppContainer SID; remote clients rejected"
-          "ROUND_9_LIMITATIONS=MSIX package identity and Node/libuv are not tested by this harness"
-          $runLog = Join-Path $out 'execution.log'
-          & $exe 2>&1 | Tee-Object -FilePath $runLog
-          $result = $LASTEXITCODE
-          "HARNESS_EXIT_CODE=$result"
-          if ($result -ne 0) { throw "PoA harness failed or blocked: $result" }
-          "ROUND_10_REPORT=execution evidence saved to artifact"
-
-      - name: Upload experimental evidence
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-msix-package-poa.ps1'
+          if (-not (Test-Path $script)) { throw 'MSIX PoA script missing' }
+          & $script
+      - name: Upload MSIX PoA evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-windows-identity-poa-evidence
-          path: ${{ runner.temp }}/phone02-identity-poa
+          name: phone02-msix-package-poa-evidence
+          path: ${{ runner.temp }}/phone02-msix-poa
           if-no-files-found: warn
