@@ -82,13 +82,13 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   DWORD sessionId=0,sessionBytes=0;Log(L"RPC_TOKEN_SESSION_BEGIN");
   if(!GetTokenInformation(token,TokenSessionId,&sessionId,sizeof(sessionId),&sessionBytes)){localReason=L"TOKEN_SESSION_ID_ERROR_"+std::to_wstring(GetLastError());break;}
   out.windowsSession=sessionId;Log(L"RPC_TOKEN_SESSION_OK value="+std::to_wstring(out.windowsSession));
-  if(!out.isAppContainer){localReason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
   std::vector<BYTE>user,container;
   Log(L"RPC_TOKEN_USER_BEGIN");if(!TokenInfo(token,TokenUser,user)){localReason=L"TOKEN_USER_QUERY_ERROR_"+std::to_wstring(GetLastError());break;}Log(L"RPC_TOKEN_USER_OK");
-  Log(L"RPC_TOKEN_APPCONTAINER_SID_BEGIN");if(!TokenInfo(token,TokenAppContainerSid,container)){localReason=L"TOKEN_APPCONTAINER_SID_QUERY_ERROR_"+std::to_wstring(GetLastError());break;}Log(L"RPC_TOKEN_APPCONTAINER_SID_OK");
   out.userSid=SidText(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
-  out.appSid=SidText(reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(container.data())->TokenAppContainer);
   if(out.userSid.empty()){localReason=L"USER_SID_EMPTY";break;}
+  if(!out.isAppContainer){tokenObserved=true;localReason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
+  Log(L"RPC_TOKEN_APPCONTAINER_SID_BEGIN");if(!TokenInfo(token,TokenAppContainerSid,container)){localReason=L"TOKEN_APPCONTAINER_SID_QUERY_ERROR_"+std::to_wstring(GetLastError());break;}Log(L"RPC_TOKEN_APPCONTAINER_SID_OK");
+  out.appSid=SidText(reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(container.data())->TokenAppContainer);
   if(out.appSid.empty()){localReason=L"APPCONTAINER_SID_EMPTY";break;}
   UINT32 size=0;Log(L"RPC_PACKAGE_FAMILY_BEGIN");LONG rc=GetPackageFamilyName(process,&size,nullptr);
   if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FAMILY_QUERY_ERROR_"+std::to_wstring(rc);break;}
@@ -109,6 +109,7 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   if(!GetProcessTimes(process,&out.created,&exitTime,&kernelTime,&userTime)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
   else Log(L"RPC_PROCESS_TIMES_OK");
  }
+ if(tokenObserved&&!out.isAppContainer){localReason=L"TOKEN_IS_NOT_APPCONTAINER";tokenObserved=false;}
  if(tokenObserved&&out.userSid!=gExpectedUserSid){localReason=L"USER_SID_PIN_MISMATCH";tokenObserved=false;}
  if(tokenObserved&&out.appSid!=gExpectedAppSid){localReason=L"APPCONTAINER_SID_PIN_MISMATCH";tokenObserved=false;}
  if(tokenObserved&&out.family!=gExpectedFamily){localReason=L"PACKAGE_FAMILY_PIN_MISMATCH";tokenObserved=false;}
