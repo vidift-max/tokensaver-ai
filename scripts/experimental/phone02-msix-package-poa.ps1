@@ -62,18 +62,17 @@ try {
   if(-not $p){throw 'Windows package registration not found'}
   $p | Select-Object Name,PackageFullName,PackageFamilyName,Publisher,Version,InstallLocation | Format-List
   Write-Host 'MSIX_INSTALLED'
-  Write-Host 'ROUND_7 — activate through AppsFolder package activation'
+  Write-Host 'ROUND_7 — prepare Supervisor, then activate through AppsFolder package activation'
+  $supervisor=Start-Process -FilePath $exe -ArgumentList '--supervisor' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'supervisor.log') -RedirectStandardError (Join-Path $root 'supervisor.err')
+  Start-Sleep -Milliseconds 700
   $aumid="$($p.PackageFamilyName)!App"
   $shell=New-Object -ComObject Shell.Application
   $shell.ShellExecute("shell:AppsFolder\\$aumid",'','','open',1)
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 3
   $proc=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq (Join-Path $p.InstallLocation 'client.exe') } | Select-Object -First 1
   if(-not $proc){Write-Warning 'Package activation was requested, but process PID was not independently found.'}
   else {Write-Host "MSIX_CLIENT_PID=$($proc.ProcessId)";Write-Host 'MSIX_CLIENT_ACTIVATED'}
   Write-Host 'ROUND_8 — token observation'
-  $supervisor=Start-Process -FilePath $exe -ArgumentList '--supervisor' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'supervisor.log') -RedirectStandardError (Join-Path $root 'supervisor.err')
-  Start-Sleep -Milliseconds 500
-  if($proc){$null=Wait-Process -Id $proc.ProcessId -Timeout 1 -ErrorAction SilentlyContinue}
   Start-Sleep -Seconds 2
   Get-Content (Join-Path $root 'supervisor.log') -ErrorAction SilentlyContinue
   Write-Host 'ROUND_9 — independent package/process correlation'
