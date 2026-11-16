@@ -130,7 +130,14 @@ test("rejects a symlink as the result-store root before resolving it", async () 
     const realDirectory = path.join(root, "real-results");
     const linkDirectory = path.join(root, "linked-results");
     await mkdir(realDirectory);
-    await symlink(realDirectory, linkDirectory, "dir");
+    try {
+      await symlink(realDirectory, linkDirectory, "dir");
+    } catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) {
+        return;
+      }
+      throw error;
+    }
     const store = new FilePhoneResultStore(linkDirectory, makeKeyProvider());
     await assert.rejects(
       () => store.initialize(),
