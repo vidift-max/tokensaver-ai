@@ -176,7 +176,11 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
  auto wrong=provisioned;wrong.ai_phone_id="CLIENT-CHOSEN-IDENTITY";
  phone_supervisor::TeamRoomAttachment attachment;
  if(adapter.attach(wrong,attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_IDENTITY_MISMATCH=PASS");
- if(!adapter.attach(provisioned,attachment)||attachment.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_ATTACH=PASS");
+ if(!adapter.attach(provisioned,attachment)||attachment.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
+  if(attachment.team_room_session_id.empty()||attachment.execution_id.empty()||
+     attachment.team_room_session_id==Ascii(std::wstring(sessionId))||
+     attachment.execution_id==phoneId||attachment.endpoint_id!=endpointId||attachment.endpoint_fence!=1){*status=RPC_INTERNAL_ERROR;return;}
+  Log(L"TEAM_ROOM_SESSION_EXECUTION_NAMESPACE=PASS");Log(L"TEAM_ROOM_ATTACH=PASS");
  if(!adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_HEARTBEAT=PASS");
  if(!adapter.reconnect(attachment,"P2.37-FRESH-CHALLENGE")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_RECONNECT=PASS");
  phone_supervisor::TeamRoomMessage receipt;

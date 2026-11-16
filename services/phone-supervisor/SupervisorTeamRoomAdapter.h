@@ -7,7 +7,7 @@ struct ProvisionedPhoneBinding {
  std::string ai_phone_id, endpoint_id, package_family, package_full_name, appcontainer_sid;
  std::uint64_t install_generation = 0;
 };
-struct TeamRoomAttachment { std::string attachment_id, sender_ai_phone_id; };
+struct TeamRoomAttachment { std::string attachment_id, sender_ai_phone_id, team_room_session_id, execution_id, endpoint_id; std::uint64_t endpoint_fence = 0; };
 struct TeamRoomMessage { std::string message_id, sender_ai_phone_id, payload; };
 class SupervisorTeamRoomAdapter {
 public:
@@ -33,7 +33,7 @@ public:
   if(!authenticated_||b.ai_phone_id!="TEST-AI-PHONE-02"||b.endpoint_id!="TEST-ENDPOINT-02"||
     b.package_family.empty()||b.package_full_name.empty()||b.appcontainer_sid.empty()||b.install_generation!=1)return false;
   endpoint_credential_="FAKE-ENDPOINT-CREDENTIAL-NOT-FOR-EXPORT";
-  attachment_={"fake-attachment-p2-37",b.ai_phone_id};attached_=true;
+  attachment_={"fake-attachment-p2-37",b.ai_phone_id,"FAKE-TEAM-ROOM-SESSION-P2-37","FAKE-EXECUTION-P2-37",b.endpoint_id,1};attached_=true;
   inbox_={{"fake-inbound-1","FAKE-REMOTE-SENDER","fixture-payload"}};
   out=attachment_;return true;
  }
@@ -71,7 +71,7 @@ public:
  }
 private:
  bool same(const TeamRoomAttachment& a) const {
-  return a.attachment_id==attachment_.attachment_id&&a.sender_ai_phone_id==attachment_.sender_ai_phone_id;
+  return a.attachment_id==attachment_.attachment_id&&a.sender_ai_phone_id==attachment_.sender_ai_phone_id&&a.team_room_session_id==attachment_.team_room_session_id&&a.execution_id==attachment_.execution_id&&a.endpoint_id==attachment_.endpoint_id&&a.endpoint_fence==attachment_.endpoint_fence;
  }
  bool authenticated_=false,attached_=false,pair_granted_=false;
  unsigned reconnect_generation_=0;
