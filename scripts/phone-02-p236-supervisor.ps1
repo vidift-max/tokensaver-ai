@@ -104,8 +104,14 @@ public static class P236Activator {
  $activationPid=[P236Activator]::Activate($aumid,"")
  Write-Host "ACTIVATED_APP_PID=$activationPid AUMID=$aumid"
  $clientRoot=Join-Path $env:LOCALAPPDATA ('Packages\'+$app.PackageFamilyName)
+ $fallbackLog=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
  $deadline=(Get-Date).AddSeconds(45);$clientLog=$null;$cl=''
- do{Start-Sleep -Milliseconds 250;$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1;if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}}while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
+ do{
+  Start-Sleep -Milliseconds 250
+  if(Test-Path $fallbackLog){$clientLog=Get-Item $fallbackLog}
+  if(-not $clientLog){$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
+  if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}
+ }while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
  if(-not $clientLog){$activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue;Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)";throw 'Packaged AppContainer client log not found'}
  Copy-Item $clientLog.FullName (Join-Path $evidence 'appcontainer.log') -Force
  Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
