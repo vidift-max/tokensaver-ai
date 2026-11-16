@@ -11,88 +11,81 @@ permissions:
 
 jobs:
   windows-identity-poa:
-    name: Windows identity PoA — inventory
+    name: Windows identity PoA — isolated experiment
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout experimental branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: \${{ github.ref }}
 
-      - name: Real Windows and toolchain inventory
-        id: inventory
+      - name: Rounds 1–2 — verify runner and prepare isolated identity
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
-          $out = Join-Path $env:RUNNER_TEMP 'phone02-poa-inventory'
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'phone02-identity-poa'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-
+          $branch = (git branch --show-current).Trim()
+          $sha = (git rev-parse HEAD).Trim()
           $os = Get-CimInstance Win32_OperatingSystem
-          $cs = Get-CimInstance Win32_ComputerSystem
           $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-
-          $makeappx = @()
-          $signtool = @()
-          if (Test-Path $sdkRoot) {
-            $makeappx = @(Get-ChildItem $sdkRoot -Filter MakeAppx.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName)
-            $signtool = @(Get-ChildItem $sdkRoot -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName)
-          }
-
-          $cl = @()
-          if (Test-Path $env:ProgramFiles) {
-            $cl = @(Get-ChildItem (Join-Path $env:ProgramFiles 'Microsoft Visual Studio') -Filter cl.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName)
-          }
-          $msbuild = @()
-          if (Test-Path $vswhere) {
-            $vs = & $vswhere -latest -products '*' -property installationPath
-            if ($vs) {
-              $candidate = Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
-              if (Test-Path $candidate) { $msbuild += $candidate }
-            }
-          }
-
+          "ROUND_1_BRANCH=$branch"
+          "ROUND_1_SHA=$sha"
+          "ROUND_1_WINDOWS=$($os.Caption) $($os.Version) build=$($os.BuildNumber) arch=$($os.OSArchitecture)"
+          "ROUND_1_RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+          if ($branch -ne 'security/phone-02-windows-identity-poa') { throw 'Wrong branch' }
+          if ($env:RUNNER_OS -ne 'Windows' -or $os.BuildNumber -ne '26100') { throw 'Unexpected Windows runner' }
+          $changed = git diff --name-only 3b614efc7ce4b1a83e05c94d55c42c0cf9c04cb1 HEAD
+          $allowed = @('.github/workflows/phone-02-windows-identity-poa.yml','scripts/experimental/phone02-identity-poa.cpp')
+          $unexpected = @($changed | Where-Object { $_ -notin $allowed })
+          "ROUND_1_EXPERIMENTAL_FILES=$($changed -join ',')"
+          if ($unexpected.Count) { throw "Non-experimental files changed: $($unexpected -join ',')" }
           $inventory = [ordered]@{
-            captured_utc = (Get-Date).ToUniversalTime().ToString('o')
-            runner_os = $env:RUNNER_OS
-            runner_arch = $env:RUNNER_ARCH
-            computer_name = $env:COMPUTERNAME
-            windows_caption = $os.Caption
-            windows_version = $os.Version
-            windows_build = $os.BuildNumber
-            os_architecture = $os.OSArchitecture
-            processor_architecture = $cpu.Architecture
-            powershell = $PSVersionTable.PSVersion.ToString()
-            node = (& node --version 2>&1 | Out-String).Trim()
-            windows_sdk_bin_root = $sdkRoot
-            makeappx_paths = $makeappx
-            signtool_paths = $signtool
-            cl_paths = $cl
-            msbuild_paths = $msbuild
-            vswhere_path = $vswhere
+            branch=$branch; sha=$sha; runner_os=$env:RUNNER_OS; runner_arch=$env:RUNNER_ARCH
+            windows_caption=$os.Caption; windows_version=$os.Version; windows_build=$os.BuildNumber
+            os_architecture=$os.OSArchitecture; processor_architecture=$cpu.Architecture
+            powershell=$PSVersionTable.PSVersion.ToString(); node=(& node --version 2>&1 | Out-String).Trim()
+            changed_files=@($changed); secrets_referenced_by_workflow=$false
+            note='Workflow references no secrets; no production credentials or external services are used.'
           }
-          $inventory | ConvertTo-Json -Depth 8 | Tee-Object -FilePath (Join-Path $out 'inventory.json')
+          $inventory | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'environment.json')
+          "ROUND_2_IDENTITY_SETUP=delegated_to_native_AppContainer_API_harness"
 
-          $missing = @()
-          if ($env:RUNNER_OS -ne 'Windows') { $missing += 'RUNNER_OS is not Windows' }
-          if (-not $makeappx.Count) { $missing += 'MakeAppx.exe missing' }
-          if (-not $signtool.Count) { $missing += 'SignTool.exe missing' }
-          if (-not $cl.Count) { $missing += 'cl.exe missing' }
-          if (-not $inventory.node.StartsWith('v22.')) { $missing += 'Node.js 22 not found' }
-          if ($missing.Count) {
-            $missing | Set-Content (Join-Path $out 'missing-requirements.txt')
-            Write-Error ('Essential Windows tooling missing: ' + ($missing -join '; '))
-            exit 1
-          }
+      - name: Rounds 3–9 — compile and execute native token/pipe PoA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'phone02-identity-poa'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-identity-poa.cpp'
+          $exe = Join-Path $out 'phone02-identity-poa.exe'
+          $vswhere = Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $source)) { throw 'Experimental harness source missing' }
+          if (-not (Test-Path $vswhere)) { throw 'vswhere missing' }
+          $vs = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
+          "ROUND_3_SUPERVISOR=single-run native C++ harness; no service installation"
+          $buildLog = Join-Path $out 'build.log'
+          & cmd.exe /d /s /c "\`"$vcvars\`" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE \`"$source\`" /Fe:\`"$exe\`" advapi32.lib userenv.lib" 2>&1 | Tee-Object -FilePath $buildLog
+          if ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
+          "ROUND_4_CLIENT=child process created with PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES"
+          "ROUND_5_IDENTITY=Supervisor impersonates named-pipe client and reads OS token"
+          "ROUND_6_ADVERSARY=same-user unpackaged process sends identical protocol"
+          "ROUND_7_BYPASS=protocol spoof fields are sent but not used for authorization"
+          "ROUND_8_PIPE=DACL explicitly names current user SID and AppContainer SID; remote clients rejected"
+          "ROUND_9_LIMITATIONS=MSIX package identity and Node/libuv are not tested by this harness"
+          $runLog = Join-Path $out 'execution.log'
+          & $exe 2>&1 | Tee-Object -FilePath $runLog
+          $result = $LASTEXITCODE
+          "HARNESS_EXIT_CODE=$result"
+          if ($result -ne 0) { throw "PoA harness failed or blocked: $result" }
+          "ROUND_10_REPORT=execution evidence saved to artifact"
 
-          "INVENTORY_JSON=$out\inventory.json" >> $env:GITHUB_OUTPUT
-
-      - name: Upload Windows inventory
+      - name: Upload experimental evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-windows-poa-inventory
-          path: ${{ runner.temp }}/phone02-poa-inventory
+          name: phone02-windows-identity-poa-evidence
+          path: \${{ runner.temp }}/phone02-identity-poa
           if-no-files-found: warn
