@@ -26,6 +26,7 @@ using System.Security.Principal;
 
 public static class PhoneAclNative
 {
+    private const uint OWNER_SECURITY_INFORMATION = 0x00000001;
     private const uint DACL_SECURITY_INFORMATION = 0x00000004;
     private const uint PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
     private const int ERROR_INSUFFICIENT_BUFFER = 122;
@@ -41,7 +42,7 @@ public static class PhoneAclNative
     private static RawSecurityDescriptor ReadDescriptor(string path)
     {
         uint needed;
-        bool first = GetFileSecurity(path, DACL_SECURITY_INFORMATION, IntPtr.Zero, 0, out needed);
+        bool first = GetFileSecurity(path, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, IntPtr.Zero, 0, out needed);
         int error = Marshal.GetLastWin32Error();
         if (first || error != ERROR_INSUFFICIENT_BUFFER || needed == 0)
             throw new Win32Exception(error, "GetFileSecurityW size query failed for " + path);
@@ -49,7 +50,7 @@ public static class PhoneAclNative
         IntPtr buffer = Marshal.AllocHGlobal(checked((int)needed));
         try
         {
-            if (!GetFileSecurity(path, DACL_SECURITY_INFORMATION, buffer, needed, out needed))
+            if (!GetFileSecurity(path, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, buffer, needed, out needed))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileSecurityW failed for " + path);
             byte[] binary = new byte[needed];
             Marshal.Copy(buffer, binary, 0, checked((int)needed));
@@ -108,6 +109,8 @@ public static class PhoneAclNative
 
         System.Collections.Generic.HashSet<string> expected =
             new System.Collections.Generic.HashSet<string>(allowedSids, StringComparer.OrdinalIgnoreCase);
+        if (descriptor.Owner == null || !expected.Contains(descriptor.Owner.Value))
+            throw new InvalidOperationException("Object owner is outside the three authorized SIDs for " + path);
         System.Collections.Generic.HashSet<string> observed =
             new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
