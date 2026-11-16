@@ -216,7 +216,7 @@ public static class PackageActivator {
   Write-Host "FULLTRUST_PIPE_VISIBILITY=PASS CLIENT_EXIT=$($probeClient.ExitCode) SUPERVISOR_EXIT=$($probeResult.ExitCode)"
   Write-Host 'ROUND_6 — legitimate MSIX client and same-user ordinary process'
   $activatedPid=Activate-PackagedClient
-  $clientLogName="Phone02-MsixPoA-client-$activatedPid.log";$supervisorLogName="Phone02-MsixPoA-supervisor-$activatedPid.log"
+  $clientLogName="Phone02-MsixPoA-client-$activatedPid.log";$supervisorLogName="Phone02-MsixPoA-supervisor-0.log"
   $deadline=(Get-Date).AddSeconds(30);$clientPath=$null;$supervisorPath=$null;$clientContent='';$supervisorContent=''
   do {
     Start-Sleep -Milliseconds 250

@@ -51,7 +51,7 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
  try{
   winrt::init_apartment(winrt::apartment_type::single_threaded);
   std::wstring args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";
-  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForAppWithArgumentsAsync(L"SupervisorHost",args);
+  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForAppAsync(L"SupervisorHost");
   HANDLE completed=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!completed){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL EVENT_ERROR="+std::to_wstring(GetLastError()));return false;}
   static unsigned int launchResult=0xFFFFFFFF,asyncStatusCode=0xFFFFFFFF;static HRESULT launchError=S_OK;
   operation.Completed([completed](auto const&op,winrt::Windows::Foundation::AsyncStatus status){
@@ -78,7 +78,7 @@ static int PackageSupervisor(DWORD expectedPid,const std::wstring&pipeName){
  LONG sidRc=DeriveAppContainerSidFromAppContainerName(family.c_str(),&appSid);if(sidRc!=ERROR_SUCCESS||!appSid)return 44;
  std::wstring sid=SidString(appSid);FreeSid(appSid);
  wchar_t local[32768]{};DWORD localLen=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
- if(localLen&&localLen<32768){std::wstring logPath=std::wstring(local)+L"\\Phone02-MsixPoA-supervisor-"+std::to_wstring(expectedPid)+L".log";FILE* fp=nullptr;_wfreopen_s(&fp,logPath.c_str(),L"w",stdout);setvbuf(stdout,nullptr,_IONBF,0);}
+ if(localLen&&localLen<32768){std::wstring logPath=std::wstring(local)+L"\\Phone02-MsixPoA-supervisor-0.log";FILE* fp=nullptr;_wfreopen_s(&fp,logPath.c_str(),L"w",stdout);setvbuf(stdout,nullptr,_IONBF,0);}
  HANDLE selfToken=nullptr;DWORD selfApp=0;if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&selfToken)){selfApp=TokenApp(selfToken);CloseHandle(selfToken);}
  wprintf(L"PACKAGE_SUPERVISOR_PROCESS=TRUE PID=%lu SESSION=%lu TOKEN_IS_APPCONTAINER=%u PACKAGE_FAMILY=%s PACKAGE_FULL_NAME=%s EXPECTED_CLIENT_PID=%lu EXPECTED_CLIENT_PATH=%s EXPECTED_APPCONTAINER_SID=%s PIPE=%s\n",GetCurrentProcessId(),SessionId(GetCurrentProcessId()),selfApp,family.c_str(),full.c_str(),expectedPid,expectedPath.c_str(),sid.c_str(),pipeName.c_str());
  return Supervisor(family,sid,full,expectedPath,L"same-package-fulltrust",pipeName,expectedPid);
@@ -159,6 +159,8 @@ int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<9)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],(DWORD)_wtoi(argv[8]));}
  if(argc>1&&wcscmp(argv[1],L"--package-supervisor")==0){if(argc<4)return 12;return PackageSupervisor((DWORD)_wtoi(argv[2]),argv[3]);}
  if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6],false);}
+ std::wstring image=ProcessPath(GetCurrentProcess());
+ if(image.size()>=14&&_wcsicmp(image.substr(image.find_last_of(L"\\/")+1).c_str(),L"supervisor.exe")==0){std::wstring pipe=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881.same-package";return PackageSupervisor(0,pipe);}
  std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",mode=argc>4?argv[4]:L"legit";
  if(family.empty()||sid.empty()||full.empty()){
    HANDLE token=nullptr;
@@ -169,6 +171,6 @@ int wmain(int argc,wchar_t**argv){
      CloseHandle(token);
    }
  }
- std::wstring pipeName=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881."+std::to_wstring(GetCurrentProcessId());
+ std::wstring pipeName=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881.same-package";
  return Client(mode,family,sid,full,pipeName,true);
 }
