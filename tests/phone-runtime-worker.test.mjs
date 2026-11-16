@@ -104,6 +104,39 @@ test("rejects a changed fencing token before execution", async () => {
   assert.equal(changed.events.some(x => x.startsWith("execute:")), false);
 });
 
+test("does not ACK a durable result if the fencing token changes before ACK", async () => {
+  let calls = 0;
+  const changedAfterCommit = setup({
+    authorize: async () => {
+      calls++;
+      const a = authorization();
+      if (calls === 3) a.fencingToken++;
+      return a;
+    }
+  });
+  await assert.rejects(
+    () => changedAfterCommit.worker.runOnce(),
+    e => e.code === "AUTHORIZATION_FENCE_CHANGED"
+  );
+  assert.equal(changedAfterCommit.events.some(x => x.startsWith("ack:")), false);
+
+  calls = 0;
+  const changedDuringRecovery = setup({
+    stored: { messageId: message.message_id, result: { ok: true }, durable: true },
+    authorize: async () => {
+      calls++;
+      const a = authorization();
+      if (calls === 2) a.fencingToken++;
+      return a;
+    }
+  });
+  await assert.rejects(
+    () => changedDuringRecovery.worker.runOnce(),
+    e => e.code === "AUTHORIZATION_FENCE_CHANGED"
+  );
+  assert.equal(changedDuringRecovery.events.some(x => x.startsWith("ack:")), false);
+});
+
 test("does not ACK if executor fails or durable commit fails", async () => {
   const executorFailure = setup({ execute: async () => { throw new Error("provider down"); } });
   await assert.rejects(() => executorFailure.worker.runOnce(), e => e.code === "EXECUTOR_FAILED");
