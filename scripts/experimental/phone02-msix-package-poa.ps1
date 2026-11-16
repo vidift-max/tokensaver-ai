@@ -16,9 +16,9 @@ try {
   if(-not (Test-Path $source)){throw 'Experimental C++ source missing'}
   Write-Host 'AUDIT=GetNamedPipeClientProcessId + impersonated pipe token + process token independently queried by PID.'
   Write-Host 'ROUND_3 — compile packaged client, Supervisor and unpackaged adversary'
-  $sdkRoot=Join-Path \${env:ProgramFiles(x86)} 'Windows Kits\10\bin'; $sdkVersion='10.0.26100.0'
+  $sdkRoot=Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'; $sdkVersion='10.0.26100.0'
   $makeappx=Join-Path $sdkRoot "$sdkVersion\x64\MakeAppx.exe"; $signtool=Join-Path $sdkRoot "$sdkVersion\x64\SignTool.exe"
-  $vswhere=Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   $vs=(& $vswhere -latest -products '*' -property installationPath).Trim(); $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
   if(-not (Test-Path $makeappx) -or -not (Test-Path $signtool) -or -not (Test-Path $vcvars)){throw 'Required Windows SDK/VS tool missing'}
   $harness=Join-Path $root 'phone02-harness.exe'
