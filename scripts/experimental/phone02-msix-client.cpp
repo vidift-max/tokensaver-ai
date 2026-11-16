@@ -32,7 +32,7 @@ static int Client(const std::wstring&mode,const std::wstring&family,const std::w
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
  wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
 }
-static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&caseName){
+static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName){
  HANDLE self=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&self))return 4;
  std::wstring userSid=TokenSid(self,TokenUser);CloseHandle(self);
  std::wstring sddl=L"D:P(A;;GA;;;"+userSid+L")(A;;GA;;;"+expectedSid+L")S:(ML;;NW;;;LW)";
@@ -54,17 +54,18 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  HANDLE process=nullptr,processToken=nullptr;std::wstring processPath=L"UNAVAILABLE",processUser=L"UNAVAILABLE",processSid=L"UNAVAILABLE",processFull=L"UNAVAILABLE",processFamily=L"UNAVAILABLE";DWORD processApp=0;BOOL processTokenOk=FALSE;
  if(pidOk&&clientPid){process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,clientPid);if(process){processPath=ProcessPath(process);processTokenOk=OpenProcessToken(process,TOKEN_QUERY,&processToken);if(processTokenOk){processUser=TokenSid(processToken,TokenUser);processSid=TokenSid(processToken,TokenAppContainerSid);processApp=TokenApp(processToken);processFull=PackageValue(processToken,true);processFamily=PackageValue(processToken,false);}}}
  bool correlated=pidOk&&clientPid&&process&&processTokenOk&&Same(observedUser,processUser)&&app==processApp&&observedSid==processSid&&observedFull==processFull&&observedFamily==processFamily;
- bool allow=opened&&correlated&&app==1&&Same(observedSid,expectedSid)&&Same(observedFamily,expectedFamily)&&Same(observedFull,expectedFull);
+ bool pathMatch=processPath!=L"UNAVAILABLE"&&_wcsicmp(processPath.c_str(),expectedPath.c_str())==0;
+ bool allow=opened&&correlated&&pathMatch&&app==1&&Same(observedSid,expectedSid)&&Same(observedFamily,expectedFamily)&&Same(observedFull,expectedFull);
  wprintf(L"PIPE_CLIENT_PID=%lu PID_API_OK=%u\n",clientPid,pidOk);
  wprintf(L"TOKEN_USER_SID=%s\nTOKEN_IS_APPCONTAINER=%u\nOBSERVED_APPCONTAINER_SID=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PACKAGE_FAMILY_NAME=%s\n",observedUser.c_str(),app,observedSid.c_str(),observedFull.c_str(),observedFamily.c_str());
  wprintf(L"PROCESS_IMAGE=%s\nPROCESS_TOKEN_USER_SID=%s\nPROCESS_TOKEN_IS_APPCONTAINER=%u\nPROCESS_TOKEN_APPCONTAINER_SID=%s\nPROCESS_TOKEN_PACKAGE_FULL_NAME=%s\nPROCESS_TOKEN_PACKAGE_FAMILY_NAME=%s\n",processPath.c_str(),processUser.c_str(),processApp,processSid.c_str(),processFull.c_str(),processFamily.c_str());
- wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
+ wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nPROCESS_INSTALL_PATH_MATCH=%s\nEXPECTED_PROCESS_PATH=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",pathMatch?L"TRUE":L"FALSE",expectedPath.c_str(),expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
  const char* ack="ACK";DWORD wrote=0;WriteFile(pipe,ack,3,&wrote,nullptr);FlushFileBuffers(pipe);
  if(processToken)CloseHandle(processToken);if(process)CloseHandle(process);if(threadToken)CloseHandle(threadToken);if(imp)RevertToSelf();DisconnectNamedPipe(pipe);CloseHandle(pipe);
  return allow?0:10;
 }
 int wmain(int argc,wchar_t**argv){
- if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<6)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5]);}
+ if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<7)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<5)return 11;return Client(argv[2],argv[3],argv[4]);}
  std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"";
  return Client(L"legit",family,sid);
