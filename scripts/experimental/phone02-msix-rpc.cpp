@@ -82,6 +82,21 @@ extern "C" void Phone02BeginSession(handle_t hBinding,wchar_t**nonce){
  if(nonce){size_t bytes=(value.size()+1)*sizeof(wchar_t);*nonce=static_cast<wchar_t*>(midl_user_allocate(bytes));if(*nonce)memcpy(*nonce,value.c_str(),bytes);}
  wprintf(L"RPC_NONCE_ISSUED=TRUE CLIENT_PID=%lu NONCE=%s\n",pid,value.c_str());fflush(stdout);
 }
+// Keep RPC SEH boundaries in leaf functions with no C++ objects requiring unwinding.
+static RPC_STATUS SafePhone02BeginSession(RPC_BINDING_HANDLE binding,wchar_t**nonce){
+ RPC_STATUS status=RPC_S_OK;
+ RpcTryExcept{Phone02BeginSession(binding,nonce);}
+ RpcExcept(1){status=RpcExceptionCode();}
+ RpcEndExcept
+ return status;
+}
+static RPC_STATUS SafePhone02Authorize(RPC_BINDING_HANDLE binding,wchar_t*nonce,wchar_t*claims,long*authorized){
+ RPC_STATUS status=RPC_S_OK;
+ RpcTryExcept{Phone02Authorize(binding,nonce,claims,authorized);}
+ RpcExcept(1){status=RpcExceptionCode();}
+ RpcEndExcept
+ return status;
+}
 extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*nonce,wchar_t*claims,long*authorized){
  if(authorized)*authorized=0;
  RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
@@ -149,18 +164,12 @@ static int RpcClient(const std::wstring&family,const std::wstring&sid,const std:
  if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_BINDING=FAIL STAGE=FROM_STRING STATUS="+std::to_wstring(s));return 62;}
  s=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);
  if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_AUTH=FAIL STATUS="+std::to_wstring(s));RpcBindingFree(&binding);return 63;}
- wchar_t*nonce=nullptr;RPC_STATUS callStatus=RPC_S_OK;
- RpcTryExcept{Phone02BeginSession(binding,&nonce);}
- RpcExcept(1){callStatus=RpcExceptionCode();}
- RpcEndExcept
+ wchar_t*nonce=nullptr;RPC_STATUS callStatus=SafePhone02BeginSession(binding,&nonce);
  if(callStatus!=RPC_S_OK||!nonce){ClientLog(L"RPC_CLIENT_BEGIN_SESSION=FAIL STATUS="+std::to_wstring(callStatus));RpcBindingFree(&binding);return 64;}
  std::wstring sessionNonce=nonce;ClientLog(L"RPC_SESSION_NONCE="+sessionNonce);
  if(mode==L"rpc-delay")Sleep(2000);
  if(mode==L"begin-only"){midl_user_free(nonce);RpcBindingFree(&binding);ClientLog(L"RPC_CLIENT_BEGIN_ONLY=PASS");return 0;}
- long authorized=-1;callStatus=RPC_S_OK;
- RpcTryExcept{Phone02Authorize(binding,nonce,const_cast<wchar_t*>(claims.c_str()),&authorized);}
- RpcExcept(1){callStatus=RpcExceptionCode();}
- RpcEndExcept
+ long authorized=-1;callStatus=SafePhone02Authorize(binding,nonce,const_cast<wchar_t*>(claims.c_str()),&authorized);
  midl_user_free(nonce);RpcBindingFree(&binding);
  ClientLog(L"RPC_CLIENT_BINDING=PASS ENDPOINT="+endpoint+L" MODE="+mode+L" PID="+std::to_wstring(GetCurrentProcessId()));
  ClientLog(L"RPC_CLIENT_CALL_STATUS="+std::to_wstring(callStatus)+L" RPC_CLIENT_AUTHORIZATION="+(authorized==1?std::wstring(L"ALLOW"):std::wstring(L"REJECT"))+L" RESULT="+std::to_wstring(authorized));
@@ -172,10 +181,7 @@ static int RpcReplayClient(const std::wstring&family,const std::wstring&sid,cons
  RPC_STATUS s=RpcStringBindingComposeW(nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),nullptr,&sb);
  if(s!=RPC_S_OK)return 71;s=RpcBindingFromStringBindingW(sb,&binding);RpcStringFreeW(&sb);if(s!=RPC_S_OK)return 72;
  s=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);if(s!=RPC_S_OK){RpcBindingFree(&binding);return 73;}
- long authorized=-1;RPC_STATUS callStatus=RPC_S_OK;
- RpcTryExcept{Phone02Authorize(binding,const_cast<wchar_t*>(staleNonce.c_str()),const_cast<wchar_t*>(claims.c_str()),&authorized);}
- RpcExcept(1){callStatus=RpcExceptionCode();}
- RpcEndExcept
+ long authorized=-1;RPC_STATUS callStatus=SafePhone02Authorize(binding,const_cast<wchar_t*>(staleNonce.c_str()),const_cast<wchar_t*>(claims.c_str()),&authorized);
  RpcBindingFree(&binding);
  wprintf(L"RPC_REPLAY_ATTEMPT=TRUE STALE_NONCE=%s CALL_STATUS=%lu AUTHORIZATION=%s\n",staleNonce.c_str(),callStatus,authorized==1?L"ALLOW":L"REJECT");
  return callStatus==RPC_S_OK?0:74;
