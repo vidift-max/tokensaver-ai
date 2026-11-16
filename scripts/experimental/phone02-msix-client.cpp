@@ -32,8 +32,16 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
 }
 static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName){
  PIPE_NAME=pipeName;
- HANDLE h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
- if(h==INVALID_HANDLE_VALUE){wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s\n",GetLastError(),mode.c_str());return 20;}
+ HANDLE h=INVALID_HANDLE_VALUE;
+ for(int attempt=0;attempt<150;attempt++){
+   h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
+   if(h!=INVALID_HANDLE_VALUE)break;
+   DWORD error=GetLastError();
+   if(error!=ERROR_PIPE_BUSY&&error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)break;
+   WaitNamedPipeW(PIPE_NAME.c_str(),100);
+   Sleep(100);
+ }
+ if(h==INVALID_HANDLE_VALUE){wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s PIPE=%s\n",GetLastError(),mode.c_str(),PIPE_NAME.c_str());return 20;}
  std::string msg=MessageFor(mode,family,sid,full);DWORD sent=0;BOOL wr=WriteFile(h,msg.data(),(DWORD)msg.size(),&sent,nullptr);
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
  wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
@@ -77,6 +85,16 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<8)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);}
  if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6]);}
- std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",pipeName=argc>4?argv[4]:PIPE_NAME,mode=argc>5?argv[5]:L"legit";
+ std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",mode=argc>4?argv[4]:L"legit";
+ if(family.empty()||sid.empty()||full.empty()){
+   HANDLE token=nullptr;
+   if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){
+     if(family.empty())family=PackageValue(token,false);
+     if(full.empty())full=PackageValue(token,true);
+     if(sid.empty())sid=TokenSid(token,TokenAppContainerSid);
+     CloseHandle(token);
+   }
+ }
+ std::wstring pipeName=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881."+std::to_wstring(GetCurrentProcessId());
  return Client(mode,family,sid,full,pipeName);
 }
