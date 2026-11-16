@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <string>
+#include <cstring>
 #include <vector>
 
 #pragma comment(lib, "advapi32.lib")
@@ -130,7 +131,7 @@ static bool InspectConnection(HANDLE pipe, const std::wstring& expectedAppSid, c
     bool gotAppFlag = got && TokenBool(threadToken, TokenIsAppContainer, isApp);
     std::wstring user = got ? TokenSid(threadToken, TokenUser, false) : L"UNAVAILABLE";
     std::wstring app = got ? TokenSid(threadToken, TokenAppContainerSid, true) : L"UNAVAILABLE";
-    std::wstring package = got ? TokenSid(threadToken, TokenPackageSid, false) : L"UNAVAILABLE";
+    std::wstring package = L"NOT_TESTED_NO_MSIX_PACKAGE_IDENTITY";
     bool authorized = got && gotAppFlag && isApp && app == expectedAppSid;
     char msg[2048]{};
     DWORD read = 0;
@@ -219,7 +220,8 @@ int wmain(int argc, wchar_t** argv) {
 
     wprintf(L"ROUND_7_BYPASS_TESTS protocol_claims_ignored=1 username_not_used=1 executable_name_not_used=1\n");
     wprintf(L"ROUND_8_PIPE_DACL user_sid_and_appcontainer_sid_only; everyone=absent; anonymous=absent; remote_clients=rejected\n");
-    wprintf(L"ROUND_9_LIMITATIONS msix_package_identity_not_installed; package_sid_may_be_unavailable; node_libuv_not_tested\n");
+    wprintf(L"ROUND_9_LIMITATIONS msix_package_identity_not_installed; package_sid_not_proven; node_libuv_not_tested; anonymous_remote_attempt_not_executed\n");
+    wprintf(L"ROUND_10_REPORT evidence_emitted_to_workflow_log\n");
 
     if (legitOk && attackerRejected) wprintf(L"POA_RESULT=PARTIAL_APPCONTAINER_TOKEN_IDENTITY_PROVEN_MSIX_PACKAGE_IDENTITY_NOT_PROVEN\n");
     else wprintf(L"POA_RESULT=FAIL_OR_BLOCKED\n");
