@@ -103,20 +103,47 @@ static bool LaunchAppContainer(const std::wstring& exe, PSID appSid, const wchar
 }
 
 static HANDLE CreatePoAPipe(const std::wstring& userSid, const std::wstring& appSid) {
-    std::wstring sddl = L"D:P(A;;GA;;;" + userSid + L")(A;;GA;;;" + appSid + L")";
+    // Low-integrity label is required for the lowbox/AppContainer client; DACL remains SID-scoped.
+    std::wstring sddl = L"D:P(A;;GA;;;" + userSid + L")(A;;GA;;;" + appSid + L")S:(ML;;NW;;;LW)";
     PSECURITY_DESCRIPTOR sd = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr)) {
         wprintf(L"PIPE_SDDL_FAILED win32=%lu\n", GetLastError());
         return INVALID_HANDLE_VALUE;
     }
     SECURITY_ATTRIBUTES sa{ sizeof(sa), sd, FALSE };
-    HANDLE h = CreateNamedPipeW(kPipe, PIPE_ACCESS_DUPLEX,
+    HANDLE h = CreateNamedPipeW(kPipe, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         1, 4096, 4096, 5000, &sa);
     DWORD err = GetLastError();
     LocalFree(sd);
     if (h == INVALID_HANDLE_VALUE) wprintf(L"PIPE_CREATE_FAILED win32=%lu\n", err);
     return h;
+}
+
+
+static bool ConnectPipeWithTimeout(HANDLE pipe, DWORD timeoutMs) {
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
+    BOOL ok = ConnectNamedPipe(pipe, &ov);
+    if (!ok) {
+        DWORD err = GetLastError();
+        if (err == ERROR_PIPE_CONNECTED) ok = TRUE;
+        else if (err == ERROR_IO_PENDING) {
+            DWORD wait = WaitForSingleObject(ov.hEvent, timeoutMs);
+            if (wait == WAIT_OBJECT_0) {
+                DWORD transferred = 0;
+                ok = GetOverlappedResult(pipe, &ov, &transferred, FALSE);
+            } else {
+                CancelIoEx(pipe, &ov);
+                DWORD ignored = 0;
+                GetOverlappedResult(pipe, &ov, &ignored, TRUE);
+                ok = FALSE;
+            }
+        }
+    }
+    CloseHandle(ov.hEvent);
+    return ok != FALSE;
 }
 
 static bool InspectConnection(HANDLE pipe, const std::wstring& expectedAppSid, const wchar_t* label, bool expectedAuthorized) {
@@ -189,7 +216,7 @@ int wmain(int argc, wchar_t** argv) {
         CloseHandle(pipe); FreeSid(appSid); return 13;
     }
     wprintf(L"ROUND_4_LEGITIMATE_CLIENT_STARTED pid=%lu\n", client.dwProcessId);
-    BOOL connected = ConnectNamedPipe(pipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+    BOOL connected = ConnectPipeWithTimeout(pipe, 10000) ? TRUE : FALSE;
     bool legitOk = false;
     if (connected) legitOk = InspectConnection(pipe, appSidText, L"legitimate_appcontainer", true);
     else wprintf(L"LEGITIMATE_CONNECT_FAILED win32=%lu\n", GetLastError());
@@ -212,7 +239,7 @@ int wmain(int argc, wchar_t** argv) {
         wprintf(L"ATTACKER_START_FAILED win32=%lu\n", GetLastError());
         CloseHandle(pipe); FreeSid(appSid); return 15;
     }
-    connected = ConnectNamedPipe(pipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+    connected = ConnectPipeWithTimeout(pipe, 10000) ? TRUE : FALSE;
     bool attackerRejected = false;
     if (connected) attackerRejected = InspectConnection(pipe, appSidText, L"same_user_common_process", false);
     else wprintf(L"ATTACKER_CONNECT_FAILED win32=%lu\n", GetLastError());
@@ -223,14 +250,17 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(attacker.hThread);
     CloseHandle(attacker.hProcess);
 
+    bool postCloseRejected = !SendClient(kPipe, L"post_close_after_disconnect");
+    wprintf(L"POST_CLOSE_CONNECTION_REJECTED=%u\\n", postCloseRejected ? 1 : 0);
+
     wprintf(L"ROUND_7_BYPASS_TESTS protocol_claims_ignored=1 username_not_used=1 executable_name_not_used=1\n");
     wprintf(L"ROUND_8_PIPE_DACL user_sid_and_appcontainer_sid_only; everyone=absent; anonymous=absent; remote_clients=rejected\n");
     wprintf(L"ROUND_9_LIMITATIONS msix_package_identity_not_installed; package_sid_not_proven; node_libuv_not_tested; anonymous_remote_attempt_not_executed\n");
     wprintf(L"ROUND_10_REPORT evidence_emitted_to_workflow_log\n");
 
-    if (legitOk && attackerRejected) wprintf(L"POA_RESULT=PARTIAL_APPCONTAINER_TOKEN_IDENTITY_PROVEN_MSIX_PACKAGE_IDENTITY_NOT_PROVEN\n");
+    if (legitOk && attackerRejected && postCloseRejected) wprintf(L"POA_RESULT=PARTIAL_APPCONTAINER_TOKEN_IDENTITY_PROVEN_MSIX_PACKAGE_IDENTITY_NOT_PROVEN\n");
     else wprintf(L"POA_RESULT=FAIL_OR_BLOCKED\n");
 
     FreeSid(appSid);
-    return (legitOk && attackerRejected) ? 0 : 20;
+    return (legitOk && attackerRejected && postCloseRejected) ? 0 : 20;
 }
