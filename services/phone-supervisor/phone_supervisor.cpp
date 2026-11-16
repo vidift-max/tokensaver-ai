@@ -87,10 +87,12 @@ static void WINAPI ServiceMain(DWORD,LPWSTR*){
  if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gServiceSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
  if(!ServiceSidInToken()){Log(L"SERVICE_SID_IN_TOKEN=FAIL");SetState(SERVICE_STOPPED,ERROR_ACCESS_DENIED);return;}
  Log(L"SERVICE_IDENTITY=PASS SERVICE_NAME=TokenSaverPhone02Supervisor SERVICE_SID_IN_TOKEN=TRUE ACCOUNT=LocalService");
- gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}PSECURITY_DESCRIPTOR sd=nullptr;
- if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GR;;;AU)",SDDL_REVISION_1,&sd,nullptr)){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
+ gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}std::wstring endpointSddl=L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;";
+ endpointSddl+=gExpectedAppSid;endpointSddl+=L")(A;;GA;;;AU)";
+ PSECURITY_DESCRIPTOR sd=nullptr;
+ if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(endpointSddl.c_str(),SDDL_REVISION_1,&sd,nullptr){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
  RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",sd);LocalFree(sd);
- if(rc==RPC_S_OK)rc=RpcServerRegisterIfEx(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,nullptr);
+ if(rc==RPC_S_OK)rc=RpcServerRegisterIfEx(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,nullptr);
  if(rc==RPC_S_OK)rc=RpcServerRegisterAuthInfoW(nullptr,RPC_C_AUTHN_WINNT,nullptr,nullptr);
  if(rc==RPC_S_OK)rc=RpcServerListen(1,RPC_C_LISTEN_MAX_CALLS_DEFAULT,TRUE);
  if(rc!=RPC_S_OK){Log(L"RPC_ENDPOINT=FAIL STATUS="+std::to_wstring(rc));SetState(SERVICE_STOPPED,rc);CloseHandle(gStopEvent);return;}
