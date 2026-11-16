@@ -11,14 +11,15 @@ try {
   if($branch -ne 'security/phone-02-windows-identity-poa'){throw "Wrong branch: $branch"}
   if($os.BuildNumber -ne '26100'){throw "Unexpected Windows build: $($os.BuildNumber)"}
   $sdkRoot=Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-  $makeappx=Get-ChildItem $sdkRoot -Filter MakeAppx.exe -Recurse | Where-Object FullName -Match 'x64' | Select-Object -First 1 -ExpandProperty FullName
-  $signtool=Get-ChildItem $sdkRoot -Filter SignTool.exe -Recurse | Where-Object FullName -Match 'x64' | Select-Object -First 1 -ExpandProperty FullName
+  $sdkVersion='10.0.26100.0'
+  $makeappx=Join-Path $sdkRoot "$sdkVersion\\x64\\MakeAppx.exe"
+  $signtool=Join-Path $sdkRoot "$sdkVersion\\x64\\SignTool.exe"
   $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   $vs=(& $vswhere -latest -products '*' -property installationPath).Trim()
   $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-  $msbuild=Get-ChildItem $vs -Filter MSBuild.exe -Recurse | Select-Object -First 1 -ExpandProperty FullName
+  $msbuild=Join-Path $vs 'MSBuild\\Current\\Bin\\MSBuild.exe'
   [pscustomobject]@{Branch=$branch;SHA=$sha;Windows=$os.Caption;Version=$os.Version;Build=$os.BuildNumber;Architecture=$os.OSArchitecture;PowerShell=$PSVersionTable.PSVersion.ToString();Node=(& node --version);MakeAppx=$makeappx;SignTool=$signtool;VS=$vs;MSBuild=$msbuild;VCVars=$vcvars} | Format-List
-  if(-not $makeappx -or -not $signtool -or -not (Test-Path $vcvars)){throw 'Required SDK/VS tool missing'}
+  if(-not (Test-Path $makeappx) -or -not (Test-Path $signtool) -or -not (Test-Path $vcvars) -or -not (Test-Path $msbuild)){throw 'Required SDK/VS tool missing'}
   Write-Host 'ROUND_2 — package layout'
   $source=Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-msix-client.cpp'
   $exe=Join-Path $pkg 'client.exe'
