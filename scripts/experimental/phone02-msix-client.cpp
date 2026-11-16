@@ -56,7 +56,7 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
   static unsigned int launchResult=0xFFFFFFFF,asyncStatusCode=0xFFFFFFFF;static HRESULT launchError=S_OK;
   operation.Completed([completed](auto const&op,winrt::Windows::Foundation::AsyncStatus status){
    asyncStatusCode=static_cast<unsigned int>(status);
-   if(status==winrt::Windows::Foundation::AsyncStatus::Completed||status==winrt::Windows::Foundation::AsyncStatus::Error){try{auto result=op.GetResults();launchResult=static_cast<unsigned int>(result.LaunchResult());}catch(winrt::hresult_error const&e){launchError=e.code().value;}}
+   if(status==winrt::Windows::Foundation::AsyncStatus::Completed){try{op.GetResults();launchResult=0;}catch(winrt::hresult_error const&e){launchError=e.code().value;}}else if(status==winrt::Windows::Foundation::AsyncStatus::Error){try{op.GetResults();}catch(winrt::hresult_error const&e){launchError=e.code().value;}}
    else launchError=E_ABORT;
    SetEvent(completed);
   });
