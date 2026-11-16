@@ -150,9 +150,22 @@ static bool InspectConnection(HANDLE pipe, const std::wstring& expectedAppSid, c
     // Windows requires the server to read a client message before impersonation.
     char msg[2048]{};
     DWORD read = 0;
-    BOOL readOk = ReadFile(pipe, msg, sizeof(msg) - 1, &read, nullptr);
+    OVERLAPPED readOv{};
+    readOv.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!readOv.hEvent) return false;
+    BOOL readOk = ReadFile(pipe, msg, sizeof(msg) - 1, &read, &readOv);
+    if (!readOk && GetLastError() == ERROR_IO_PENDING) {
+        DWORD wait = WaitForSingleObject(readOv.hEvent, 5000);
+        if (wait == WAIT_OBJECT_0) readOk = GetOverlappedResult(pipe, &readOv, &read, FALSE);
+        else {
+            CancelIoEx(pipe, &readOv);
+            DWORD ignored = 0;
+            GetOverlappedResult(pipe, &readOv, &ignored, TRUE);
+        }
+    }
+    CloseHandle(readOv.hEvent);
     if (!readOk) {
-        wprintf(L"PROTOCOL_READ_FAILED label=%s win32=%lu\n", label, GetLastError());
+        wprintf(L"PROTOCOL_READ_FAILED label=%s win32=%lu\\n", label, GetLastError());
         return false;
     }
     BOOL impersonated = ImpersonateNamedPipeClient(pipe);
