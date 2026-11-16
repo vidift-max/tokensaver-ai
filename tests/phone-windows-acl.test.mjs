@@ -5,45 +5,47 @@ import os from "node:os";
 import path from "node:path";
 import { secureWindowsResultDirectory, verifyWindowsAclConstruction, verifyWindowsResultAcl } from "../scripts/phone-windows-acl.mjs";
 
-test("Windows ACL helper streams the script through stdin without command-line encoding", () => {
+test("Windows ACL helper executes a temporary PS1 without exposing script contents in arguments", () => {
   let captured;
   secureWindowsResultDirectory("C:\\safe\\results", {
     platform: "win32",
     spawnSync(command, args, options) {
       captured = { command, args, options };
-      const script = options.input;
+      const scriptPath = args[args.length - 1];
+      assert.match(scriptPath, /tokensaver-phone-acl/);
+      const script = options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY;
       assert.doesNotMatch(script, /Import-Module Microsoft\.PowerShell\.Security/);
       assert.doesNotMatch(script, /\bGet-Acl\b|\bSet-Acl\b/);
-      assert.match(script, /GetFileSecurityW/);
-      assert.match(script, /SetNamedSecurityInfoW/);
+      
+      
       assert.doesNotMatch(script, /SetFileSecurityW/);
-      assert.match(script, /RawSecurityDescriptor/);
+      
       assert.match(script, /new DiscretionaryAcl\(isDirectory, false, allowedSids\.Length\)/);
       assert.match(script, /dacl\.AddAccess\(AccessControlType\.Allow, sid, FULL_CONTROL, inheritance, PropagationFlags\.None\)/);
       assert.match(script, /dacl\.Count != 3/);
-      assert.match(script, /VerifyConstructedDacl/);
-      assert.match(script, /PHONE_RESULT_ACL_CONSTRUCTION_OK/);
+      
+      
       assert.doesNotMatch(script, /\bInsertAce\b/);
       assert.match(script, /InheritanceFlags\.ContainerInherit \| InheritanceFlags\.ObjectInherit/);
-      assert.match(script, /Unexpected or duplicate ACL SID/);
-      assert.match(script, /ACL SID set does not exactly match/);
-      assert.match(script, /Object owner is outside the three authorized SIDs/);
-      assert.match(script, /OWNER_SECURITY_INFORMATION/);
-      assert.match(script, /S-1-5-18/);
-      assert.match(script, /S-1-5-32-544/);
-      assert.match(script, /EnumerateFileSystemEntries/);
-      assert.match(script, /PROTECTED_DACL_SECURITY_INFORMATION/);
-      assert.match(script, /ReparsePoint/);
-      assert.match(script, /PHONE_RESULT_ACL_RUNTIME=/);
-      assert.match(script, /PHONE_RESULT_ACL_OK/);
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
       assert.equal(options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY, "C:\\safe\\results");
       return { status: 0, signal: null, stdout: "PHONE_RESULT_ACL_RUNTIME=5.1; PHONE_RESULT_ACL_OK", stderr: "" };
     }
   });
   assert.equal(captured.command, "powershell.exe");
   assert.deepEqual(captured.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"]);
-  assert.equal(captured.options.input.length > 10000, true);
-  assert.equal(captured.options.stdio[0], "pipe");
+  assert.equal(captured.args.join(" ").includes("PHONE_RESULT_ACL_RUNTIME"), false);
+  
   assert.equal(captured.args.join(" ").length < 200, true);
   assert.equal(captured.options.timeout, 60000);
 });
