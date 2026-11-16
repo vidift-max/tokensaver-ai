@@ -1,4 +1,4 @@
-name: Phone-02 Windows Identity PoA
+name: Phone-02 P2.34 RPC Identity PoA
 on:
   push:
     branches:
@@ -20,17 +20,17 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
-      - name: Execute ten-round isolated MSIX construction
+      - name: Execute fifty-round consolidated RPC identity PoA
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-msix-package-poa.ps1'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\experimental\phone02-msix-rpc-poa.ps1'
           if (-not (Test-Path $script)) { throw 'MSIX PoA script missing' }
           & $script
       - name: Upload MSIX PoA evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-msix-package-poa-evidence
-          path: ${{ runner.temp }}/phone02-identity-controls-52881
+          name: phone02-p234-rpc-evidence
+          path: ${{ runner.temp }}/phone02-p234-rpc-evidence
           if-no-files-found: warn
