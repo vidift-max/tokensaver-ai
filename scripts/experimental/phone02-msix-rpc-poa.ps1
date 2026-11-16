@@ -8,9 +8,10 @@ $cert=$null;$package=$null;$finalClassification='BLOCKED'
 $rpcServers=[System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $flags=[ordered]@{Legitimate=$false;CommonReject=$false;SpoofPid=$false;SpoofApp=$false;SpoofSid=$false;SpoofFamily=$false;SpoofFull=$false;SpoofPackage=$false;TwoInstances=$false;Reconnect=$false;Replay=$false;Cleanup=$false;ProductionUntouched=$false}
 function Round([int]$n,[string]$d){Write-Host ("ROUND_{0:D2} — {1}" -f $n,$d)}
-function RunTool([string]$exe,[string]$args,[string]$label,[int]$seconds=120){
+function RunTool([string]$exe,[string]$arguments,[string]$label,[int]$seconds=120){
  $o=Join-Path $root "$label.out.log";$e=Join-Path $root "$label.err.log"
- $p=Start-Process -FilePath $exe -ArgumentList $args -PassThru -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e
+ Write-Host "TOOL_EXECUTABLE=$exe TOOL_ARGUMENTS=$arguments LABEL=$label"
+ $p=Start-Process -FilePath $exe -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e
  if(-not $p.WaitForExit($seconds*1000)){try{$p.Kill()}catch{};throw "$label timeout"}
  if(Test-Path $o){Get-Content $o -Raw|Write-Host};if(Test-Path $e){Get-Content $e -Raw|Write-Host}
  if($p.ExitCode -ne 0){throw "$label failed exit=$($p.ExitCode)"}
@@ -102,7 +103,7 @@ try{
 "@;Set-Content (Join-Path $pkg 'AppxManifest.xml') $manifest -Encoding utf8
  Round 19 'create disposable package logo assets';New-Item -ItemType Directory -Force (Join-Path $pkg 'Assets')|Out-Null;Add-Type -AssemblyName System.Drawing;foreach($n in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')){$bmp=New-Object System.Drawing.Bitmap 64,64;$bmp.Save((Join-Path $pkg "Assets\$n"),[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose()}
  Round 20 'create disposable signing certificate';$cert=New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -FriendlyName 'TEST ONLY Phone02 P2.34 RPC' -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2);$certPath=Join-Path $root 'test-only.cer';Export-Certificate -Cert $cert -FilePath $certPath|Out-Null
- Round 21 'trust disposable certificate for MSIX install';RunTool (Join-Path $env:SystemRoot 'System32\certutil.exe') ('-user -f -addstore TrustedPeople "'+$certPath+'"') 'cert-user-trustedpeople' 30;RunTool (Join-Path $env:SystemRoot 'System32\certutil.exe') ('-f -addstore TrustedPeople "'+$certPath+'"') 'cert-machine-trustedpeople' 30
+ Round 21 'trust disposable certificate and verify both stores';RunTool (Join-Path $env:SystemRoot 'System32\certutil.exe') ('-user -f -addstore TrustedPeople "'+$certPath+'"') 'cert-user-trustedpeople' 30;RunTool (Join-Path $env:SystemRoot 'System32\certutil.exe') ('-f -addstore TrustedPeople "'+$certPath+'"') 'cert-machine-trustedpeople' 30;$userTrusted=@(Get-ChildItem Cert:\CurrentUser\TrustedPeople -ErrorAction SilentlyContinue|Where-Object Thumbprint -eq $cert.Thumbprint);$machineTrusted=@(Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction SilentlyContinue|Where-Object Thumbprint -eq $cert.Thumbprint);if($userTrusted.Count -ne 1 -or $machineTrusted.Count -ne 1){throw "Certificate trust import not verified: CurrentUser=$($userTrusted.Count) LocalMachine=$($machineTrusted.Count)"};Write-Host "CERT_TRUST_IMPORT_VERIFIED=TRUE THUMBPRINT=$($cert.Thumbprint)"
  Round 22 'pack MSIX';$msix=Join-Path $root 'Phone02P234RpcPoA.msix';RunTool $makeappx ('pack /d "'+$pkg+'" /p "'+$msix+'" /o') 'makeappx-pack' 120
  Round 23 'unpack MSIX and verify manifest/client';$unpack=Join-Path $root 'unpacked';New-Item -ItemType Directory -Force $unpack|Out-Null;RunTool $makeappx ('unpack /p "'+$msix+'" /d "'+$unpack+'"') 'makeappx-unpack' 120;if(-not(Test-Path (Join-Path $unpack 'AppxManifest.xml'))-or-not(Test-Path (Join-Path $unpack 'client.exe'))){throw 'Unpacked package incomplete'}
  Round 24 'compare client binary SHA-256';$packedHash=(Get-FileHash (Join-Path $unpack 'client.exe') -Algorithm SHA256).Hash;if($packedHash -ne $binaryHash){throw 'Client hash mismatch'};Write-Host "CLIENT_SHA256=$packedHash"
