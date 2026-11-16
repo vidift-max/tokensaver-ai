@@ -269,13 +269,13 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
       stdio: ["ignore", "pipe", "pipe"]
     });
     const result = String(output);
-    const runtime = result.split(/\\r?\\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
-    if (runtime) process.stdout.write(runtime + "\\n");
+    const runtime = result.split(/\r?\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
+    if (runtime) process.stdout.write(runtime + "\n");
     return result;
   } catch (cause) {
     const stdout = cause?.stdout?.toString?.("utf8") || "";
     const stderr = cause?.stderr?.toString?.("utf8") || "";
-    const detail = [stdout, stderr, cause?.message || String(cause)].filter(Boolean).join("\\n");
+    const detail = [stdout, stderr, cause?.message || String(cause)].filter(Boolean).join("\n");
     const code = cause?.code ? " [" + cause.code + "]" : "";
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
