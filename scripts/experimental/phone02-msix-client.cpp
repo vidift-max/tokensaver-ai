@@ -26,7 +26,7 @@ static void ClientDiagnostic(const std::wstring& message){
  HANDLE file=CreateFileW(path.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(file==INVALID_HANDLE_VALUE)return;
  std::wstring line=message+L"\r\n";int bytes=WideCharToMultiByte(CP_UTF8,0,line.c_str(),(int)line.size(),nullptr,0,nullptr,nullptr);
- if(bytes>0){std::string utf8(bytes,0);WideCharToMultiByte(CP_UTF8,0,line.c_str(),(int)line.size(),utf8.data(),bytes,nullptr,nullptr);DWORD written=0;WriteFile(file,utf8.data(),(DWORD)utf8.size(),&written,nullptr);}
+ if(bytes>0){std::string utf8(bytes,0);WideCharToMultiByte(CP_UTF8,0,line.c_str(),(int)line.size(),&utf8[0],bytes,nullptr,nullptr);DWORD written=0;WriteFile(file,utf8.data(),(DWORD)utf8.size(),&written,nullptr);}
  CloseHandle(file);
 }
 static std::string MessageFor(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
