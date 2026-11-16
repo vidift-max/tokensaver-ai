@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 const POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -252,40 +252,53 @@ Write-Output 'PHONE_RESULT_ACL_OK'
 `;
 
 function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
-  const runner = options.execFileSync ?? execFileSync;
+  const runner = options.spawnSync ?? spawnSync;
   const input = POWERSHELL_SCRIPT;
-  try {
-    const output = runner("powershell.exe", [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
-    ], {
-      encoding: "utf8",
-      input,
-      windowsHide: true,
-      timeout: 60000,
-      env: {
-        ...process.env,
-        TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
-        ...extraEnvironment
-      },
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    const result = String(output);
-    const runtime = result.split(/\r?\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
-    if (runtime) process.stdout.write(runtime + "\n");
-    return result;
-  } catch (cause) {
-    const stdout = cause?.stdout?.toString?.("utf8") || "";
-    const stderr = cause?.stderr?.toString?.("utf8") || "";
-    const detail = [stdout, stderr, cause?.message || String(cause)].filter(Boolean).join("\n");
-    const code = cause?.code ? " [" + cause.code + "]" : "";
+  const result = runner("powershell.exe", [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
+  ], {
+    encoding: "utf8",
+    input,
+    windowsHide: true,
+    timeout: 60000,
+    env: {
+      ...process.env,
+      TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
+      ...extraEnvironment
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  const stdout = String(result.stdout ?? "");
+  const stderr = String(result.stderr ?? "");
+  const runtime = stdout.split(/\\r?\\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
+  if (runtime) process.stdout.write(runtime + "\\n");
+  if (stderr) process.stderr.write(stderr.endsWith("\\n") ? stderr : stderr + "\\n");
+
+  if (result.error || result.status !== 0) {
+    const cause = result.error ?? new Error("PowerShell exited with status " + String(result.status));
+    const detail = [
+      "exitCode=" + String(result.status),
+      "signal=" + String(result.signal ?? ""),
+      "stdout:",
+      stdout,
+      "stderr:",
+      stderr,
+      "cause:",
+      cause?.stack || cause?.message || String(cause)
+    ].join("\\n");
     const error = new Error(
-      "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
-      code + ": " + detail.trim(),
+      "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage: " + detail,
       { cause }
     );
     error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+    error.exitCode = result.status;
+    error.stdout = stdout;
+    error.stderr = stderr;
     throw error;
   }
+
+  return stdout;
 }
 
 export function secureWindowsResultDirectory(directory, options = {}) {
