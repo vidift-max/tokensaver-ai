@@ -209,8 +209,8 @@ public static class PackageActivator {
   $legit=Finish-Case $s 'legitimate-msix' -AllowTimeout
   if($legit.TimedOut){
     $diagnosticName="Phone02-MsixPoA-client-$activatedPid.log"
-    $diagnosticPath=Join-Path $env:LOCALAPPDATA $diagnosticName
-    if(-not (Test-Path $diagnosticPath)){$diagnosticPath=Join-Path $root $diagnosticName}
+    $diagnosticMatch=Get-ChildItem -Path $env:LOCALAPPDATA -Filter $diagnosticName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    $diagnosticPath=if($diagnosticMatch){$diagnosticMatch.FullName}else{Join-Path $root $diagnosticName}
     $diagnostic=if(Test-Path $diagnosticPath){Get-Content $diagnosticPath -Raw}else{''}
     if(Test-Path $diagnosticPath){Copy-Item $diagnosticPath (Join-Path $root $diagnosticName) -Force -ErrorAction SilentlyContinue}
     $clientSession=[regex]::Match($diagnostic,'SESSION=(\d+)').Groups[1].Value
