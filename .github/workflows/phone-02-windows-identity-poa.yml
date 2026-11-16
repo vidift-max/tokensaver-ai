@@ -18,7 +18,7 @@ jobs:
       - name: Checkout experimental branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Execute fifty-round consolidated RPC identity PoA
         shell: pwsh
@@ -34,3 +34,11 @@ jobs:
           name: phone02-p234-rpc-evidence
           path: ${{ runner.temp }}/phone02-p234-rpc-evidence
           if-no-files-found: warn
+      - name: Remove temporary evidence workspace
+        if: always()
+        shell: pwsh
+        run: |
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'phone02-p234-rpc-evidence'
+          if (Test-Path $evidencePath) { Remove-Item -LiteralPath $evidencePath -Recurse -Force -ErrorAction Stop }
+          if (Test-Path $evidencePath) { throw 'Temporary evidence workspace remains after artifact upload' }
+          Write-Host 'RUNNER_TEMP_EVIDENCE_REMAINS=False'
