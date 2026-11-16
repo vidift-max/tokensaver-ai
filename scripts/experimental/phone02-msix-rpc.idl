@@ -6,8 +6,13 @@
 ]
 interface Phone02Ipc
 {
+    void Phone02BeginSession(
+        [in] handle_t hBinding,
+        [out, string] wchar_t **nonce
+    );
     void Phone02Authorize(
         [in] handle_t hBinding,
+        [in, string] wchar_t *nonce,
         [in, string] wchar_t *claims,
         [out] long *authorized
     );

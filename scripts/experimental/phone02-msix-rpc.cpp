@@ -14,9 +14,17 @@
 #include <cwchar>
 #include <cwctype>
 #include <cstdint>
+#include <bcrypt.h>
+#include <mutex>
+#include <cstdlib>
 #include "phone02-msix-rpc.h"
 
 static std::wstring gExpectedFamily,gExpectedSid,gExpectedFull,gExpectedPath,gUserSid,gEndpoint;
+static std::wstring gSessionNonce;static DWORD gSessionPid=0;static bool gNonceIssued=false,gNonceUsed=false;static std::mutex gNonceMutex;
+void* __RPC_USER midl_user_allocate(size_t n){return std::malloc(n);}
+void __RPC_USER midl_user_free(void*p){std::free(p);}
+static std::wstring RandomNonce(){UCHAR bytes[16]{};if(BCryptGenRandom(nullptr,bytes,sizeof(bytes),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)return L"";static const wchar_t*h=L"0123456789abcdef";std::wstring s;for(UCHAR b:bytes){s.push_back(h[b>>4]);s.push_back(h[b&15]);}return s;}
+static DWORD RpcClientPid(handle_t binding){RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;if(RpcServerInqCallAttributesW(binding,&a)!=RPC_S_OK)return 0;return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(a.ClientPID));}
 static void ClientLog(const std::wstring&line){
  wchar_t local[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
  if(n&&n<32768){std::wstring file=std::wstring(local)+L"\\Phone02-MsixPoA-rpc-client-"+std::to_wstring(GetCurrentProcessId())+L".log";std::wofstream out(file,std::ios::app);if(out){out<<line<<L"\n";out.flush();}}
@@ -65,21 +73,28 @@ static RPC_STATUS RPC_ENTRY Phone02SecurityCallback(RPC_IF_HANDLE,void* context)
    return RPC_S_ACCESS_DENIED;
  return RPC_S_OK;
 }
-extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*claims,long*authorized){
+extern "C" void Phone02BeginSession(handle_t hBinding,wchar_t**nonce){
+ if(nonce)*nonce=nullptr;
+ DWORD pid=RpcClientPid(hBinding);std::wstring value=RandomNonce();
+ if(!pid||value.empty())return;
+ {std::lock_guard<std::mutex>lock(gNonceMutex);gSessionNonce=value;gSessionPid=pid;gNonceIssued=true;gNonceUsed=false;}
+ if(nonce){size_t bytes=(value.size()+1)*sizeof(wchar_t);*nonce=static_cast<wchar_t*>(midl_user_allocate(bytes));if(*nonce)memcpy(*nonce,value.c_str(),bytes);}
+ wprintf(L"RPC_NONCE_ISSUED=TRUE CLIENT_PID=%lu NONCE=%s\n",pid,value.c_str());fflush(stdout);
+}
+extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*nonce,wchar_t*claims,long*authorized){
  if(authorized)*authorized=0;
  RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
  RPC_STATUS attrStatus=RpcServerInqCallAttributesW(hBinding,&a);
  DWORD pid=attrStatus==RPC_S_OK?static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(a.ClientPID)):0;
+ bool nonceMatch=false,noncePidMatch=false,nonceUnused=false;
+ {std::lock_guard<std::mutex>lock(gNonceMutex);nonceMatch=gNonceIssued&&Same(nonce?nonce:L"",gSessionNonce);noncePidMatch=gNonceIssued&&gSessionPid==pid;nonceUnused=gNonceIssued&&!gNonceUsed;gNonceUsed=true;}
  HANDLE process=pid?OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid):nullptr;
  HANDLE processToken=nullptr,threadToken=nullptr;
  DWORD processApp=0,threadApp=0,processSession=0xFFFFFFFF;
  std::wstring processUser=L"UNAVAILABLE",threadUser=L"UNAVAILABLE",processSid=L"UNAVAILABLE",threadSid=L"UNAVAILABLE";
  std::wstring family=L"UNAVAILABLE",full=L"UNAVAILABLE",path=L"UNAVAILABLE";
  bool processTokenOk=process&&OpenProcessToken(process,TOKEN_QUERY,&processToken);
- if(processTokenOk){
-  processApp=TokenApp(processToken);processUser=TokenSid(processToken,TokenUser);processSid=TokenSid(processToken,TokenAppContainerSid);
-  family=PackageValue(process,false);full=PackageValue(process,true);path=ProcessPath(process);processSession=ProcessSession(pid);
- }
+ if(processTokenOk){processApp=TokenApp(processToken);processUser=TokenSid(processToken,TokenUser);processSid=TokenSid(processToken,TokenAppContainerSid);family=PackageValue(process,false);full=PackageValue(process,true);path=ProcessPath(process);processSession=ProcessSession(pid);}
  RPC_STATUS impersonateStatus=RpcImpersonateClient(hBinding);
  bool threadTokenOk=impersonateStatus==RPC_S_OK&&OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,TRUE,&threadToken);
  if(threadTokenOk){threadApp=TokenApp(threadToken);threadUser=TokenSid(threadToken,TokenUser);threadSid=TokenSid(threadToken,TokenAppContainerSid);}
@@ -89,17 +104,16 @@ extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*claims,long*authorize
  bool pathMatch=Same(path,gExpectedPath);
  bool sessionMatch=processSession==ProcessSession(GetCurrentProcessId());
  bool userMatch=Same(processUser,gUserSid)&&Same(threadUser,gUserSid);
- bool allow=attrStatus==RPC_S_OK&&pid!=0&&processTokenOk&&threadTokenOk&&processApp==1&&threadApp==1&&correlation&&packageMatch&&pathMatch&&sessionMatch&&userMatch;
  std::wstring c=claims?claims:L"";
- bool claimsMatch=ClaimValue(c,L"PID")==std::to_wstring(pid)&&ClaimValue(c,L"APP")==L"1"&&
-  Same(ClaimValue(c,L"SID"),processSid)&&Same(ClaimValue(c,L"FAMILY"),family)&&Same(ClaimValue(c,L"FULL"),full);
+ bool claimsMatch=ClaimValue(c,L"PID")==std::to_wstring(pid)&&ClaimValue(c,L"APP")==L"1"&&Same(ClaimValue(c,L"SID"),processSid)&&Same(ClaimValue(c,L"FAMILY"),family)&&Same(ClaimValue(c,L"FULL"),full)&&ClaimValue(c,L"SEQ")==L"1";
+ bool allow=attrStatus==RPC_S_OK&&pid!=0&&nonceMatch&&noncePidMatch&&nonceUnused&&processTokenOk&&threadTokenOk&&processApp==1&&threadApp==1&&correlation&&packageMatch&&pathMatch&&sessionMatch&&userMatch&&claimsMatch;
  wprintf(L"RPC_CALL_RECEIVED=TRUE RPC_CLIENT_PID=%lu ATTR_STATUS=%lu RPC_PROTOCOL=%lu RPC_LOCALITY=%u AUTH_LEVEL=%lu AUTH_SERVICE=%lu NULL_SESSION=%u\n",pid,attrStatus,a.ProtocolSequence,a.IsClientLocal,a.AuthenticationLevel,a.AuthenticationService,a.NullSession);
  wprintf(L"RPC_CLIENT_SESSION=%lu SUPERVISOR_SESSION=%lu TOKEN_IS_APPCONTAINER=%u THREAD_TOKEN_IS_APPCONTAINER=%u\n",processSession,ProcessSession(GetCurrentProcessId()),processApp,threadApp);
  wprintf(L"OBSERVED_USER_SID=%s THREAD_USER_SID=%s\nOBSERVED_APPCONTAINER_SID=%s THREAD_APPCONTAINER_SID=%s\n",processUser.c_str(),threadUser.c_str(),processSid.c_str(),threadSid.c_str());
  wprintf(L"OBSERVED_PACKAGE_FAMILY=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PROCESS_PATH=%s\n",family.c_str(),full.c_str(),path.c_str());
- wprintf(L"PID_PROCESS_TOKEN_CORRELATION=%s PACKAGE_IDENTITY_MATCH=%s PROCESS_PATH_MATCH=%s SESSION_MATCH=%s USER_MATCH=%s\n",correlation?L"PASS":L"FAIL",packageMatch?L"PASS":L"FAIL",pathMatch?L"PASS":L"FAIL",sessionMatch?L"PASS":L"FAIL",userMatch?L"PASS":L"FAIL");
- wprintf(L"CLIENT_CLAIMS_MATCH_OBSERVED=%s CLAIMS_IGNORED_FOR_AUTHORIZATION=TRUE\n",claimsMatch?L"TRUE":L"FALSE");
- wprintf(L"AUTHORIZATION_RESULT=%s\n",allow?L"ALLOW":L"REJECT");
+ wprintf(L"NONCE_MATCH=%s NONCE_PID_MATCH=%s NONCE_ONE_TIME=%s\n",nonceMatch?L"PASS":L"FAIL",noncePidMatch?L"PASS":L"FAIL",nonceUnused?L"PASS":L"FAIL");
+ wprintf(L"PID_PROCESS_TOKEN_CORRELATION=%s PACKAGE_IDENTITY_MATCH=%s PROCESS_PATH_MATCH=%s SESSION_MATCH=%s USER_MATCH=%s CLIENT_CLAIMS_MATCH_OBSERVED=%s\n",correlation?L"PASS":L"FAIL",packageMatch?L"PASS":L"FAIL",pathMatch?L"PASS":L"FAIL",sessionMatch?L"PASS":L"FAIL",userMatch?L"PASS":L"FAIL",claimsMatch?L"TRUE":L"FALSE");
+ wprintf(L"CLAIMS_IGNORED_AS_AUTHORITY=TRUE AUTHORIZATION_RESULT=%s\n",allow?L"ALLOW":L"REJECT");fflush(stdout);
  if(authorized)*authorized=allow?1:0;
  if(processToken)CloseHandle(processToken);if(threadToken)CloseHandle(threadToken);if(process)CloseHandle(process);
  RpcMgmtStopServerListening(nullptr);
@@ -126,7 +140,7 @@ static int RpcSupervisor(const std::wstring&family,const std::wstring&sid,const 
 static int RpcClient(const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&mode,const std::wstring&endpoint){
  ClientLog(L"RPC_CLIENT_MAIN PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(ProcessSession(GetCurrentProcessId())));
  ClientLog(L"RPC_CLIENT_PROCESS_IMAGE="+ProcessPath(GetCurrentProcess()));
- std::wstring claims=MakeClaims(mode,family,sid,full);
+ std::wstring claims=MakeClaims(mode,family,sid,full)+L"SEQ=1;";
  RPC_WSTR stringBinding=nullptr;RPC_BINDING_HANDLE binding=nullptr;
  RPC_STATUS s=RpcStringBindingComposeW(nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),nullptr,&stringBinding);
  if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_BINDING=FAIL STAGE=COMPOSE STATUS="+std::to_wstring(s));return 61;}
@@ -134,18 +148,40 @@ static int RpcClient(const std::wstring&family,const std::wstring&sid,const std:
  if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_BINDING=FAIL STAGE=FROM_STRING STATUS="+std::to_wstring(s));return 62;}
  s=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);
  if(s!=RPC_S_OK){ClientLog(L"RPC_CLIENT_AUTH=FAIL STATUS="+std::to_wstring(s));RpcBindingFree(&binding);return 63;}
+ wchar_t*nonce=nullptr;RPC_STATUS callStatus=RPC_S_OK;
+ RpcTryExcept{Phone02BeginSession(binding,&nonce);}
+ RpcExcept(1){callStatus=RpcExceptionCode();}
+ RpcEndExcept
+ if(callStatus!=RPC_S_OK||!nonce){ClientLog(L"RPC_CLIENT_BEGIN_SESSION=FAIL STATUS="+std::to_wstring(callStatus));RpcBindingFree(&binding);return 64;}
+ std::wstring sessionNonce=nonce;ClientLog(L"RPC_SESSION_NONCE="+sessionNonce);
+ if(mode==L"begin-only"){midl_user_free(nonce);RpcBindingFree(&binding);ClientLog(L"RPC_CLIENT_BEGIN_ONLY=PASS");return 0;}
+ long authorized=-1;callStatus=RPC_S_OK;
+ RpcTryExcept{Phone02Authorize(binding,nonce,const_cast<wchar_t*>(claims.c_str()),&authorized);}
+ RpcExcept(1){callStatus=RpcExceptionCode();}
+ RpcEndExcept
+ midl_user_free(nonce);RpcBindingFree(&binding);
+ ClientLog(L"RPC_CLIENT_BINDING=PASS ENDPOINT="+endpoint+L" MODE="+mode+L" PID="+std::to_wstring(GetCurrentProcessId()));
+ ClientLog(L"RPC_CLIENT_CALL_STATUS="+std::to_wstring(callStatus)+L" RPC_CLIENT_AUTHORIZATION="+(authorized==1?std::wstring(L"ALLOW"):std::wstring(L"REJECT"))+L" RESULT="+std::to_wstring(authorized));
+ return callStatus==RPC_S_OK?0:65;
+}
+static int RpcReplayClient(const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&endpoint,const std::wstring&staleNonce){
+ std::wstring claims=MakeClaims(L"spoof-all",family,sid,full)+L"SEQ=1;";
+ RPC_WSTR sb=nullptr;RPC_BINDING_HANDLE binding=nullptr;
+ RPC_STATUS s=RpcStringBindingComposeW(nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),nullptr,&sb);
+ if(s!=RPC_S_OK)return 71;s=RpcBindingFromStringBindingW(sb,&binding);RpcStringFreeW(&sb);if(s!=RPC_S_OK)return 72;
+ s=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);if(s!=RPC_S_OK){RpcBindingFree(&binding);return 73;}
  long authorized=-1;RPC_STATUS callStatus=RPC_S_OK;
- RpcTryExcept{Phone02Authorize(binding,const_cast<wchar_t*>(claims.c_str()),&authorized);}
+ RpcTryExcept{Phone02Authorize(binding,const_cast<wchar_t*>(staleNonce.c_str()),const_cast<wchar_t*>(claims.c_str()),&authorized);}
  RpcExcept(1){callStatus=RpcExceptionCode();}
  RpcEndExcept
  RpcBindingFree(&binding);
- ClientLog(L"RPC_CLIENT_BINDING=PASS ENDPOINT="+endpoint+L" MODE="+mode+L" PID="+std::to_wstring(GetCurrentProcessId()));
- ClientLog(L"RPC_CLIENT_CALL_STATUS="+std::to_wstring(callStatus)+L" RPC_CLIENT_AUTHORIZATION="+(authorized==1?std::wstring(L"ALLOW"):std::wstring(L"REJECT"))+L" RESULT="+std::to_wstring(authorized));
- return callStatus==RPC_S_OK?0:64;
+ wprintf(L"RPC_REPLAY_ATTEMPT=TRUE STALE_NONCE=%s CALL_STATUS=%lu AUTHORIZATION=%s\n",staleNonce.c_str(),callStatus,authorized==1?L"ALLOW":L"REJECT");
+ return callStatus==RPC_S_OK?0:74;
 }
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--rpc-supervisor")==0){if(argc<7)return 10;return RpcSupervisor(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  if(argc>1&&wcscmp(argv[1],L"--rpc-client")==0){if(argc<7)return 11;return RpcClient(argv[2],argv[3],argv[4],argv[5],argv[6]);}
+ if(argc>1&&wcscmp(argv[1],L"--rpc-replay")==0){if(argc<7)return 12;return RpcReplayClient(argv[2],argv[3],argv[4],argv[5],argv[6]);}
  if(argc>=6){return RpcClient(argv[1],argv[2],argv[3],argv[4],argv[5]);}
- return 12;
+ return 13;
 }
