@@ -70,14 +70,11 @@ try {
   Write-Host 'CERT_IMPORT_BEGIN=TrustedPeople'
   Invoke-BoundedTool -FilePath (Join-Path $env:SystemRoot 'System32\certutil.exe') -Arguments ('-user -f -addstore TrustedPeople "'+$certPath+'"') -Label 'certutil-TrustedPeople' -TimeoutSeconds 30
   Write-Host 'CERT_IMPORT_END=TrustedPeople'
-  Write-Host 'CERT_TRUST_STORE=CurrentUser\TrustedPeople'
-  Write-Host 'ROOT_IMPORT_BEGIN=DOTNET_X509STORE'
-  $rootImportCode='$c=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new("'+$certPath+'");$s=[System.Security.Cryptography.X509Certificates.X509Store]::new([System.Security.Cryptography.X509Certificates.StoreName]::Root,[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);$s.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);try{$s.Add($c)}finally{$s.Close();$c.Dispose()}'
-  $rootImportEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rootImportCode))
-  Invoke-BoundedTool -FilePath (Join-Path $PSHOME 'pwsh.exe') -Arguments ("-NoLogo -NoProfile -NonInteractive -EncodedCommand "+$rootImportEncoded) -Label 'DotNet-RootStore-import' -TimeoutSeconds 30
-  $rootCert=Get-ChildItem Cert:\CurrentUser\Root -ErrorAction Stop | Where-Object Thumbprint -eq $cert.Thumbprint
-  if(-not $rootCert){throw 'TEST-ONLY certificate was not found in CurrentUser Root after .NET import'}
-  Write-Host "ROOT_IMPORT_VERIFIED=TRUE THUMBPRINT=$($rootCert.Thumbprint)"
+  Write-Host 'CERT_IMPORT_BEGIN=LocalMachine-TrustedPeople'
+  Invoke-BoundedTool -FilePath (Join-Path $env:SystemRoot 'System32\certutil.exe') -Arguments ('-f -addstore TrustedPeople "'+$certPath+'"') -Label 'certutil-LocalMachine-TrustedPeople' -TimeoutSeconds 30
+  $machineTrust=Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction Stop | Where-Object Thumbprint -eq $cert.Thumbprint
+  if(-not $machineTrust){throw 'TEST-ONLY certificate was not found in LocalMachine TrustedPeople after import'}
+  Write-Host "MACHINE_TRUST_IMPORT_VERIFIED=TRUE THUMBPRINT=$($machineTrust.Thumbprint)"
   $msix=Join-Path $root 'Phone02IdentityPoA-52881.msix'
   Write-Host 'MAKEAPPX_PACK_BEGIN=TRUE'
   Invoke-BoundedTool -FilePath $makeappx -Arguments ('pack /d "'+$pkg+'" /p "'+$msix+'" /o') -Label 'MakeAppx-pack' -TimeoutSeconds 120
@@ -251,10 +248,12 @@ finally {
     Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
     Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
     Remove-Item "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+    Remove-Item "Cert:\LocalMachine\TrustedPeople\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
     $myRemaining=Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
     $rootRemaining=Get-ChildItem Cert:\CurrentUser\Root -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
     $trustedRemaining=Get-ChildItem Cert:\CurrentUser\TrustedPeople -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
-    Write-Host "CLEANUP_CERT_REMAINS=$([bool]($myRemaining -or $rootRemaining -or $trustedRemaining))"
+    $machineRemaining=Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
+    Write-Host "CLEANUP_CERT_REMAINS=$([bool]($myRemaining -or $rootRemaining -or $trustedRemaining -or $machineRemaining))"
   }
   Stop-Transcript | Out-Null
   Get-ChildItem $root -Force | Select-Object Name,Length | Format-Table
