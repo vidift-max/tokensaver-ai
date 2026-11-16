@@ -79,6 +79,9 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   DWORD app=0,n=0;Log(L"RPC_TOKEN_APPCONTAINER_BEGIN");
   if(!GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&n)){localReason=L"TOKEN_IS_APPCONTAINER_QUERY_ERROR_"+std::to_wstring(GetLastError());break;}
   Log(L"RPC_TOKEN_APPCONTAINER_OK value="+std::to_wstring(app));out.isAppContainer=(app==1);
+  DWORD sessionId=0,sessionBytes=0;Log(L"RPC_TOKEN_SESSION_BEGIN");
+  if(!GetTokenInformation(token,TokenSessionId,&sessionId,sizeof(sessionId),&sessionBytes)){localReason=L"TOKEN_SESSION_ID_ERROR_"+std::to_wstring(GetLastError());break;}
+  out.windowsSession=sessionId;Log(L"RPC_TOKEN_SESSION_OK value="+std::to_wstring(out.windowsSession));
   if(!out.isAppContainer){localReason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
   std::vector<BYTE>user,container;
   Log(L"RPC_TOKEN_USER_BEGIN");if(!TokenInfo(token,TokenUser,user)){localReason=L"TOKEN_USER_QUERY_ERROR_"+std::to_wstring(GetLastError());break;}Log(L"RPC_TOKEN_USER_OK");
@@ -96,11 +99,6 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   Log(L"RPC_PROCESS_TIMES_BEGIN");FILETIME exitTime{},kernelTime{},userTime{};
   if(!GetProcessTimes(process,&out.created,&exitTime,&kernelTime,&userTime)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
   else Log(L"RPC_PROCESS_TIMES_OK");
-  if(tokenObserved){
-   Log(L"RPC_PROCESS_SESSION_BEGIN");
-   if(!ProcessIdToSessionId(out.pid,&out.windowsSession)){localReason=L"WINDOWS_SESSION_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
-   else Log(L"RPC_PROCESS_SESSION_OK value="+std::to_wstring(out.windowsSession));
-  }
   if(tokenObserved){
    UINT32 size=0;Log(L"RPC_PACKAGE_FAMILY_BEGIN");LONG rc=GetPackageFamilyName(process,&size,nullptr);
    if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FAMILY_QUERY_ERROR_"+std::to_wstring(rc);tokenObserved=false;}
