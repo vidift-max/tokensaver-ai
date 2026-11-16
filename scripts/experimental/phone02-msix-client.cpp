@@ -51,7 +51,7 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
  try{
   winrt::init_apartment(winrt::apartment_type::single_threaded);
   std::wstring args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";
-  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args);
+  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForAppWithArgumentsAsync(L"SupervisorHost",args);
   HANDLE completed=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!completed){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL EVENT_ERROR="+std::to_wstring(GetLastError()));return false;}
   static unsigned int launchResult=0xFFFFFFFF,asyncStatusCode=0xFFFFFFFF;static HRESULT launchError=S_OK;
   operation.Completed([completed](auto const&op,winrt::Windows::Foundation::AsyncStatus status){

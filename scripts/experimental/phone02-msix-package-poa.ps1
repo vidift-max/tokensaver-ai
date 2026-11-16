@@ -44,7 +44,7 @@ try {
   $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$harness+'" advapi32.lib userenv.lib kernel32.lib ole32.lib windowsapp.lib'
   & cmd.exe /d /s /c $cmd
   if($LASTEXITCODE -ne 0){throw "C++ compile failed: $LASTEXITCODE"}
-  Copy-Item $harness (Join-Path $root 'supervisor.exe'); Copy-Item $harness (Join-Path $root 'common.exe'); Copy-Item $harness (Join-Path $pkg 'client.exe'); Copy-Item $harness (Join-Path $pkg 'supervisor.exe')
+  Copy-Item $harness (Join-Path $root 'supervisor.exe'); Copy-Item $harness (Join-Path $root 'common.exe'); Copy-Item $harness (Join-Path $pkg 'client.exe'); Copy-Item $harness (Join-Path $pkg 'supervisor.exe'); Copy-Item $harness (Join-Path $pkg 'supervisor-host.exe')
   Write-Host 'ROUND_4 — DACL policy; pipe reachability is not authorization'
   Write-Host 'DACL_POLICY=User SID + expected AppContainer SID; same-user process may connect, then must be rejected by OS-observed token.'
   Write-Host 'DACL_SAME_USER_LIMITATION=TRUE'
@@ -57,7 +57,7 @@ try {
 <Properties><DisplayName>Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets/StoreLogo.png</Logo></Properties>
 <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
 <Resources><Resource Language="en-us"/></Resources>
-<Applications><Application Id="App" Executable="client.exe" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone02 Identity PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/><Extensions><desktop:Extension Category="windows.fullTrustProcess" Executable="supervisor.exe"/></Extensions></Application></Applications>
+<Applications><Application Id="App" Executable="client.exe" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone02 Identity PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application><Application Id="SupervisorHost" Executable="supervisor-host.exe" EntryPoint="Windows.FullTrustApplication"><uap:VisualElements DisplayName="Phone02 Identity PoA Supervisor Host" Description="Full-trust process launcher host" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/><Extensions><desktop:Extension Category="windows.fullTrustProcess" Executable="supervisor.exe"><desktop:FullTrustProcess/></desktop:Extension></Extensions></Application></Applications>
 <Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
 </Package>
 "@
