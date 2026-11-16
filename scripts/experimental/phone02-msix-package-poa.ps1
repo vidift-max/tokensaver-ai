@@ -41,7 +41,7 @@ try {
   $vs=(& $vswhere -latest -products '*' -property installationPath).Trim(); $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
   if(-not (Test-Path $makeappx) -or -not (Test-Path $signtool) -or -not (Test-Path $vcvars)){throw 'Required Windows SDK/VS tool missing'}
   $harness=Join-Path $root 'phone02-harness.exe'
-  $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++17 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$harness+'" advapi32.lib userenv.lib kernel32.lib ole32.lib windowsapp.lib'
+  $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$harness+'" advapi32.lib userenv.lib kernel32.lib ole32.lib windowsapp.lib'
   & cmd.exe /d /s /c $cmd
   if($LASTEXITCODE -ne 0){throw "C++ compile failed: $LASTEXITCODE"}
   Copy-Item $harness (Join-Path $root 'supervisor.exe'); Copy-Item $harness (Join-Path $root 'common.exe'); Copy-Item $harness (Join-Path $pkg 'client.exe'); Copy-Item $harness (Join-Path $pkg 'supervisor.exe')

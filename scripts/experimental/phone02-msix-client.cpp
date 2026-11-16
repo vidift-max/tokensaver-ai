@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <wchar.h>
+#include <coroutine>
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
 #pragma comment(lib,"advapi32.lib")
@@ -52,7 +53,7 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
   auto result=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args).get();
   auto launchStatus=result.LaunchResult();
   if(launchStatus!=winrt::Windows::ApplicationModel::FullTrustLaunchResult::Success){
-   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL RESULT="+std::to_wstring((unsigned)launchStatus));return false;
+   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL RESULT="+std::to_wstring(static_cast<unsigned int>(launchStatus)));return false;
   }
   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS API=FullTrustProcessLauncher PID=OS_ACTIVATION_RESULT_NOT_EXPOSED CLIENT_PID="+std::to_wstring(clientPid));return true;
  }catch(const winrt::hresult_error&e){
