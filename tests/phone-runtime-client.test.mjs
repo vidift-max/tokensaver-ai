@@ -28,6 +28,7 @@ test("polls the configured phone mailbox with session and endpoint credential", 
   const messages = await client.poll();
   assert.equal(messages.length, 1);
   assert.equal(captured.url, `https://phone.example.test/ai-phone/${phoneId}/messages`);
+  assert.equal(captured.init.redirect, "error");
   assert.equal(captured.init.headers.authorization, "Bearer session-secret");
   assert.equal(captured.init.headers["x-ai-phone-endpoint-credential"], config.AI_PHONE_ENDPOINT_CREDENTIAL);
 });
