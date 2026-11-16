@@ -5,49 +5,24 @@ import os from "node:os";
 import path from "node:path";
 import { secureWindowsResultDirectory, verifyWindowsAclConstruction, verifyWindowsResultAcl } from "../scripts/phone-windows-acl.mjs";
 
-test("Windows ACL helper executes a temporary PS1 without exposing script contents in arguments", () => {
+test("Windows ACL helper uses powershell.exe -File with no script in argv or stdin", () => {
   let captured;
-  secureWindowsResultDirectory("C:\\safe\\results", {
+  secureWindowsResultDirectory("C:\\\\safe\\\\results", {
     platform: "win32",
     spawnSync(command, args, options) {
       captured = { command, args, options };
-      const scriptPath = args[args.length - 1];
-      assert.match(scriptPath, /tokensaver-phone-acl/);
-      const script = options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY;
-      assert.doesNotMatch(script, /Import-Module Microsoft\.PowerShell\.Security/);
-      assert.doesNotMatch(script, /\bGet-Acl\b|\bSet-Acl\b/);
-      
-      
-      assert.doesNotMatch(script, /SetFileSecurityW/);
-      
-      assert.match(script, /new DiscretionaryAcl\(isDirectory, false, allowedSids\.Length\)/);
-      assert.match(script, /dacl\.AddAccess\(AccessControlType\.Allow, sid, FULL_CONTROL, inheritance, PropagationFlags\.None\)/);
-      assert.match(script, /dacl\.Count != 3/);
-      
-      
-      assert.doesNotMatch(script, /\bInsertAce\b/);
-      assert.match(script, /InheritanceFlags\.ContainerInherit \| InheritanceFlags\.ObjectInherit/);
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      assert.equal(options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY, "C:\\safe\\results");
+      assert.equal(command, "powershell.exe");
+      assert.deepEqual(args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]);
+      assert.match(args[4], /tokensaver-phone-acl/);
+      assert.equal(options.input, undefined);
+      assert.equal(options.stdio[0], "ignore");
+      assert.equal(options.timeout, 60000);
+      assert.equal(options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY, "C:\\\\safe\\\\results");
       return { status: 0, signal: null, stdout: "PHONE_RESULT_ACL_RUNTIME=5.1; PHONE_RESULT_ACL_OK", stderr: "" };
     }
   });
-  assert.equal(captured.command, "powershell.exe");
-  assert.deepEqual(captured.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"]);
+  assert.ok(captured);
   assert.equal(captured.args.join(" ").includes("PHONE_RESULT_ACL_RUNTIME"), false);
-  
-  assert.equal(captured.args.join(" ").length < 200, true);
-  assert.equal(captured.options.timeout, 60000);
 });
 
 test("real Windows DACL construction independently verifies three exact ACEs in memory", async t => {
