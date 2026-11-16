@@ -267,7 +267,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
         TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
         ...extraEnvironment
       },
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
     const result = String(output);
     const runtime = result.split(/\r?\n/).find(line => line.startsWith("PHONE_RESULT_ACL_RUNTIME="));
