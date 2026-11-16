@@ -129,21 +129,21 @@ public static class PackageActivator {
   }
 }
 '@
-  function Activate-PackagedClient($supervisor) {
-    $activationArgs="$($package.PackageFamilyName) $expectedSid $($package.PackageFullName) $($supervisor.PipeName)"
+  function Activate-PackagedClient($supervisor,[string]$clientMode='legit') {
+    $activationArgs="$($package.PackageFamilyName) $expectedSid $($package.PackageFullName) $($supervisor.PipeName) $clientMode"
     Write-Host "PACKAGE_ACTIVATION_BEGIN AUMID=$aumid ARGS=$activationArgs"
-    $pid=[PackageActivator]::Activate($aumid,$activationArgs)
+    $activatedProcessId=[PackageActivator]::Activate($aumid,$activationArgs)
     $deadline=(Get-Date).AddSeconds(10)
     do {
       Start-Sleep -Milliseconds 100
-      $proc=Get-Process -Id $pid -ErrorAction SilentlyContinue
+      $proc=Get-Process -Id $activatedProcessId -ErrorAction SilentlyContinue
     } while(-not $proc -and (Get-Date) -lt $deadline)
-    if(-not $proc){throw "Package activation returned PID $pid but process was not observable"}
-    $actual=(Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction Stop).ExecutablePath
+    if(-not $proc){throw "Package activation returned PID $activatedProcessId but process was not observable"}
+    $actual=(Get-CimInstance Win32_Process -Filter "ProcessId=$activatedProcessId" -ErrorAction Stop).ExecutablePath
     $expected=Join-Path $package.InstallLocation 'client.exe'
-    Write-Host "PACKAGE_ACTIVATION_RESULT=SUCCESS PID=$pid PROCESS_PATH=$actual EXPECTED_PATH=$expected"
-    if(-not $actual -or $actual -ine $expected){throw "Activated PID $pid path mismatch"}
-    return [uint32]$pid
+    Write-Host "PACKAGE_ACTIVATION_RESULT=SUCCESS PID=$activatedProcessId PROCESS_PATH=$actual EXPECTED_PATH=$expected"
+    if(-not $actual -or $actual -ine $expected){throw "Activated PID $activatedProcessId path mismatch"}
+    return [uint32]$activatedProcessId
   }
   function Start-Supervisor([string]$caseName){
     $out=Join-Path $root "$caseName.supervisor.log";$err=Join-Path $root "$caseName.supervisor.err"
@@ -182,6 +182,11 @@ public static class PackageActivator {
     if($result.Content -notmatch 'TOKEN_IS_APPCONTAINER=0' -or $result.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw "Common process token/correlation not proven in case $mode"}
     Write-Host "COMMON_PROCESS_REJECTED=$mode"
   }
+  $s=Start-Supervisor 'packaged-client-spoof'
+  $spoofPid=Activate-PackagedClient $s 'spoof-all'
+  $packagedSpoof=Finish-Case $s 'packaged-client-spoof'
+  if($packagedSpoof.ExitCode -eq 0 -or $packagedSpoof.Content -match 'AUTHORIZATION_RESULT=ALLOW' -or $packagedSpoof.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw 'Packaged client with false protocol declarations was not safely rejected'}
+  Write-Host "PACKAGED_CLIENT_SPOOF_REJECTED=TRUE PID=$spoofPid"
   Write-Host 'ROUND_8 — two package activations and instance identity assessment'
   $s1=Start-Supervisor 'instance-1'
   $s2=Start-Supervisor 'instance-2'
@@ -215,6 +220,7 @@ public static class PackageActivator {
   Write-Host 'POA_RESULT=PARTIAL_PENDING_INDEPENDENT_REVIEW'
 }
 finally {
+  if(-not $package){$package=Get-AppxPackage -Name 'TokenSaver.Phone02.IdentityPoA' -ErrorAction SilentlyContinue}
   if($package){
     Write-Host "CLEANUP_PACKAGE_BEGIN=$($package.PackageFullName)"
     Remove-AppxPackage -Package $package.PackageFullName -ErrorAction SilentlyContinue

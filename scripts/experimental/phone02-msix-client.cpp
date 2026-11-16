@@ -29,14 +29,16 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
  std::wstring w=L"CLAIMED_PACKAGE_FAMILY="+f+L";CLAIMED_PACKAGE_FULL_NAME="+pfn+L";CLAIMED_APPCONTAINER_SID="+s+L";CLAIMED_PACKAGE_SID="+ps+L";HANDSHAKE="+hs;
  return ToUtf8(w);
 }
-static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
+static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName){
+ PIPE_NAME=pipeName;
  HANDLE h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
  if(h==INVALID_HANDLE_VALUE){wprintf(L"CLIENT_PIPE_OPEN=DENY ERROR=%lu MODE=%s\n",GetLastError(),mode.c_str());return 20;}
  std::string msg=MessageFor(mode,family,sid,full);DWORD sent=0;BOOL wr=WriteFile(h,msg.data(),(DWORD)msg.size(),&sent,nullptr);
  char ack[32]{};DWORD got=0;BOOL rd=wr&&ReadFile(h,ack,sizeof(ack)-1,&got,nullptr);
  wprintf(L"CLIENT_PIPE_OPEN=ALLOW WRITE=%u ACK=%u MODE=%s\n",wr,rd,mode.c_str());CloseHandle(h);return rd?0:21;
 }
-static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName,const std::wstring&pipeName){\n PIPE_NAME=pipeName;
+static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expectedSid,const std::wstring&expectedFull,const std::wstring&expectedPath,const std::wstring&caseName,const std::wstring&pipeName){
+ PIPE_NAME=pipeName;
  HANDLE self=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&self))return 4;
  std::wstring userSid=TokenSid(self,TokenUser);CloseHandle(self);
  std::wstring sddl=L"D:P(A;;GA;;;"+userSid+L")(A;;GA;;;"+expectedSid+L")S:(ML;;NW;;;LW)";
@@ -64,13 +66,14 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  wprintf(L"TOKEN_USER_SID=%s\nTOKEN_IS_APPCONTAINER=%u\nOBSERVED_APPCONTAINER_SID=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PACKAGE_FAMILY_NAME=%s\n",observedUser.c_str(),app,observedSid.c_str(),observedFull.c_str(),observedFamily.c_str());
  wprintf(L"PROCESS_IMAGE=%s\nPROCESS_TOKEN_USER_SID=%s\nPROCESS_TOKEN_IS_APPCONTAINER=%u\nPROCESS_TOKEN_APPCONTAINER_SID=%s\nPROCESS_TOKEN_PACKAGE_FULL_NAME=%s\nPROCESS_TOKEN_PACKAGE_FAMILY_NAME=%s\n",processPath.c_str(),processUser.c_str(),processApp,processSid.c_str(),processFull.c_str(),processFamily.c_str());
  wprintf(L"TOKEN_PROCESS_CORRELATION=%s\nPROCESS_INSTALL_PATH_MATCH=%s\nEXPECTED_PROCESS_PATH=%s\nEXPECTED_APPCONTAINER_SID=%s\nEXPECTED_PACKAGE_FULL_NAME=%s\nPACKAGE_IDENTITY_SOURCE=Windows token package APIs; expected values from Windows package registration\nAUTHORIZATION_RESULT=%s\nCLIENT_MESSAGE=%S\n",correlated?L"PASS":L"FAIL",pathMatch?L"TRUE":L"FALSE",expectedPath.c_str(),expectedSid.c_str(),expectedFull.c_str(),allow?L"ALLOW":L"REJECT",msg);
- Sleep(2000);\n const char* ack="ACK";DWORD wrote=0;WriteFile(pipe,ack,3,&wrote,nullptr);FlushFileBuffers(pipe);
+ Sleep(2000);
+ const char* ack="ACK";DWORD wrote=0;WriteFile(pipe,ack,3,&wrote,nullptr);FlushFileBuffers(pipe);
  if(processToken)CloseHandle(processToken);if(process)CloseHandle(process);if(threadToken)CloseHandle(threadToken);if(imp)RevertToSelf();DisconnectNamedPipe(pipe);CloseHandle(pipe);
  return allow?0:10;
 }
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<8)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);}
  if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6]);}
- std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"";
- return Client(L"legit",family,sid,full);
+ std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",pipeName=argc>4?argv[4]:PIPE_NAME,mode=argc>5?argv[5]:L"legit";
+ return Client(mode,family,sid,full,pipeName);
 }
