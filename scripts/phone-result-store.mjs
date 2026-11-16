@@ -84,10 +84,15 @@ export class FilePhoneResultStore {
     if (this.initialized) return this;
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") await chmod(this.directory, 0o700);
+    const pathInfo = await lstat(this.directory);
+    if (!pathInfo.isDirectory() || pathInfo.isSymbolicLink()) {
+      throw new Error("Result store path must be a real directory, not a symlink or reparse point");
+    }
+    // Check the unresolved final path before realpath can hide a directory junction.
+    if (process.platform === "win32") secureWindowsResultDirectory(this.directory);
     const resolved = await realpath(this.directory);
     const info = await stat(resolved);
     if (!info.isDirectory()) throw new Error("Result store path is not a directory");
-    if (process.platform === "win32") secureWindowsResultDirectory(resolved);
     this.directory = resolved;
     this.initialized = true;
     return this;
