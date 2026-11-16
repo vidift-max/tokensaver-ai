@@ -20,6 +20,10 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       assert.doesNotMatch(script, /SetFileSecurityW/);
       assert.match(script, /RawSecurityDescriptor/);
       assert.match(script, /new DiscretionaryAcl\(isDirectory, false, allowedSids\.Length\)/);
+      assert.match(script, /dacl\.AddAccess\(AccessControlType\.Allow, sid, FULL_CONTROL, inheritance, PropagationFlags\.None\)/);
+      assert.match(script, /dacl\.Count != allowedSids\.Length/);
+      assert.doesNotMatch(script, /\bInsertAce\b/);
+      assert.match(script, /InheritanceFlags\.ContainerInherit \| InheritanceFlags\.ObjectInherit/);
       assert.match(script, /Unexpected or duplicate ACL SID/);
       assert.match(script, /ACL SID set does not exactly match/);
       assert.match(script, /Object owner is outside the three authorized SIDs/);
