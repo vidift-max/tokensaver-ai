@@ -273,7 +273,9 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
     if (runtime) process.stdout.write(runtime + "\\n");
     return result;
   } catch (cause) {
-    const detail = cause?.stderr?.toString?.("utf8") || cause?.message || String(cause);
+    const stdout = cause?.stdout?.toString?.("utf8") || "";
+    const stderr = cause?.stderr?.toString?.("utf8") || "";
+    const detail = [stdout, stderr, cause?.message || String(cause)].filter(Boolean).join("\\n");
     const code = cause?.code ? " [" + cause.code + "]" : "";
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
