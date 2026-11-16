@@ -253,12 +253,13 @@ Write-Output 'PHONE_RESULT_ACL_OK'
 
 function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
   const runner = options.execFileSync ?? execFileSync;
-  const encoded = Buffer.from(POWERSHELL_SCRIPT, "utf16le").toString("base64");
+  const input = POWERSHELL_SCRIPT;
   try {
     const output = runner("powershell.exe", [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
     ], {
       encoding: "utf8",
+      input,
       windowsHide: true,
       timeout: 60000,
       env: {
