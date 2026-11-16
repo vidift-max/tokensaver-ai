@@ -2,12 +2,18 @@ import { execFileSync } from "node:child_process";
 
 const POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
+# Load the security cmdlets explicitly, without -Force (which reloads an already loaded module).
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 $target = [System.IO.Path]::GetFullPath($env:TOKENSAVER_PHONE_RESULT_DIRECTORY)
 if (-not (Test-Path -LiteralPath $target -PathType Container)) {
   throw 'Phone result directory does not exist'
 }
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
+$uniqueAllowed = @($allowed | Select-Object -Unique)
+if ($uniqueAllowed.Count -ne 3) {
+  throw 'Current process SID overlaps a built-in allowed SID; refusing ambiguous ACL policy'
+}
 $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
 $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
 $pending = [System.Collections.Generic.Stack[string]]::new()
@@ -44,8 +50,12 @@ function Set-RestrictedAcl([string]$path, [bool]$isDirectory) {
   if ($entries.Count -ne 3) {
     throw "Expected exactly three ACL entries on $path; found $($entries.Count)"
   }
+  $seenSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($entry in $entries) {
     $sid = $entry.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if (-not $seenSids.Add($sid)) {
+      throw "Duplicate ACL entry for SID $sid on $path"
+    }
     if ($allowed -notcontains $sid -or
         $entry.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
         $entry.FileSystemRights -ne $fullControl -or $entry.IsInherited) {
@@ -54,6 +64,9 @@ function Set-RestrictedAcl([string]$path, [bool]$isDirectory) {
     if ($isDirectory -and $entry.InheritanceFlags -ne $inheritance) {
       throw "Directory ACL does not propagate to child files and directories: $path"
     }
+  }
+  if ($seenSids.Count -ne 3 -or @($allowed | Where-Object { -not $seenSids.Contains($_) }).Count -ne 0) {
+    throw "ACL SID set does not exactly match the three authorized SIDs on $path"
   }
 }
 
