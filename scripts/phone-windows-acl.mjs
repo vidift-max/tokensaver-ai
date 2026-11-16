@@ -382,7 +382,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
     : extraEnvironment.TOKENSAVER_PHONE_ACL_AUDIT_ITEMS
       ? "PHONE_RESULT_ACL_AUDIT_OK"
       : "PHONE_RESULT_ACL_OK";
-  if (result.status !== 0 || stderr.length > 0 || !stdout.includes(expectedMarker)) {
+  if (result.status !== 0 || stderr.length > 0 || !stdout.includes("PHONE_RESULT_ACL_RUNTIME=") || !stdout.includes(expectedMarker)) {
     const cause = stderr.length > 0
       ? new Error("PowerShell emitted stderr despite exit code " + String(result.status))
       : new Error("PowerShell did not emit required marker " + expectedMarker);
