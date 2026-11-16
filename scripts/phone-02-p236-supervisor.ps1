@@ -80,11 +80,33 @@ try {
  $sl=if(Test-Path $svcLog){Get-Content $svcLog -Raw}else{''}
  Check ($sl -match 'SERVICE_SID_IN_TOKEN=TRUE') 'SERVICE_SID_IN_TOKEN'
  Check ($sl -match 'RPC_ENDPOINT=READY') 'RPC_ENDPOINT'
+ Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport,Guid("2e941141-7f97-4756-ba1d-9decde894a3d"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IP236ApplicationActivationManager { [PreserveSig]int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)]string appUserModelId,[MarshalAs(UnmanagedType.LPWStr)]string arguments,uint options,out uint processId); }
+[ComImport,Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C"),ClassInterface(ClassInterfaceType.None)]
+public class P236ApplicationActivationManager {}
+public static class P236Activator {
+ [DllImport("ole32.dll")] private static extern int CoInitializeEx(IntPtr p,uint flags);
+ [DllImport("ole32.dll")] private static extern void CoUninitialize();
+ public static uint Activate(string id,string args) {
+  int init=CoInitializeEx(IntPtr.Zero,2);
+  if(init<0 && init!=unchecked((int)0x80010106)) Marshal.ThrowExceptionForHR(init);
+  IP236ApplicationActivationManager m=null; bool initialized=init>=0;
+  try { m=(IP236ApplicationActivationManager)new P236ApplicationActivationManager(); uint pid;
+   int hr=m.ActivateApplication(id,args,0,out pid); if(hr<0)Marshal.ThrowExceptionForHR(hr); return pid;
+  } finally { if(m!=null && Marshal.IsComObject(m))Marshal.ReleaseComObject(m); if(initialized)CoUninitialize(); }
+ }
+}
+'@
+ $aumid="$($app.PackageFamilyName)!App"
+ $activationPid=[P236Activator]::Activate($aumid,"")
+ Write-Host "ACTIVATED_APP_PID=$activationPid AUMID=$aumid"
  $clientRoot=Join-Path $env:LOCALAPPDATA ('Packages\'+$app.PackageFamilyName)
- Start-Process explorer.exe -ArgumentList ('shell:AppsFolder\'+$app.PackageFamilyName+'!App')
  $deadline=(Get-Date).AddSeconds(45);$clientLog=$null;$cl=''
  do{Start-Sleep -Milliseconds 250;$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1;if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}}while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
- if(-not $clientLog){throw 'Packaged AppContainer client log not found'}
+ if(-not $clientLog){$activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue;Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)";throw 'Packaged AppContainer client log not found'}
  Copy-Item $clientLog.FullName (Join-Path $evidence 'appcontainer.log') -Force
  Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
  Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
