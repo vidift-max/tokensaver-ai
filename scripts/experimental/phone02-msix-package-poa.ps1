@@ -27,7 +27,7 @@ try {
   $publisher='CN=TokenSaver Phone02 PoA TEST ONLY'
   $manifest=@"
 <?xml version="1.0" encoding="utf-8"?>
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10" IgnorableNamespaces="uap desktop">
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" IgnorableNamespaces="uap uap10">
   <Identity Name="TokenSaver.Phone02.IdentityPoA" Publisher="$publisher" Version="1.0.0.0" ProcessorArchitecture="x64" />
   <Properties><DisplayName>TokenSaver Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets\\StoreLogo.png</Logo></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
@@ -64,7 +64,7 @@ try {
   $p | Select-Object Name,PackageFullName,PackageFamilyName,Publisher,Version,InstallLocation | Format-List
   Write-Host 'MSIX_INSTALLED'
   Write-Host 'ROUND_7 — prepare Supervisor, then activate through AppsFolder package activation'
-  $supervisor=Start-Process -FilePath $exe -ArgumentList '--supervisor' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'supervisor.log') -RedirectStandardError (Join-Path $root 'supervisor.err')
+  $supervisor=Start-Process -FilePath $exe -ArgumentList @('--supervisor',$p.PackageFamilyName) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'supervisor.log') -RedirectStandardError (Join-Path $root 'supervisor.err')
   Start-Sleep -Milliseconds 700
   $aumid="$($p.PackageFamilyName)!App"
   $shell=New-Object -ComObject Shell.Application
@@ -78,7 +78,7 @@ try {
   Get-Content (Join-Path $root 'supervisor.log') -ErrorAction SilentlyContinue
   Write-Host 'ROUND_9 — independent package/process correlation'
   if($proc){Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ProcessId)" | Select-Object ProcessId,ExecutablePath,ParentProcessId | Format-List}
-  Write-Host 'IDENTITY_LIMITATION=Manifest uses Windows.FullTrustApplication; this packaged Win32 process is not asserted to be AppContainer. Package identity/token must be independently evaluated in follow-up PoA.'
+  Write-Host 'IDENTITY_EXPECTATION=Manifest requests packagedClassicApp with appContainer trust; actual token result is authoritative.'
   Write-Host 'ROUND_10 — report and cleanup'
   Write-Host 'MSIX_PACKAGE_SETUP_COMPLETED; full AppContainer identity PoA remains unproven.'
 }
