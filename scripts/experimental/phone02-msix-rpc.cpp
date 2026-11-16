@@ -57,7 +57,7 @@ static std::wstring ClaimValue(const std::wstring&claims,const std::wstring&key)
 static std::wstring MakeClaims(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full){
  std::wstring pid=std::to_wstring(GetCurrentProcessId()),app=L"1",claimedFamily=family,claimedSid=sid,claimedFull=full;
  if(mode==L"spoof-pid"||mode==L"spoof-all")pid=L"1";
- if(mode==L"spoof-app"||mode==L"spoof-all")app=L"1";
+ if(mode==L"spoof-app"||mode==L"spoof-all")app=L"0";
  if(mode==L"spoof-sid"||mode==L"spoof-all")claimedSid=L"S-1-15-2-999999999";
  if(mode==L"spoof-family"||mode==L"spoof-all")claimedFamily=L"Fake.Package_Fake";
  if(mode==L"spoof-full"||mode==L"spoof-all")claimedFull=L"Fake.Package_9.9.9.9_x64__fake";
@@ -154,6 +154,7 @@ static int RpcClient(const std::wstring&family,const std::wstring&sid,const std:
  RpcEndExcept
  if(callStatus!=RPC_S_OK||!nonce){ClientLog(L"RPC_CLIENT_BEGIN_SESSION=FAIL STATUS="+std::to_wstring(callStatus));RpcBindingFree(&binding);return 64;}
  std::wstring sessionNonce=nonce;ClientLog(L"RPC_SESSION_NONCE="+sessionNonce);
+ if(mode==L"rpc-delay")Sleep(2000);
  if(mode==L"begin-only"){midl_user_free(nonce);RpcBindingFree(&binding);ClientLog(L"RPC_CLIENT_BEGIN_ONLY=PASS");return 0;}
  long authorized=-1;callStatus=RPC_S_OK;
  RpcTryExcept{Phone02Authorize(binding,nonce,const_cast<wchar_t*>(claims.c_str()),&authorized);}
