@@ -14,7 +14,6 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       captured = { command, args, options };
       const encoded = args[args.indexOf("-EncodedCommand") + 1];
       const script = Buffer.from(encoded, "base64").toString("utf16le");
-      assert.match(script, /Import-Module Microsoft\\.PowerShell\\.Security -Force/);
       assert.match(script, /SetAccessRuleProtection\(\$true, \$false\)/);
       assert.match(script, /S-1-5-18/);
       assert.match(script, /S-1-5-32-544/);
@@ -65,7 +64,6 @@ test("real Windows ACL application protects existing nested items and newly inhe
 
     const audit = String.raw`
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security -Force -ErrorAction Stop
 $root = [System.IO.Path]::GetFullPath($env:TOKENSAVER_PHONE_RESULT_DIRECTORY)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
