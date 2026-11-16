@@ -71,7 +71,13 @@ try {
   Invoke-BoundedTool -FilePath (Join-Path $env:SystemRoot 'System32\certutil.exe') -Arguments ('-user -f -addstore TrustedPeople "'+$certPath+'"') -Label 'certutil-TrustedPeople' -TimeoutSeconds 30
   Write-Host 'CERT_IMPORT_END=TrustedPeople'
   Write-Host 'CERT_TRUST_STORE=CurrentUser\TrustedPeople'
-  Write-Host 'ROOT_STORE_IMPORT=NOT_REQUIRED_FOR_PER_USER_PACKAGE_TRUST'
+  Write-Host 'ROOT_IMPORT_BEGIN=DOTNET_X509STORE'
+  $rootImportCode='$c=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new("'+$certPath+'");$s=[System.Security.Cryptography.X509Certificates.X509Store]::new([System.Security.Cryptography.X509Certificates.StoreName]::Root,[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);$s.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);try{$s.Add($c)}finally{$s.Close();$c.Dispose()}'
+  $rootImportEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rootImportCode))
+  Invoke-BoundedTool -FilePath (Join-Path $PSHOME 'pwsh.exe') -Arguments ("-NoLogo -NoProfile -NonInteractive -EncodedCommand "+$rootImportEncoded) -Label 'DotNet-RootStore-import' -TimeoutSeconds 30
+  $rootCert=Get-ChildItem Cert:\CurrentUser\Root -ErrorAction Stop | Where-Object Thumbprint -eq $cert.Thumbprint
+  if(-not $rootCert){throw 'TEST-ONLY certificate was not found in CurrentUser Root after .NET import'}
+  Write-Host "ROOT_IMPORT_VERIFIED=TRUE THUMBPRINT=$($rootCert.Thumbprint)"
   $msix=Join-Path $root 'Phone02IdentityPoA-52881.msix'
   Write-Host 'MAKEAPPX_PACK_BEGIN=TRUE'
   Invoke-BoundedTool -FilePath $makeappx -Arguments ('pack /d "'+$pkg+'" /p "'+$msix+'" /o') -Label 'MakeAppx-pack' -TimeoutSeconds 120
