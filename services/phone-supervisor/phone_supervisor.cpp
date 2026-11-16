@@ -123,22 +123,26 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
  }
  return tokenObserved;
 }
+static bool ValidCorrelation(const wchar_t*p){
+ if(!p)return false;size_t n=0;while(n<=80&&p[n])++n;if(n==0||n>80)return false;
+ for(size_t i=0;i<n;++i)if(p[i]<0x21||p[i]>0x7e)return false;return true;
+}
 static bool SameIdentity(const ObservedIdentity&a,const ObservedIdentity&b){return a.pid==b.pid&&a.windowsSession==b.windowsSession&&a.isAppContainer==b.isAppContainer&&a.created.dwHighDateTime==b.created.dwHighDateTime&&a.created.dwLowDateTime==b.created.dwLowDateTime&&a.userSid==b.userSid&&a.appSid==b.appSid&&a.family==b.family&&a.full==b.full;}
 static bool IsStopping(){std::lock_guard<std::mutex>l(gMutex);return gStopping;}
 void BeginSession(handle_t binding,wchar_t*correlation,wchar_t**sessionId,wchar_t**nonce,long*status){
  if(sessionId)*sessionId=nullptr;if(nonce)*nonce=nullptr;if(status)*status=RPC_INTERNAL_ERROR;if(!correlation||!sessionId||!nonce||!status||wcslen(correlation)>80){if(status)*status=RPC_INVALID_ARGUMENT;return;}if(IsStopping()){*status=RPC_SERVICE_STOPPING;return;}
- ObservedIdentity id;std::wstring identityReason;if(!ObserveCaller(binding,id,&identityReason)){*status=RPC_ACCESS_DENIED;Log(L"RPC_BEGIN result=REJECT reason="+identityReason);return;}
+ ObservedIdentity id;std::wstring identityReason;if(!ObserveCaller(binding,id,&identityReason)){*status=RPC_ACCESS_DENIED;Log(L"RPC_BEGIN correlation_id="+std::wstring(correlation)+L" result=REJECT reason="+identityReason);return;}
  GUID guid{};if(CoCreateGuid(&guid)!=S_OK){*status=RPC_INTERNAL_ERROR;return;}wchar_t sidBuf[64]{};StringFromGUID2(guid,sidBuf,64);std::wstring sid=sidBuf,raw;if(!RandomHex(32,raw)){*status=RPC_INTERNAL_ERROR;return;}
  std::vector<UCHAR>digest;if(!HashNonce(raw,digest)){SecureZeroMemory(raw.data(),raw.size()*sizeof(wchar_t));*status=RPC_INTERNAL_ERROR;return;}
  Session s;s.identity=id;s.nonceHash=digest;s.expiresAt=GetTickCount64()+SESSION_IDLE_MS;{std::lock_guard<std::mutex>l(gMutex);if(gStopping){SecureZeroMemory(raw.data(),raw.size()*sizeof(wchar_t));*status=RPC_SERVICE_STOPPING;return;}gSessions[sid]=s;}
  *sessionId=(wchar_t*)midl_user_allocate((sid.size()+1)*sizeof(wchar_t));*nonce=(wchar_t*)midl_user_allocate((raw.size()+1)*sizeof(wchar_t));
  if(!*sessionId||!*nonce){if(*sessionId)midl_user_free(*sessionId);if(*nonce)midl_user_free(*nonce);*sessionId=nullptr;*nonce=nullptr;{std::lock_guard<std::mutex>l(gMutex);gSessions.erase(sid);}SecureZeroMemory(raw.data(),raw.size()*sizeof(wchar_t));*status=RPC_INTERNAL_ERROR;return;}
- wcscpy_s(*sessionId,sid.size()+1,sid.c_str());wcscpy_s(*nonce,raw.size()+1,raw.c_str());SecureZeroMemory(raw.data(),raw.size()*sizeof(wchar_t));*status=RPC_OK;Log(L"RPC_BEGIN result=ALLOW pid="+std::to_wstring(id.pid)+L" appcontainer_sid="+id.appSid+L" package_family="+id.family);
+ wcscpy_s(*sessionId,sid.size()+1,sid.c_str());wcscpy_s(*nonce,raw.size()+1,raw.c_str());SecureZeroMemory(raw.data(),raw.size()*sizeof(wchar_t));*status=RPC_OK;Log(L"RPC_BEGIN correlation_id="+std::wstring(correlation)+L" result=ALLOW pid="+std::to_wstring(id.pid)+L" appcontainer_sid="+id.appSid+L" package_family="+id.family);
 }
 void Authorize(handle_t binding,wchar_t*correlation,wchar_t*sessionId,wchar_t*nonce,long*status){
- if(!status)return;*status=RPC_INVALID_ARGUMENT;if(!correlation||!sessionId||!nonce||wcslen(correlation)>80||wcslen(sessionId)>80||wcslen(nonce)!=64)return;ObservedIdentity id;std::wstring identityReason;if(!ObserveCaller(binding,id,&identityReason)){*status=RPC_ACCESS_DENIED;Log(L"RPC_CALL result=REJECT reason="+identityReason);return;}std::vector<UCHAR>digest;if(!HashNonce(nonce,digest)){*status=RPC_INTERNAL_ERROR;return;}bool allowed=false;
+ if(!status)return;*status=RPC_INVALID_ARGUMENT;if(!correlation||!sessionId||!nonce||wcslen(correlation)>80||wcslen(sessionId)>80||wcslen(nonce)!=64)return;ObservedIdentity id;std::wstring identityReason;if(!ObserveCaller(binding,id,&identityReason)){*status=RPC_ACCESS_DENIED;Log(L"RPC_CALL correlation_id="+std::wstring(correlation)+L" result=REJECT reason="+identityReason);return;}std::vector<UCHAR>digest;if(!HashNonce(nonce,digest)){*status=RPC_INTERNAL_ERROR;return;}bool allowed=false;
  {std::lock_guard<std::mutex>l(gMutex);auto it=gSessions.find(sessionId);if(it==gSessions.end()){*status=RPC_SESSION_NOT_FOUND;return;}auto&s=it->second;if(GetTickCount64()>s.expiresAt){gSessions.erase(it);*status=RPC_SESSION_EXPIRED;return;}if(!SameIdentity(s.identity,id)){gSessions.erase(it);*status=RPC_ACCESS_DENIED;return;}if(s.nonceUsed){*status=RPC_REPLAY;return;}s.nonceUsed=true;if(!ConstantEqual(s.nonceHash,digest)){gSessions.erase(it);*status=RPC_ACCESS_DENIED;return;}s.authorized=true;s.expiresAt=GetTickCount64()+SESSION_IDLE_MS;*status=RPC_OK;allowed=true;}
- if(allowed)Log(L"RPC_AUTHORIZE result=ALLOW pid="+std::to_wstring(id.pid)+L" session="+sessionId);
+ if(allowed)Log(L"RPC_AUTHORIZE correlation_id="+std::wstring(correlation)+L" result=ALLOW pid="+std::to_wstring(id.pid)+L" session="+sessionId);
 }
 void Heartbeat(handle_t binding,wchar_t*correlation,wchar_t*sessionId,long*status){
  if(!status)return;*status=RPC_INVALID_ARGUMENT;if(!correlation||!sessionId||wcslen(correlation)>80||wcslen(sessionId)>80)return;ObservedIdentity id;if(!ObserveCaller(binding,id)){*status=RPC_ACCESS_DENIED;return;}std::lock_guard<std::mutex>l(gMutex);auto it=gSessions.find(sessionId);if(it==gSessions.end()){*status=RPC_SESSION_NOT_FOUND;return;}if(GetTickCount64()>it->second.expiresAt){gSessions.erase(it);*status=RPC_SESSION_EXPIRED;return;}if(!it->second.authorized||!SameIdentity(it->second.identity,id)){*status=RPC_ACCESS_DENIED;return;}it->second.expiresAt=GetTickCount64()+SESSION_IDLE_MS;*status=RPC_OK;
