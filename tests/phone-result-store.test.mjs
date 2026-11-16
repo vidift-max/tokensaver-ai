@@ -124,7 +124,7 @@ test("fails closed when the key provider or referenced key is unavailable", asyn
   });
 });
 
-test("rejects a symlink as the result-store root before resolving it", async () => {
+test("rejects a symlink as the result-store root before resolving it", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-store-link-"));
   try {
     const realDirectory = path.join(root, "real-results");
@@ -134,7 +134,7 @@ test("rejects a symlink as the result-store root before resolving it", async () 
       await symlink(realDirectory, linkDirectory, "dir");
     } catch (error) {
       if (process.platform === "win32" && ["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) {
-        return;
+        return t.skip("Runner does not permit creating a directory symlink");
       }
       throw error;
     }
