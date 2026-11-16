@@ -32,7 +32,7 @@ try {
   <Properties><DisplayName>TokenSaver Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets/StoreLogo.png</Logo></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
   <Resources><Resource Language="en-us" /></Resources>
-  <Applications><Application Id="App" Executable="client.exe" EntryPoint="windows.partialTrustApplication" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="TokenSaver Phone02 PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png" /></Application></Applications>
+  <Applications><Application Id="App" Executable="client.exe" EntryPoint="Windows.PartialTrustApplication" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="TokenSaver Phone02 PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png" /></Application></Applications>
   <Capabilities/>
 </Package>
 "@
