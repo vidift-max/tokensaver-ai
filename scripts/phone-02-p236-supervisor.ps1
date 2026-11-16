@@ -98,8 +98,39 @@ public static class P236Activator {
   IP236ApplicationActivationManager m=null; bool initialized=init>=0;
   try { m=(IP236ApplicationActivationManager)new P236ApplicationActivationManager(); uint pid;
    int hr=m.ActivateApplication(id,args,0,out pid); if(hr<0)Marshal.ThrowExceptionForHR(hr); return pid;
-  } finally {
- $serviceGraceful=$false;$serviceGone=$false;$clientGone=$false;$packageGone=$false;$certificateGone=$true;$tempGone=$false
+  } finally { if(m!=null && Marshal.IsComObject(m))Marshal.ReleaseComObject(m); if(initialized)CoUninitialize(); }
+ }
+}
+'@
+ $aumid="$($app.PackageFamilyName)!App"
+ $activationPid=[P236Activator]::Activate($aumid,"")
+ Write-Host "ACTIVATED_APP_PID=$activationPid AUMID=$aumid"
+ $clientRoot=Join-Path $env:LOCALAPPDATA ('Packages\'+$app.PackageFamilyName)
+ $fallbackLog=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
+ $deadline=(Get-Date).AddSeconds(45);$clientLog=$null;$cl=''
+ do{
+  Start-Sleep -Milliseconds 250
+  if(Test-Path $fallbackLog){$clientLog=Get-Item $fallbackLog}
+  if(-not $clientLog){$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
+  if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}
+ }while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
+ if(-not $clientLog){
+  $activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue
+  Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)"
+  throw 'Packaged AppContainer client log not found'
+ }
+ Copy-Item $clientLog.FullName (Join-Path $evidence 'appcontainer.log') -Force
+ Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
+ Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
+ Check ($cl -match 'AUTHORIZATION_ALLOW=PASS') 'AUTHORIZATION_ALLOW'
+ Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_LIFECYCLE'
+ $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
+ Check ($LASTEXITCODE -eq 0 -and (Get-Content $common -Raw) -match 'COMMON_PROCESS_REJECT=PASS') 'COMMON_PROCESS_REJECT'
+ $final='PASS'
+}
+catch {Write-Host ('P236_FAILURE='+$_.Exception.Message);throw}
+finally {
+ $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$tempGone=$false
  if($created){
   & sc.exe stop $service 2>&1|Out-Host
   $deadline=(Get-Date).AddSeconds(20);$state=''
@@ -118,7 +149,7 @@ public static class P236Activator {
   do{Start-Sleep -Milliseconds 250;$sp=if($servicePid -gt 0){Get-CimInstance Win32_Process -Filter "ProcessId=$servicePid" -ErrorAction SilentlyContinue}else{$null}}while($sp -and (Get-Date) -lt $deadline)
   Write-Host ('SERVICE_SHUTDOWN='+$(if($serviceGraceful){'PASS'}else{'FAIL'}))
   & sc.exe delete $service|Out-Host
-  $deadline=(Get-Date).AddSeconds(10)
+  $deadline=(Get-Date).AddSeconds(10);$q=$null
   do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue}while($q -and (Get-Date) -lt $deadline)
   $serviceGone=($null -eq $q)
  }
@@ -126,22 +157,21 @@ public static class P236Activator {
   $ap=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue
   if($ap){Stop-Process -Id $activationPid -Force -ErrorAction SilentlyContinue}
  }
- $leftover=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) }
+ $leftover=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) })
  foreach($p in $leftover){Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue}
  Start-Sleep -Milliseconds 500
- $leftover=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) }
- $clientGone=($null -eq $leftover)
+ $leftover=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq (Join-Path $root 'client.exe') -or $_.ExecutablePath -ieq (Join-Path $root 'supervisor.exe') -or $_.ExecutablePath -ieq (Join-Path $pkg 'client.exe')) })
+ $clientGone=($leftover.Count -eq 0)
  if($installed){
   Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Remove-AppxPackage -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 1
-  $packageGone=($null -eq (Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction SilentlyContinue|Select-Object -First 1))
+  try{$packageGone=(@(Get-AppxPackage -AllUsers -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction Stop).Count -eq 0)}catch{$packageGone=$false}
   Write-Host ('MSIX_UNINSTALL='+$(if($packageGone){'PASS'}else{'FAIL'}))
- }else{$packageGone=$true}
+ }
  if($cert){
   foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
    Remove-Item ($store+'\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue
   }
-  $certificateGone=$true
   foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
    if(Get-ChildItem $store -ErrorAction SilentlyContinue|Where-Object Thumbprint -EQ $cert.Thumbprint){$certificateGone=$false}
   }
