@@ -5,14 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { secureWindowsResultDirectory, verifyWindowsAclConstruction, verifyWindowsResultAcl } from "../scripts/phone-windows-acl.mjs";
 
-test("Windows ACL helper builds a non-interpolated PowerShell command and verifies its marker", () => {
+test("Windows ACL helper streams the script through stdin without command-line encoding", () => {
   let captured;
   secureWindowsResultDirectory("C:\\safe\\results", {
     platform: "win32",
     execFileSync(command, args, options) {
       captured = { command, args, options };
-      const encoded = args[args.indexOf("-EncodedCommand") + 1];
-      const script = Buffer.from(encoded, "base64").toString("utf16le");
+      const script = options.input;
       assert.doesNotMatch(script, /Import-Module Microsoft\.PowerShell\.Security/);
       assert.doesNotMatch(script, /\bGet-Acl\b|\bSet-Acl\b/);
       assert.match(script, /GetFileSecurityW/);
@@ -42,7 +41,10 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
     }
   });
   assert.equal(captured.command, "powershell.exe");
-  assert.equal(captured.args.includes("-EncodedCommand"), true);
+  assert.deepEqual(captured.args, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"]);
+  assert.equal(captured.options.input.length > 10000, true);
+  assert.equal(captured.options.stdio[0], "pipe");
+  assert.equal(captured.args.join(" ").length < 200, true);
   assert.equal(captured.options.timeout, 60000);
 });
 
