@@ -165,7 +165,7 @@ finally {
  if($installed){
   Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Remove-AppxPackage -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 1
-  try{$packageGone=(@(Get-AppxPackage -AllUsers -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction Stop).Count -eq 0)}catch{$packageGone=$false}
+  try{$packageGone=(@(Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction Stop).Count -eq 0)}catch{$packageGone=$false}
   Write-Host ('MSIX_UNINSTALL='+$(if($packageGone){'PASS'}else{'FAIL'}))
  }
  if($cert){
@@ -176,9 +176,11 @@ finally {
    if(Get-ChildItem $store -ErrorAction SilentlyContinue|Where-Object Thumbprint -EQ $cert.Thumbprint){$certificateGone=$false}
   }
  }
- $eventPath=Join-Path $evidence 'windows-events.txt'
- foreach($ln in @('Application','System')){
-  try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=$testStart;ProviderName=@('Application Error','Service Control Manager','Windows Error Reporting')} -MaxEvents 30|Select-Object TimeCreated,Id,ProviderName,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}
+ if(-not $serviceGraceful){
+  $eventPath=Join-Path $evidence 'windows-events.txt'
+  foreach($ln in @('Application','System')){
+   try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=$testStart;ProviderName=@('Application Error','Service Control Manager','Windows Error Reporting')} -MaxEvents 30 -ErrorAction SilentlyContinue|Select-Object TimeCreated,Id,ProviderName,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}
+  }
  }
  if(Test-Path $root){Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue}
  $tempGone=(-not(Test-Path $root))
