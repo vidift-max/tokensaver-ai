@@ -26,6 +26,7 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       assert.match(script, /EnumerateFileSystemEntries/);
       assert.match(script, /PROTECTED_DACL_SECURITY_INFORMATION/);
       assert.match(script, /ReparsePoint/);
+      assert.match(script, /PHONE_RESULT_ACL_RUNTIME=/);
       assert.match(script, /PHONE_RESULT_ACL_OK/);
       assert.equal(options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY, "C:\\safe\\results");
       return "PHONE_RESULT_ACL_OK";
