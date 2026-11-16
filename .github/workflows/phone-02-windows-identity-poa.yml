@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: phone02-windows-identity-poa-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-identity-poa:
     name: Windows identity PoA — isolated experiment
@@ -19,6 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+          fetch-depth: 0
 
       - name: Rounds 1–2 — verify runner and prepare isolated identity
         shell: pwsh
@@ -67,7 +72,7 @@ jobs:
           if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat missing' }
           "ROUND_3_SUPERVISOR=single-run native C++ harness; no service installation"
           $buildLog = Join-Path $out 'build.log'
-          $command = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "' + $source + '" /Fe:"' + $exe + '" advapi32.lib userenv.lib
+          $command = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "' + $source + '" /Fe:"' + $exe + '" advapi32.lib userenv.lib'
           & cmd.exe /d /s /c $command 2>&1 | Tee-Object -FilePath $buildLog
           if ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
           "ROUND_4_CLIENT=child process created with PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES"
