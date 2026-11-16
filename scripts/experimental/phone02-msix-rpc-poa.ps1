@@ -16,16 +16,16 @@ function RunTool([string]$exe,[string]$arguments,[string]$label,[int]$seconds=12
  if(Test-Path $o){Get-Content $o -Raw|Write-Host};if(Test-Path $e){Get-Content $e -Raw|Write-Host}
  if($p.ExitCode -ne 0){throw "$label failed exit=$($p.ExitCode)"}
 }
-function Get-ClientLog([uint32]$pid){
- $name="Phone02-MsixPoA-rpc-client-$pid.log";$base=Join-Path $env:LOCALAPPDATA "Packages\$($script:package.PackageFamilyName)"
+function Get-ClientLog([uint32]$clientPid){
+ $name="Phone02-MsixPoA-rpc-client-$clientPid.log";$base=Join-Path $env:LOCALAPPDATA "Packages\$($script:package.PackageFamilyName)"
  $m=$null;if(Test-Path $base){$m=Get-ChildItem $base -Filter $name -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
  if(-not $m){$m=Get-ChildItem $env:LOCALAPPDATA -Filter $name -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
  return $m
 }
-function Wait-ClientLog([uint32]$pid,[string]$marker,[int]$seconds=25){
+function Wait-ClientLog([uint32]$clientPid,[string]$marker,[int]$seconds=25){
  $deadline=(Get-Date).AddSeconds($seconds);$m=$null;$content=''
- do{Start-Sleep -Milliseconds 150;$m=Get-ClientLog $pid;if($m){$content=Get-Content $m.FullName -Raw -ErrorAction SilentlyContinue}}while(($content -notmatch [regex]::Escape($marker)) -and (Get-Date) -lt $deadline)
- if(-not $m -or $content -notmatch [regex]::Escape($marker)){throw "Client log marker missing: pid=$pid marker=$marker content=$content"}
+ do{Start-Sleep -Milliseconds 150;$m=Get-ClientLog $clientPid;if($m){$content=Get-Content $m.FullName -Raw -ErrorAction SilentlyContinue}}while(($content -notmatch [regex]::Escape($marker)) -and (Get-Date) -lt $deadline)
+ if(-not $m -or $content -notmatch [regex]::Escape($marker)){throw "Client log marker missing: pid=$clientPid marker=$marker content=$content"}
  Copy-Item $m.FullName (Join-Path $root $m.Name) -Force -ErrorAction SilentlyContinue
  return @{Path=$m.FullName;Content=$content}
 }
@@ -47,22 +47,22 @@ function Finish-RpcServer($s){
 }
 function Activate-Client([string]$mode,[string]$endpoint){
  $arguments="$($script:package.PackageFamilyName) $script:expectedSid $($script:package.PackageFullName) $mode $endpoint"
- $pid=[PackageActivator]::Activate($script:aumid,$arguments)
+ $clientPid=[PackageActivator]::Activate($script:aumid,$arguments)
  $deadline=(Get-Date).AddSeconds(15);$actual='';$content=''
- do{Start-Sleep -Milliseconds 100;$p=Get-Process -Id $pid -ErrorAction SilentlyContinue
-  if($p){$w=Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue;if($w.ExecutablePath){$actual=$w.ExecutablePath}}
-  if(-not $actual){$m=Get-ClientLog $pid;if($m){$content=Get-Content $m.FullName -Raw;$pm=[regex]::Match($content,'RPC_CLIENT_PROCESS_IMAGE=(.+)');if($pm.Success){$actual=$pm.Groups[1].Value.Trim()}}}
+ do{Start-Sleep -Milliseconds 100;$p=Get-Process -Id $clientPid -ErrorAction SilentlyContinue
+  if($p){$w=Get-CimInstance Win32_Process -Filter "ProcessId=$clientPid" -ErrorAction SilentlyContinue;if($w.ExecutablePath){$actual=$w.ExecutablePath}}
+  if(-not $actual){$m=Get-ClientLog $clientPid;if($m){$content=Get-Content $m.FullName -Raw;$pm=[regex]::Match($content,'RPC_CLIENT_PROCESS_IMAGE=(.+)');if($pm.Success){$actual=$pm.Groups[1].Value.Trim()}}}
  }while(-not $actual -and (Get-Date) -lt $deadline)
- $expected=Join-Path $script:package.InstallLocation 'client.exe';Write-Host "ACTIVATED_PID=$pid OBSERVED_IMAGE=$actual EXPECTED_IMAGE=$expected"
- if(-not $actual -or $actual -ine $expected){throw "Activated process path mismatch or missing: pid=$pid actual=$actual log=$content"}
- return [uint32]$pid
+ $expected=Join-Path $script:package.InstallLocation 'client.exe';Write-Host "ACTIVATED_PID=$clientPid OBSERVED_IMAGE=$actual EXPECTED_IMAGE=$expected"
+ if(-not $actual -or $actual -ine $expected){throw "Activated process path mismatch or missing: pid=$clientPid actual=$actual log=$content"}
+ return [uint32]$clientPid
 }
 function Invoke-PackagedCase([string]$case,[string]$mode='rpc'){
- $s=Start-RpcServer $case;$pid=Activate-Client $mode $s.Endpoint
+ $s=Start-RpcServer $case;$clientPid=Activate-Client $mode $s.Endpoint
  $marker=if($mode -eq 'begin-only'){'RPC_CLIENT_BEGIN_ONLY=PASS'}else{'RPC_CLIENT_CALL_STATUS='}
- $cl=Wait-ClientLog $pid $marker;$sv=Finish-RpcServer $s
+ $cl=Wait-ClientLog $clientPid $marker;$sv=Finish-RpcServer $s
  $nonce=[regex]::Match($cl.Content,'RPC_SESSION_NONCE=([0-9a-f]{32})').Groups[1].Value
- return @{Pid=$pid;Client=$cl.Content;Server=$sv.Content;Endpoint=$s.Endpoint;Nonce=$nonce}
+ return @{Pid=$clientPid;Client=$cl.Content;Server=$sv.Content;Endpoint=$s.Endpoint;Nonce=$nonce}
 }
 function Invoke-CommonCase([string]$case,[string]$mode){
  $s=Start-RpcServer $case;$out=Join-Path $root "$case.common.log";$err=Join-Path $root "$case.common.err"
