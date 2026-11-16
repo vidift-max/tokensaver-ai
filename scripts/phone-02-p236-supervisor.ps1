@@ -28,16 +28,17 @@ try {
  $publisher='CN=TokenSaver Phone02 P2.36 TEST ONLY'
  $manifest=@"
 <?xml version="1.0" encoding="utf-8"?>
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" IgnorableNamespaces="uap uap10">
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap10 desktop rescap">
 <Identity Name="TokenSaver.Phone02.SupervisorTest" Publisher="$publisher" Version="1.0.0.0" ProcessorArchitecture="x64"/>
 <Properties><DisplayName>Phone-02 Supervisor P2.36 TEST</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets/StoreLogo.png</Logo></Properties>
 <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
 <Resources><Resource Language="en-us"/></Resources>
-<Applications><Application Id="App" Executable="client.exe" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone-02 Supervisor Test" Description="Disposable P2.36 client" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application></Applications>
+<Applications><Application Id="App" Executable="client.exe" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone-02 Supervisor Test" Description="Disposable P2.36 client" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application><Application Id="SupervisorHost" Executable="supervisor-host.exe" EntryPoint="Windows.FullTrustApplication"><uap:VisualElements DisplayName="Phone-02 Supervisor Host TEST" Description="Disposable full-trust activation host" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/><Extensions><desktop:Extension Category="windows.fullTrustProcess" Executable="supervisor.exe"><desktop:FullTrustProcess/></desktop:Extension></Extensions></Application></Applications>
+<Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
 </Package>
 "@
  Set-Content (Join-Path $pkg 'AppxManifest.xml') $manifest -Encoding utf8
- Copy-Item $cliExe (Join-Path $pkg 'client.exe');New-Item -ItemType Directory -Force (Join-Path $pkg 'Assets')|Out-Null
+ Copy-Item $cliExe (Join-Path $pkg 'client.exe');Copy-Item $cliExe (Join-Path $pkg 'supervisor-host.exe');Copy-Item $svcExe (Join-Path $pkg 'supervisor.exe');New-Item -ItemType Directory -Force (Join-Path $pkg 'Assets')|Out-Null
  Add-Type -AssemblyName System.Drawing
  foreach($n in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')){$bmp=New-Object System.Drawing.Bitmap 64,64;$bmp.Save((Join-Path $pkg ('Assets\'+$n)),[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose()}
  $cert=New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(2)
@@ -112,7 +113,7 @@ public static class P236Activator {
   if(-not $clientLog){$clientLog=Get-ChildItem $clientRoot -Filter 'PhoneSupervisor-P236-client.log' -File -Recurse -ErrorAction SilentlyContinue|Select-Object -First 1}
   if($clientLog){$cl=Get-Content $clientLog.FullName -Raw -ErrorAction SilentlyContinue}
  }while($cl -notmatch 'CLOSE_SESSION=PASS' -and (Get-Date) -lt $deadline)
- if(-not $clientLog){$activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue;Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)";throw 'Packaged AppContainer client log not found'}
+ if(-not $clientLog){$activated=Get-CimInstance Win32_Process -Filter "ProcessId=$activationPid" -ErrorAction SilentlyContinue;Write-Host "ACTIVATED_PROCESS_STILL_PRESENT=$([bool]$activated) IMAGE=$($activated.ExecutablePath)";$eventPath=Join-Path $evidence 'app-activation-events.txt';foreach($ln in @('Microsoft-Windows-AppModel-Runtime/Admin','Microsoft-Windows-TWinUI/Operational','Microsoft-Windows-AppXDeploymentServer/Operational')){try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction Stop|Select-Object -First 20 TimeCreated,Id,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}};throw 'Packaged AppContainer client log not found'}
  Copy-Item $clientLog.FullName (Join-Path $evidence 'appcontainer.log') -Force
  Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
  Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
