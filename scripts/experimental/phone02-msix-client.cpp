@@ -51,17 +51,18 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
  try{
   winrt::init_apartment(winrt::apartment_type::single_threaded);
   std::wstring args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";
-  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForAppWithArgumentsAsync(L"Supervisor",args);
+  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args);
   HANDLE completed=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!completed){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL EVENT_ERROR="+std::to_wstring(GetLastError()));return false;}
-  static unsigned int launchResult=0xFFFFFFFF;static HRESULT launchError=S_OK;
+  static unsigned int launchResult=0xFFFFFFFF,asyncStatusCode=0xFFFFFFFF;static HRESULT launchError=S_OK;
   operation.Completed([completed](auto const&op,winrt::Windows::Foundation::AsyncStatus status){
-   if(status==winrt::Windows::Foundation::AsyncStatus::Completed){try{auto result=op.GetResults();launchResult=static_cast<unsigned int>(result.LaunchResult());}catch(winrt::hresult_error const&e){launchError=e.code().value;}}
+   asyncStatusCode=static_cast<unsigned int>(status);
+   if(status==winrt::Windows::Foundation::AsyncStatus::Completed||status==winrt::Windows::Foundation::AsyncStatus::Error){try{auto result=op.GetResults();launchResult=static_cast<unsigned int>(result.LaunchResult());}catch(winrt::hresult_error const&e){launchError=e.code().value;}}
    else launchError=E_ABORT;
    SetEvent(completed);
   });
   DWORD wait=WaitForSingleObject(completed,15000);CloseHandle(completed);
   if(wait!=WAIT_OBJECT_0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=TIMEOUT");return false;}
-  if(FAILED(launchError)||launchResult!=0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)launchError)+L" RESULT="+std::to_wstring(launchResult));return false;}
+  if(FAILED(launchError)||launchResult!=0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)launchError)+L" RESULT="+std::to_wstring(launchResult)+L" ASYNC_STATUS="+std::to_wstring(asyncStatusCode));return false;}
   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS API=FullTrustProcessLauncher PID=OS_ACTIVATION_RESULT_NOT_EXPOSED CLIENT_PID="+std::to_wstring(clientPid));return true;
  }catch(const winrt::hresult_error&e){
   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)e.code().value));return false;
