@@ -250,6 +250,11 @@ public static class PackageActivator {
   Write-Host 'POA_RESULT=PARTIAL_PENDING_INDEPENDENT_REVIEW'
 }
 finally {
+  if($env:LOCALAPPDATA -and (Test-Path $env:LOCALAPPDATA)){
+    $clientDiagnostics=Get-ChildItem -Path $env:LOCALAPPDATA -Filter 'Phone02-MsixPoA-client-*.log' -File -Recurse -ErrorAction SilentlyContinue
+    foreach($diagnostic in $clientDiagnostics){Copy-Item $diagnostic.FullName (Join-Path $root $diagnostic.Name) -Force -ErrorAction SilentlyContinue}
+    Write-Host "CLIENT_DIAGNOSTIC_FILES_COPIED=$(@($clientDiagnostics).Count)"
+  }
   if(-not $package){$package=Get-AppxPackage -Name 'TokenSaver.Phone02.IdentityPoA' -ErrorAction SilentlyContinue}
   if($package){
     Write-Host "CLEANUP_PACKAGE_BEGIN=$($package.PackageFullName)"

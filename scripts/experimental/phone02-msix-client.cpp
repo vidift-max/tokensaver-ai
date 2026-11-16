@@ -42,11 +42,13 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
 }
 static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName){
  PIPE_NAME=pipeName;
+ ClientDiagnostic(L"CLIENT_MAIN_ENTER PID="+std::to_wstring(GetCurrentProcessId())+L" MODE="+mode+L" PIPE="+PIPE_NAME);
  HANDLE h=INVALID_HANDLE_VALUE;
  for(int attempt=0;attempt<150;attempt++){
    h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
    if(h!=INVALID_HANDLE_VALUE)break;
    DWORD error=GetLastError();
+   if(attempt==0)ClientDiagnostic(L"CLIENT_PIPE_FIRST_ERROR="+std::to_wstring(error)+L" MODE="+mode+L" PIPE="+PIPE_NAME);
    if(error!=ERROR_PIPE_BUSY&&error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)break;
    WaitNamedPipeW(PIPE_NAME.c_str(),100);
    Sleep(100);
