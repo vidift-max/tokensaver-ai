@@ -75,7 +75,7 @@ function Invoke-CommonCase([string]$case,[string]$mode){
 try{
  # Resume guard: rounds 01-14 were recorded in Run 43901240165; do not execute or recount them.
  $current=(git branch --show-current).Trim();if($current -ne $branch){throw "Wrong branch: $current"}
- $head=(git rev-parse HEAD).Trim();if($head -ne 'e837055c7a3263d2cae797a35a40b684b32a1716'){throw "Unexpected resume HEAD: $head"}
+ $head=(git rev-parse HEAD).Trim();$parent=(git rev-parse HEAD^).Trim();if($parent -ne 'e837055c7a3263d2cae797a35a40b684b32a1716'){throw "Unexpected resume parent: $parent"};Write-Host "RESUME_COMMIT=$head PARENT=$parent"
  git merge-base --is-ancestor $baseline HEAD;if($LASTEXITCODE -ne 0){throw 'Baseline ancestry failed'}
  $status=(git status --porcelain);if($status){throw "Dirty checkout: $status"}
  $changed=@(git diff --name-only "$baseline..HEAD");$unexpected=@($changed|Where-Object {$_ -notlike 'scripts/experimental/*' -and $_ -ne '.github/workflows/phone-02-windows-identity-poa.yml'});if($unexpected.Count){throw "Unexpected production file changes: $unexpected"}
