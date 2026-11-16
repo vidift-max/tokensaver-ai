@@ -63,7 +63,7 @@ public static class PhoneAclNative
 
     public static void Apply(string path, bool isDirectory, string[] allowedSids)
     {
-        DiscretionaryAcl dacl = new DiscretionaryAcl(false, false, allowedSids.Length);
+        DiscretionaryAcl dacl = new DiscretionaryAcl(isDirectory, false, allowedSids.Length);
         AceFlags flags = isDirectory ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit) : AceFlags.None;
         foreach (string sidText in allowedSids)
         {
