@@ -17,12 +17,13 @@
 #include <bcrypt.h>
 #include <mutex>
 #include <cstdlib>
+#include <cstring>
 #include "phone02-msix-rpc.h"
 
 static std::wstring gExpectedFamily,gExpectedSid,gExpectedFull,gExpectedPath,gUserSid,gEndpoint;
 static std::wstring gSessionNonce;static DWORD gSessionPid=0;static bool gNonceIssued=false,gNonceUsed=false;static std::mutex gNonceMutex;
-void* __RPC_USER midl_user_allocate(size_t n){return std::malloc(n);}
-void __RPC_USER midl_user_free(void*p){std::free(p);}
+extern "C" void* __RPC_USER midl_user_allocate(size_t n){return std::malloc(n);}
+extern "C" void __RPC_USER midl_user_free(void*p){std::free(p);}
 static std::wstring RandomNonce(){UCHAR bytes[16]{};if(BCryptGenRandom(nullptr,bytes,sizeof(bytes),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)return L"";static const wchar_t*h=L"0123456789abcdef";std::wstring s;for(UCHAR b:bytes){s.push_back(h[b>>4]);s.push_back(h[b&15]);}return s;}
 static DWORD RpcClientPid(handle_t binding){RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;if(RpcServerInqCallAttributesW(binding,&a)!=RPC_S_OK)return 0;return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(a.ClientPID));}
 static void ClientLog(const std::wstring&line){
