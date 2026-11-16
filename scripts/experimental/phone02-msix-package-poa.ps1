@@ -78,9 +78,18 @@ try {
   if(-not (Test-Path $msix)){throw 'MakeAppx returned success but MSIX file is missing'}
   Write-Host "MSIX_CREATED=TRUE SIZE=$((Get-Item $msix).Length)"
   Write-Host 'MAKEAPPX_PACK_END=TRUE'
-  Write-Host 'MAKEAPPX_VALIDATE_BEGIN=TRUE'
-  Invoke-BoundedTool -FilePath $makeappx -Arguments ('validate /p "'+$msix+'"') -Label 'MakeAppx-validate' -TimeoutSeconds 120
-  Write-Host 'MAKEAPPX_VALIDATE_END=TRUE'
+  Write-Host 'MAKEAPPX_STRUCTURAL_VALIDATION_BEGIN=TRUE'
+  $unpack=Join-Path $root 'package-validation'
+  New-Item -ItemType Directory -Force -Path $unpack | Out-Null
+  Invoke-BoundedTool -FilePath $makeappx -Arguments ('unpack /p "'+$msix+'" /d "'+$unpack+'"') -Label 'MakeAppx-unpack-validation' -TimeoutSeconds 120
+  $unpackedManifest=Join-Path $unpack 'AppxManifest.xml'
+  $unpackedClient=Join-Path $unpack 'client.exe'
+  if(-not (Test-Path $unpackedManifest) -or -not (Test-Path $unpackedClient)){throw 'Unpacked MSIX is missing required manifest or client'}
+  $sourceClientHash=(Get-FileHash (Join-Path $pkg 'client.exe') -Algorithm SHA256).Hash
+  $unpackedClientHash=(Get-FileHash $unpackedClient -Algorithm SHA256).Hash
+  if($sourceClientHash -ne $unpackedClientHash){throw 'Unpacked client hash differs from packaged source'}
+  Write-Host "MAKEAPPX_STRUCTURAL_VALIDATION=PASS CLIENT_SHA256=$unpackedClientHash"
+  Write-Host 'MAKEAPPX_STRUCTURAL_VALIDATION_END=TRUE'
   Write-Host 'SIGNTOOL_SIGN_BEGIN=TRUE'
   Invoke-BoundedTool -FilePath $signtool -Arguments ('sign /fd SHA256 /sha1 '+$cert.Thumbprint+' "'+$msix+'"') -Label 'SignTool-sign' -TimeoutSeconds 120
   Write-Host 'SIGNTOOL_SIGN_END=TRUE'
@@ -169,6 +178,10 @@ public static class PackageActivator {
   $s=Start-Supervisor 'legitimate-msix'
   $activatedPid=Activate-PackagedClient $s
   $legit=Finish-Case $s 'legitimate-msix'
+  $oldProcessDeadline=(Get-Date).AddSeconds(5)
+  do { Start-Sleep -Milliseconds 100; $oldProcess=Get-Process -Id $activatedPid -ErrorAction SilentlyContinue } while($oldProcess -and (Get-Date) -lt $oldProcessDeadline)
+  Write-Host "INITIAL_CLIENT_PROCESS_EXITED=$(-not [bool]$oldProcess) PID=$activatedPid"
+  if($oldProcess){throw 'Initial packaged client process did not exit after pipe completion'}
   if($legit.Content -notmatch "PIPE_CLIENT_PID=$activatedPid(\s|$)"){throw 'Pipe PID does not match IApplicationActivationManager PID'}
   if($legit.ExitCode -ne 0 -or $legit.Content -notmatch 'AUTHORIZATION_RESULT=ALLOW' -or $legit.Content -notmatch 'TOKEN_PROCESS_CORRELATION=PASS' -or $legit.Content -notmatch 'PROCESS_INSTALL_PATH_MATCH=TRUE'){throw 'Legitimate packaged client failed identity/PID/path authorization; stop adversarial interpretation.'}
   Write-Host 'ROUND_7 — protocol spoof matrix'
@@ -212,6 +225,8 @@ public static class PackageActivator {
   $reconnectPid=Activate-PackagedClient $s
   $reconnected=Finish-Case $s 'reconnect-legitimate'
   if($reconnected.ExitCode -ne 0 -or $reconnected.Content -notmatch "PIPE_CLIENT_PID=$reconnectPid(\s|$)"){throw 'Legitimate reconnect failed or PID mismatch'}
+  if($reconnectPid -eq $activatedPid){throw 'Reconnect reused the original client PID'}
+  Write-Host "RECONNECT_NEW_PID=TRUE OLD_PID=$activatedPid NEW_PID=$reconnectPid"
   Write-Host 'ROUND_10 — summary and disposable cleanup'
   Write-Host "LEGITIMATE_ALLOW=$($legit.ExitCode -eq 0)"
   Write-Host "COMMON_REJECT=$($rejected.ExitCode -ne 0)"
@@ -230,6 +245,10 @@ finally {
     Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
     Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
     Remove-Item "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+    $myRemaining=Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
+    $rootRemaining=Get-ChildItem Cert:\CurrentUser\Root -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
+    $trustedRemaining=Get-ChildItem Cert:\CurrentUser\TrustedPeople -ErrorAction SilentlyContinue | Where-Object Thumbprint -eq $cert.Thumbprint
+    Write-Host "CLEANUP_CERT_REMAINS=$([bool]($myRemaining -or $rootRemaining -or $trustedRemaining))"
   }
   Stop-Transcript | Out-Null
   Get-ChildItem $root -Force | Select-Object Name,Length | Format-Table
