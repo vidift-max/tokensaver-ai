@@ -90,7 +90,7 @@ static void WINAPI ServiceMain(DWORD,LPWSTR*){
  gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}std::wstring endpointSddl=L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;";
  endpointSddl+=gExpectedAppSid;endpointSddl+=L")(A;;GA;;;AU)";
  PSECURITY_DESCRIPTOR sd=nullptr;
- if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(endpointSddl.c_str(),SDDL_REVISION_1,&sd,nullptr){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
+ if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(endpointSddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
  RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",sd);LocalFree(sd);
  if(rc==RPC_S_OK)rc=RpcServerRegisterIfEx(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,nullptr);
  if(rc==RPC_S_OK)rc=RpcServerRegisterAuthInfoW(nullptr,RPC_C_AUTHN_WINNT,nullptr,nullptr);
