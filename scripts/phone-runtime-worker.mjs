@@ -115,6 +115,7 @@ export class PhoneRuntimeWorker {
     let record = await this.resultStore.get(messageId);
     this.assertRunning();
     const recovered = Boolean(record);
+    let ackAuthorizationBaseline = initialAuthorization;
 
     if (!record) {
       // Revalidate immediately before invoking the executor to reduce the
@@ -123,6 +124,7 @@ export class PhoneRuntimeWorker {
       if (!sameFence(initialAuthorization, executionAuthorization)) {
         throw new PhoneRuntimeWorkerError("Mission ownership changed before execution", "AUTHORIZATION_FENCE_CHANGED");
       }
+      ackAuthorizationBaseline = executionAuthorization;
 
       let result;
       try {
@@ -164,8 +166,7 @@ export class PhoneRuntimeWorker {
     // authorized execution (or the stored-result recovery), not merely be the
     // same principal with a newer lease generation.
     const ackAuthorization = await this.authorize(message, envelope);
-    const expectedAuthorization = record && recovered ? initialAuthorization : executionAuthorization;
-    if (!sameFence(expectedAuthorization, ackAuthorization)) {
+    if (!sameFence(ackAuthorizationBaseline, ackAuthorization)) {
       throw new PhoneRuntimeWorkerError(
         "Mission ownership changed before ACK; durable result remains unacknowledged",
         "AUTHORIZATION_FENCE_CHANGED"
