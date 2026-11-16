@@ -65,13 +65,19 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
  if(a.ProtocolSequence!=RPC_PROTSEQ_LRPC||a.IsClientLocal!=rcclLocal||a.AuthenticationService!=RPC_C_AUTHN_WINNT||a.AuthenticationLevel<RPC_C_AUTHN_LEVEL_PKT_PRIVACY||a.NullSession)return fail(L"RPC_SECURITY_ATTRIBUTES");
  out.pid=(DWORD)(ULONG_PTR)a.ClientPID;if(!out.pid)return fail(L"CLIENT_PID_ZERO");
  Log(L"RPC_CALL_RECEIVED pid="+std::to_wstring(out.pid));
- RPC_STATUS impersonateStatus=RpcImpersonateClient(binding);
+ Log(L"RPC_IMPERSONATE_BEGIN");
+ RPC_STATUS impersonateStatus=RpcImpersonateClient(nullptr);
+ Log(L"RPC_IMPERSONATE_RETURN status="+std::to_wstring(impersonateStatus));
  if(impersonateStatus!=RPC_S_OK)return fail((L"RPC_IMPERSONATE_CLIENT_STATUS_"+std::to_wstring(impersonateStatus)).c_str());
  HANDLE process=nullptr,token=nullptr;bool ok=false;std::wstring localReason=L"UNKNOWN";
  do{
+  Log(L"RPC_THREAD_TOKEN_OPEN_BEGIN");
   if(!OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,TRUE,&token)){localReason=L"OPEN_IMPERSONATED_THREAD_TOKEN_ERROR_"+std::to_wstring(GetLastError());break;}
+  Log(L"RPC_THREAD_TOKEN_OPEN_OK");
+  Log(L"RPC_OPEN_PROCESS_BEGIN");
   process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,out.pid);
   if(!process){localReason=L"OPEN_PROCESS_AS_CALLER_ERROR_"+std::to_wstring(GetLastError());break;}
+  Log(L"RPC_OPEN_PROCESS_OK");
   if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());break;}
   if(!ProcessIdToSessionId(out.pid,&out.windowsSession)){localReason=L"WINDOWS_SESSION";break;}
   DWORD app=0,n=0;if(!GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&n)){localReason=L"TOKEN_IS_APPCONTAINER_QUERY";break;}
@@ -100,7 +106,7 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
   ok=true;localReason=L"OK";
  }while(false);
  if(token)CloseHandle(token);if(process)CloseHandle(process);
- RPC_STATUS revertStatus=RpcRevertToSelf();
+ RPC_STATUS revertStatus=RpcRevertToSelf();Log(L"RPC_REVERT status="+std::to_wstring(revertStatus));
  if(revertStatus!=RPC_S_OK){ok=false;localReason=L"RPC_REVERT_TO_SELF_FAILED";}
  if(reason)*reason=localReason;
  if(out.pid){
