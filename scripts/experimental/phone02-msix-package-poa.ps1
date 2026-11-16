@@ -188,7 +188,7 @@ public static class PackageActivator {
     return @{Content=$content;ExitCode=$s.Process.ExitCode}
   }
   Write-Host 'ROUND_6A — full-trust pipe visibility control before AppContainer connection'
-  $probePipe="\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881.fulltrust-probe"
+  $probePipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.fulltrust-probe"
   $probeSupervisor=Start-Supervisor 'fulltrust-pipe-probe' $probePipe
   $probeClient=Start-Process -FilePath (Join-Path $root 'common.exe') -ArgumentList @('--adversary','common',$package.PackageFamilyName,$expectedSid,$package.PackageFullName,$probeSupervisor.PipeName) -PassThru -Wait -WindowStyle Hidden
   $probeResult=Finish-Case $probeSupervisor 'fulltrust-pipe-probe'
