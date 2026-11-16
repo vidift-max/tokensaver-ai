@@ -65,7 +65,8 @@ function Set-RestrictedAcl([string]$path, [bool]$isDirectory) {
       throw "Directory ACL does not propagate to child files and directories: $path"
     }
   }
-  if ($seenSids.Count -ne 3 -or @($allowed | Where-Object { -not $seenSids.Contains($_) }).Count -ne 0) {
+  $missingSids = @($allowed | Where-Object { -not $seenSids.Contains($_) })
+  if ($seenSids.Count -ne 3 -or $missingSids.Count -ne 0) {
     throw "ACL SID set does not exactly match the three authorized SIDs on $path"
   }
 }
