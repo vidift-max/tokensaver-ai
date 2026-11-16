@@ -160,7 +160,17 @@ export class PhoneRuntimeWorker {
     }
 
     // Recheck live authority before ACK, including recovery of an old result.
-    await this.authorize(message, envelope);
+    // The current owner must still hold the exact fencing generation that
+    // authorized execution (or the stored-result recovery), not merely be the
+    // same principal with a newer lease generation.
+    const ackAuthorization = await this.authorize(message, envelope);
+    const expectedAuthorization = record && recovered ? initialAuthorization : executionAuthorization;
+    if (!sameFence(expectedAuthorization, ackAuthorization)) {
+      throw new PhoneRuntimeWorkerError(
+        "Mission ownership changed before ACK; durable result remains unacknowledged",
+        "AUTHORIZATION_FENCE_CHANGED"
+      );
+    }
     this.assertRunning();
     try {
       await this.client.acknowledge(messageId);
