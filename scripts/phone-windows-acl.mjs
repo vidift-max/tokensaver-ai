@@ -34,8 +34,9 @@ public static class PhoneAclNative
     [DllImport("advapi32.dll", EntryPoint = "GetFileSecurityW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GetFileSecurity(string fileName, uint requestedInformation, IntPtr securityDescriptor, uint length, out uint needed);
 
-    [DllImport("advapi32.dll", EntryPoint = "SetFileSecurityW", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool SetFileSecurity(string fileName, uint securityInformation, IntPtr securityDescriptor);
+    [DllImport("advapi32.dll", EntryPoint = "SetNamedSecurityInfoW", CharSet = CharSet.Unicode, SetLastError = false)]
+    private static extern uint SetNamedSecurityInfo(string objectName, int objectType, uint securityInformation,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
 
     private static RawSecurityDescriptor ReadDescriptor(string path)
     {
@@ -71,19 +72,19 @@ public static class PhoneAclNative
             dacl.InsertAce(dacl.Count, ace);
         }
 
-        RawSecurityDescriptor descriptor = new RawSecurityDescriptor(
-            ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected | ControlFlags.SelfRelative,
-            null, null, null, dacl);
-        byte[] binary = new byte[descriptor.BinaryLength];
-        descriptor.GetBinaryForm(binary, 0);
+        byte[] binary = new byte[dacl.BinaryLength];
+        dacl.GetBinaryForm(binary, 0);
 
         IntPtr buffer = Marshal.AllocHGlobal(binary.Length);
         try
         {
             Marshal.Copy(binary, 0, buffer, binary.Length);
             uint securityInformation = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-            if (!SetFileSecurity(path, securityInformation, buffer))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileSecurityW failed for " + path);
+            const int SE_FILE_OBJECT = 1;
+            uint result = SetNamedSecurityInfo(path, SE_FILE_OBJECT, securityInformation,
+                IntPtr.Zero, IntPtr.Zero, buffer, IntPtr.Zero);
+            if (result != 0)
+                throw new Win32Exception(checked((int)result), "SetNamedSecurityInfoW failed for " + path);
         }
         finally
         {
