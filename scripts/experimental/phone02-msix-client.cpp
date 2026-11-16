@@ -9,6 +9,7 @@
 #include <vector>
 #include <wchar.h>
 #include <coroutine>
+#include <winrt/Windows.Foundation.h>
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
 #pragma comment(lib,"advapi32.lib")
@@ -50,11 +51,17 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
  try{
   winrt::init_apartment(winrt::apartment_type::single_threaded);
   std::wstring args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";
-  auto result=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args).get();
-  auto launchStatus=result.LaunchResult();
-  if(launchStatus!=winrt::Windows::ApplicationModel::FullTrustLaunchResult::Success){
-   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL RESULT="+std::to_wstring(static_cast<unsigned int>(launchStatus)));return false;
-  }
+  auto operation=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args);
+  HANDLE completed=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!completed){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL EVENT_ERROR="+std::to_wstring(GetLastError()));return false;}
+  static unsigned int launchResult=0xFFFFFFFF;static HRESULT launchError=S_OK;
+  operation.Completed([completed](auto const&op,winrt::Windows::Foundation::AsyncStatus status){
+   if(status==winrt::Windows::Foundation::AsyncStatus::Completed){try{auto result=op.GetResults();launchResult=static_cast<unsigned int>(result.LaunchResult());}catch(winrt::hresult_error const&e){launchError=e.code().value;}}
+   else launchError=E_ABORT;
+   SetEvent(completed);
+  });
+  DWORD wait=WaitForSingleObject(completed,15000);CloseHandle(completed);
+  if(wait!=WAIT_OBJECT_0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=TIMEOUT");return false;}
+  if(FAILED(launchError)||launchResult!=0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)launchError)+L" RESULT="+std::to_wstring(launchResult));return false;}
   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS API=FullTrustProcessLauncher PID=OS_ACTIVATION_RESULT_NOT_EXPOSED CLIENT_PID="+std::to_wstring(clientPid));return true;
  }catch(const winrt::hresult_error&e){
   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)e.code().value));return false;
@@ -77,8 +84,9 @@ static int PackageSupervisor(DWORD expectedPid,const std::wstring&pipeName){
 }
 static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName,bool launchSibling=false){
  PIPE_NAME=pipeName;
- if(launchSibling&&!LaunchPackageSupervisor(PIPE_NAME,GetCurrentProcessId()))return 22;
  ClientDiagnostic(L"CLIENT_MAIN_ENTER PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(SessionId(GetCurrentProcessId()))+L" MODE="+mode+L" PIPE="+PIPE_NAME);
+ ClientDiagnostic(L"CLIENT_PROCESS_IMAGE="+ProcessPath(GetCurrentProcess()));
+ if(launchSibling&&!LaunchPackageSupervisor(PIPE_NAME,GetCurrentProcessId()))return 22;
  HANDLE h=INVALID_HANDLE_VALUE;
  for(int attempt=0;attempt<150;attempt++){
    h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);

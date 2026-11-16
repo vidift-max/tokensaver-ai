@@ -154,16 +154,28 @@ public static class PackageActivator {
     $activationArgs="$($package.PackageFamilyName) $expectedSid $($package.PackageFullName) $clientMode"
     Write-Host "PACKAGE_ACTIVATION_BEGIN AUMID=$aumid ARGS=$activationArgs"
     $activatedProcessId=[PackageActivator]::Activate($aumid,$activationArgs)
-    $deadline=(Get-Date).AddSeconds(10)
+    $deadline=(Get-Date).AddSeconds(10);$proc=$null;$actual=$null;$diagnostic=''
     do {
       Start-Sleep -Milliseconds 100
       $proc=Get-Process -Id $activatedProcessId -ErrorAction SilentlyContinue
-    } while(-not $proc -and (Get-Date) -lt $deadline)
-    if(-not $proc){throw "Package activation returned PID $activatedProcessId but process was not observable"}
-    $actual=(Get-CimInstance Win32_Process -Filter "ProcessId=$activatedProcessId" -ErrorAction Stop).ExecutablePath
+      if($proc){
+        $wmi=Get-CimInstance Win32_Process -Filter "ProcessId=$activatedProcessId" -ErrorAction SilentlyContinue
+        if($wmi.ExecutablePath){$actual=$wmi.ExecutablePath}
+      } else {
+        $diagnosticName="Phone02-MsixPoA-client-$activatedProcessId.log"
+        $dm=Get-ChildItem -Path $env:LOCALAPPDATA -Filter $diagnosticName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if($dm){
+          $diagnostic=Get-Content $dm.FullName -Raw
+          $pathMatch=[regex]::Match($diagnostic,'CLIENT_PROCESS_IMAGE=(.+)')
+          if($pathMatch.Success){$actual=$pathMatch.Groups[1].Value.Trim()}
+          Copy-Item $dm.FullName (Join-Path $root $diagnosticName) -Force -ErrorAction SilentlyContinue
+        }
+      }
+    } while(-not $actual -and (Get-Date) -lt $deadline)
     $expected=Join-Path $package.InstallLocation 'client.exe'
-    Write-Host "PACKAGE_ACTIVATION_RESULT=SUCCESS PID=$activatedProcessId PROCESS_PATH=$actual EXPECTED_PATH=$expected"
-    if(-not $actual -or $actual -ine $expected){throw "Activated PID $activatedProcessId path mismatch"}
+    Write-Host "PACKAGE_ACTIVATION_RESULT=OBSERVED PID=$activatedProcessId PROCESS_PATH=$actual EXPECTED_PATH=$expected"
+    if(-not $actual){throw "Package activation PID $activatedProcessId exited or was not observable; client diagnostic: $diagnostic"}
+    if($actual -ine $expected){throw "Activated PID $activatedProcessId path mismatch: $actual"}
     return [uint32]$activatedProcessId
   }
   function Start-Supervisor([string]$caseName,[string]$customPipeName='',[uint32]$expectedPid=0){
