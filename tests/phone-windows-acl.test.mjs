@@ -9,7 +9,7 @@ test("Windows ACL helper streams the script through stdin without command-line e
   let captured;
   secureWindowsResultDirectory("C:\\safe\\results", {
     platform: "win32",
-    execFileSync(command, args, options) {
+    spawnSync(command, args, options) {
       captured = { command, args, options };
       const script = options.input;
       assert.doesNotMatch(script, /Import-Module Microsoft\.PowerShell\.Security/);
@@ -37,7 +37,7 @@ test("Windows ACL helper streams the script through stdin without command-line e
       assert.match(script, /PHONE_RESULT_ACL_RUNTIME=/);
       assert.match(script, /PHONE_RESULT_ACL_OK/);
       assert.equal(options.env.TOKENSAVER_PHONE_RESULT_DIRECTORY, "C:\\safe\\results");
-      return "PHONE_RESULT_ACL_OK";
+      return { status: 0, signal: null, stdout: "PHONE_RESULT_ACL_RUNTIME=5.1; PHONE_RESULT_ACL_OK", stderr: "" };
     }
   });
   assert.equal(captured.command, "powershell.exe");
@@ -62,7 +62,7 @@ test("Windows ACL helper fails closed if ACL application or verification fails",
   assert.throws(
     () => secureWindowsResultDirectory("C:\\unsafe\\results", {
       platform: "win32",
-      execFileSync() { throw new Error("access denied"); }
+      spawnSync() { return { status: 1, signal: null, stdout: "partial output", stderr: "access denied" }; }
     }),
     error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /access denied/.test(error.message)
   );
@@ -72,12 +72,13 @@ test("Windows ACL helper preserves complete PowerShell stdout and stderr on fail
   assert.throws(
     () => secureWindowsResultDirectory("C:\\\\unsafe\\\\results", {
       platform: "win32",
-      execFileSync() {
-        const error = new Error("PowerShell exited unsuccessfully");
-        error.code = "EACCES";
-        error.stdout = Buffer.from("STDOUT_FULL_DIAGNOSTIC");
-        error.stderr = Buffer.from("STDERR_FULL_DIAGNOSTIC");
-        throw error;
+      spawnSync() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: "STDOUT_FULL_DIAGNOSTIC",
+          stderr: "STDERR_FULL_DIAGNOSTIC"
+        };
       }
     }),
     error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" &&
@@ -90,9 +91,24 @@ test("Windows ACL helper fails closed when the success marker is absent", () => 
   assert.throws(
     () => secureWindowsResultDirectory("C:\\\\safe\\\\results", {
       platform: "win32",
-      execFileSync() { return "PowerShell completed without an ACL verification marker"; }
+      spawnSync() { return { status: 0, signal: null, stdout: "PHONE_RESULT_ACL_RUNTIME=5.1", stderr: "" }; }
     }),
-    error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /marker missing/.test(error.message)
+    error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /PHONE_RESULT_ACL_OK/.test(error.message) && /PHONE_RESULT_ACL_RUNTIME=5.1/.test(error.message)
+  );
+});
+
+
+test("Windows ACL helper treats PowerShell stderr as failure even when exit code is zero", () => {
+  assert.throws(
+    () => secureWindowsResultDirectory("C:\\safe\\results", {
+      platform: "win32",
+      spawnSync() {
+        return { status: 0, signal: null, stdout: "PHONE_RESULT_ACL_RUNTIME=5.1", stderr: "Add-Type compilation error" };
+      }
+    }),
+    error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" &&
+      /exitCode=0/.test(error.message) &&
+      /Add-Type compilation error/.test(error.message)
   );
 });
 
@@ -153,7 +169,7 @@ test("Windows ACL helper rejects a missing or unexpected target path", async t =
 
 test("Windows ACL helper requires a result directory", () => {
   assert.throws(
-    () => secureWindowsResultDirectory("", { platform: "win32", execFileSync() {} }),
+    () => secureWindowsResultDirectory("", { platform: "win32", spawnSync() {} }),
     /result directory is required/
   );
 });
