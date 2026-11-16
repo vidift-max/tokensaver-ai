@@ -8,7 +8,8 @@
 #include <string>
 #include <vector>
 #include <wchar.h>
-#include <objbase.h>
+#include <winrt/base.h>
+#include <winrt/Windows.ApplicationModel.h>
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
 static std::wstring PIPE_NAME=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881";
@@ -44,23 +45,19 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
  return ToUtf8(w);
 }
 static int Supervisor(const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,DWORD);
-struct __declspec(uuid("2E941141-7F97-4756-BA1D-9DECDE894A3D")) IPhone02ApplicationActivationManager : IUnknown {
- virtual HRESULT STDMETHODCALLTYPE ActivateApplication(LPCWSTR appUserModelId,LPCWSTR arguments,DWORD options,DWORD* processId)=0;
- virtual HRESULT STDMETHODCALLTYPE ActivateForFile(LPCWSTR appUserModelId,void* itemArray,LPCWSTR verb,DWORD* processId)=0;
- virtual HRESULT STDMETHODCALLTYPE ActivateForProtocol(LPCWSTR appUserModelId,void* uri,DWORD* processId)=0;
-};
-static const CLSID CLSID_Phone02ApplicationActivationManager={0x45BA127D,0x10A8,0x46EA,{0x8A,0xB7,0x56,0xEA,0x90,0x78,0x94,0x3C}};
 static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid){
- std::wstring family=PackageValueFromProcess(GetCurrentProcess(),false);
- if(family.empty()||family==L"NO_PACKAGE_IDENTITY"||family.find(L"TokenSaver.Phone02.IdentityPoA_")!=0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=DENY PACKAGE_FAMILY="+family);return false;}
- HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);bool uninit=SUCCEEDED(init);
- IPhone02ApplicationActivationManager* manager=nullptr;
- HRESULT hr=CoCreateInstance(CLSID_Phone02ApplicationActivationManager,nullptr,CLSCTX_LOCAL_SERVER,__uuidof(IPhone02ApplicationActivationManager),reinterpret_cast<void**>(&manager));
- if(FAILED(hr)){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_COM_CREATE=FAIL HRESULT="+std::to_wstring((unsigned long)hr));if(uninit)CoUninitialize();return false;}
- std::wstring aumid=family+L"!Supervisor",args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";DWORD supervisorPid=0;
- hr=manager->ActivateApplication(aumid.c_str(),args.c_str(),0,&supervisorPid);manager->Release();if(uninit)CoUninitialize();
- if(FAILED(hr)||!supervisorPid){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)hr));return false;}
- ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS PID="+std::to_wstring(supervisorPid)+L" AUMID="+aumid+L" CLIENT_PID="+std::to_wstring(clientPid));return true;
+ try{
+  winrt::init_apartment(winrt::apartment_type::single_threaded);
+  std::wstring args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";
+  auto result=winrt::Windows::ApplicationModel::FullTrustProcessLauncher::LaunchFullTrustProcessForCurrentAppWithArgumentsAsync(args).get();
+  auto launchStatus=result.LaunchResult();
+  if(launchStatus!=winrt::Windows::ApplicationModel::FullTrustLaunchResult::Success){
+   ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL RESULT="+std::to_wstring((unsigned)launchStatus));return false;
+  }
+  ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS API=FullTrustProcessLauncher PID=OS_ACTIVATION_RESULT_NOT_EXPOSED CLIENT_PID="+std::to_wstring(clientPid));return true;
+ }catch(const winrt::hresult_error&e){
+  ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)e.code().value));return false;
+ }
 }
 static int PackageSupervisor(DWORD expectedPid,const std::wstring&pipeName){
  std::wstring family=PackageValueFromProcess(GetCurrentProcess(),false),full=PackageValueFromProcess(GetCurrentProcess(),true);
