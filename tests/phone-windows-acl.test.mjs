@@ -94,6 +94,7 @@ test("real Windows ACL application protects existing nested items and newly inhe
 
     const audit = String.raw`
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 $root = [System.IO.Path]::GetFullPath($env:TOKENSAVER_PHONE_RESULT_DIRECTORY)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
@@ -127,7 +128,8 @@ foreach ($item in $items) {
     if ($isExisting -and $entry.IsInherited) { throw "Existing ACL entry unexpectedly inherited on $($item.FullName)" }
     if (-not $isExisting -and -not $entry.IsInherited) { throw "New item ACL entry is not inherited on $($item.FullName)" }
   }
-  if ($seenSids.Count -ne 3 -or @($allowed | Where-Object { -not $seenSids.Contains($_) }).Count -ne 0) {
+  $missingSids = @($allowed | Where-Object { -not $seenSids.Contains($_) })
+  if ($seenSids.Count -ne 3 -or $missingSids.Count -ne 0) {
     throw "SID set mismatch on $($item.FullName)"
   }
 }
