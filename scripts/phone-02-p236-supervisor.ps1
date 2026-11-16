@@ -58,8 +58,8 @@ try {
  $tp=[IntPtr]::Zero;if(-not [P236Sid]::ConvertSidToStringSid($sp,[ref]$tp)){throw 'AppContainer SID stringify failed'}
  $appSid=[Runtime.InteropServices.Marshal]::PtrToStringUni($tp);[P236Sid]::LocalFree($tp)|Out-Null;[P236Sid]::LocalFree($sp)|Out-Null
  $config=Join-Path $root 'supervisor.conf';$svcExe=Join-Path $root 'supervisor.exe'
- $binArg='binPath= "'+$svcExe+'" --service "'+$config+'"'
- & sc.exe create $service $binArg 'start= demand' 'obj= NT AUTHORITY\LocalService'|Out-Host
+ $binPathValue='"'+$svcExe+'" --service "'+$config+'"'
+ & sc.exe create $service 'binPath=' $binPathValue 'start=' 'demand' 'obj=' 'NT AUTHORITY\LocalService'|Out-Host
  if($LASTEXITCODE -ne 0){throw 'SCM create failed'};$created=$true
  & sc.exe sidtype $service unrestricted|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM Service SID setup failed'}
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
