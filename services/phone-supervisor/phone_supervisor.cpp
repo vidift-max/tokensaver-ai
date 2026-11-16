@@ -93,8 +93,8 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
  RPC_STATUS revertStatus=RpcRevertToSelf();Log(L"RPC_REVERT status="+std::to_wstring(revertStatus));
  if(revertStatus!=RPC_S_OK){localReason=L"RPC_REVERT_TO_SELF_FAILED";tokenObserved=false;}
  if(tokenObserved&&process){
-  Log(L"RPC_PROCESS_TIMES_BEGIN");
-  if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
+  Log(L"RPC_PROCESS_TIMES_BEGIN");FILETIME exitTime{},kernelTime{},userTime{};
+  if(!GetProcessTimes(process,&out.created,&exitTime,&kernelTime,&userTime)){localReason=L"PROCESS_CREATION_TIME_ERROR_"+std::to_wstring(GetLastError());tokenObserved=false;}
   else Log(L"RPC_PROCESS_TIMES_OK");
   if(tokenObserved){
    Log(L"RPC_PROCESS_SESSION_BEGIN");
