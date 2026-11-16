@@ -65,7 +65,7 @@ try {
  & sc.exe sidtype $service unrestricted|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM Service SID setup failed'}
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
  if(-not $serviceSid){throw 'Service SID not returned by SCM'}
- @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)")|Set-Content $config -Encoding ASCII
+ @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)")|Set-Content $config -Encoding ASCII
  $serviceAce='NT SERVICE\'+$service+':(OI)(CI)M'
  & icacls.exe $root /inheritance:r /grant 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' $serviceAce|Out-Host
  if($LASTEXITCODE -ne 0){throw 'Service working directory ACL failed'}
@@ -142,7 +142,7 @@ public static class P236Activator {
   do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
   Check ($state -eq 'Stopped' -and (Get-Content $svcLog -Raw) -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0') ($tc.Name+'_PREVIOUS_SESSION_CLEAN')
   Copy-Item $svcLog (Join-Path $evidence ('service-before-'+$tc.Name+'.log')) -Force
-  @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$($tc.AppSid)","SERVICE_SID=$serviceSid","USER_SID=$($tc.UserSid)")|Set-Content $config -Encoding ASCII
+  @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$($tc.AppSid)","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$($tc.UserSid)")|Set-Content $config -Encoding ASCII
   Remove-Item $svcLog -Force -ErrorAction SilentlyContinue
   & sc.exe start $service|Out-Host;if($LASTEXITCODE -ne 0){throw ('SCM restart failed for '+$tc.Name)}
   $s=$null;for($i=0;$i -lt 40;$i++){Start-Sleep -Milliseconds 250;$s=Get-CimInstance Win32_Service -Filter "Name='$service'";if($s.State -eq 'Running'){break}}
