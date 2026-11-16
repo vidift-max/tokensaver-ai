@@ -280,7 +280,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
     const code = cause?.code ? " [" + cause.code + "]" : "";
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage" +
-      code + ": " + detail.trim().slice(-3000),
+      code + ": " + detail.trim(),
       { cause }
     );
     error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
