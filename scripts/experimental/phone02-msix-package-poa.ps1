@@ -208,13 +208,16 @@ public static class PackageActivator {
   $s=Start-Supervisor 'legitimate-msix' $legitPipe $activatedPid
   $legit=Finish-Case $s 'legitimate-msix' -AllowTimeout
   if($legit.TimedOut){
-    $diagnosticPath=Join-Path $root "Phone02-MsixPoA-client-$activatedPid.log"
+    $diagnosticName="Phone02-MsixPoA-client-$activatedPid.log"
+    $diagnosticPath=Join-Path $env:LOCALAPPDATA $diagnosticName
+    if(-not (Test-Path $diagnosticPath)){$diagnosticPath=Join-Path $root $diagnosticName}
     $diagnostic=if(Test-Path $diagnosticPath){Get-Content $diagnosticPath -Raw}else{''}
+    if(Test-Path $diagnosticPath){Copy-Item $diagnosticPath (Join-Path $root $diagnosticName) -Force -ErrorAction SilentlyContinue}
     $clientSession=[regex]::Match($diagnostic,'SESSION=(\d+)').Groups[1].Value
     $supervisorSession=[regex]::Match($legit.Content,'SUPERVISOR_SESSION=(\d+)').Groups[1].Value
     if($diagnostic -match 'CLIENT_PIPE_FIRST_ERROR=2' -and $clientSession -and $clientSession -eq $supervisorSession){
       Write-Host 'APPCONTAINER_PIPE_VISIBILITY=BLOCKED ERROR=ERROR_FILE_NOT_FOUND'
-      Write-Host 'SESSION_CORRELATION=PASS — activated client and full-trust Supervisor both reported session 2'
+      Write-Host "SESSION_CORRELATION=PASS CLIENT_SESSION=$clientSession SUPERVISOR_SESSION=$supervisorSession"
       Write-Host 'FULLTRUST_PIPE_VISIBILITY=PASS — same-user full-trust control connected and was rejected by token'
       Write-Host 'ROUND_7 — BLOCKED; protocol spoof matrix not executed because packaged AppContainer client cannot reach the pipe'
       Write-Host 'ROUND_8 — BLOCKED; simultaneous package-instance authorization not executed'
