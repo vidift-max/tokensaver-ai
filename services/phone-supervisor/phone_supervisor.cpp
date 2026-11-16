@@ -14,6 +14,7 @@
 #include <fstream>
 #include <algorithm>
 #include "phone_supervisor_rpc.h"
+#include "SupervisorTeamRoomAdapter.h"
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Bcrypt.lib")
 #pragma comment(lib,"Advapi32.lib")
@@ -21,12 +22,12 @@
 #pragma comment(lib,"Shell32.lib")
 #pragma comment(lib,"Ole32.lib")
 static const wchar_t* SERVICE_NAME=L"TokenSaverPhone02Supervisor";
-static const wchar_t* RPC_ENDPOINT=L"TokenSaver.Phone02.Supervisor.v1";
+static const wchar_t* RPC_ENDPOINT=L"TokenSaver.Phone02.Supervisor.v1.1";
 static const ULONGLONG SESSION_IDLE_MS=60000;
 static SERVICE_STATUS_HANDLE gStatusHandle=nullptr;
 static SERVICE_STATUS gStatus{};
 static HANDLE gStopEvent=nullptr;
-static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gRpcAllowedUserSid,gServiceSid,gExpectedUserSid;
+static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gRpcAllowedUserSid,gServiceSid,gExpectedUserSid,gTeamRoomFakeMode,gTeamRoomTestPhoneId,gTeamRoomTestEndpointId,gTeamRoomTestRecipientId;
 static std::mutex gMutex;static std::mutex gLogMutex;static HANDLE gLogHandle=INVALID_HANDLE_VALUE;
 static bool gStopping=false;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
@@ -150,6 +151,51 @@ void Heartbeat(handle_t binding,wchar_t*correlation,wchar_t*sessionId,long*statu
 void CloseSession(handle_t binding,wchar_t*correlation,wchar_t*sessionId,long*status){
  if(!status)return;*status=RPC_INVALID_ARGUMENT;if(!ValidCorrelation(correlation)||!sessionId||wcslen(sessionId)>80)return;ObservedIdentity id;if(!ObserveCaller(binding,id)){*status=RPC_ACCESS_DENIED;return;}std::lock_guard<std::mutex>l(gMutex);auto it=gSessions.find(sessionId);if(it==gSessions.end()){*status=RPC_SESSION_NOT_FOUND;return;}if(!SameIdentity(it->second.identity,id)){*status=RPC_ACCESS_DENIED;return;}SecureZeroMemory(it->second.nonceHash.data(),it->second.nonceHash.size());gSessions.erase(it);*status=RPC_OK;
 }
+
+static std::string Ascii(const std::wstring& v){std::string o;o.reserve(v.size());for(wchar_t c:v){if(c<0x21||c>0x7e)return {};o.push_back((char)c);}return o;}
+void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,long*status){
+ if(!status)return;*status=RPC_INVALID_ARGUMENT;
+ if(!ValidCorrelation(correlation)||!sessionId||wcslen(sessionId)>80)return;
+ if(IsStopping()){*status=RPC_SERVICE_STOPPING;return;}
+ ObservedIdentity observed;std::wstring reason;
+ if(!ObserveCaller(binding,observed,&reason)){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_RPC_REJECT reason="+reason);return;}
+ {
+  std::lock_guard<std::mutex> lock(gMutex);auto it=gSessions.find(sessionId);
+  if(it==gSessions.end()){*status=RPC_SESSION_NOT_FOUND;return;}
+  if(GetTickCount64()>it->second.expiresAt){gSessions.erase(it);*status=RPC_SESSION_EXPIRED;return;}
+  if(!it->second.authorized||!SameIdentity(it->second.identity,observed)){*status=RPC_ACCESS_DENIED;return;}
+ }
+ if(gTeamRoomFakeMode!=L"1"){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_FAKE_MODE=DISABLED");return;}
+ const std::string phoneId=Ascii(gTeamRoomTestPhoneId),endpointId=Ascii(gTeamRoomTestEndpointId),recipientId=Ascii(gTeamRoomTestRecipientId);
+ if(phoneId!="TEST-AI-PHONE-02"||endpointId!="TEST-ENDPOINT-02"||recipientId!="FAKE-RECIPIENT-PHONE"||
+    observed.family.empty()||observed.full.empty()||observed.appSid.empty()){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_PROVISIONED_BINDING=REJECT");return;}
+ phone_supervisor::FakeSupervisorTeamRoomAdapter adapter;
+ if(adapter.authenticate("INVALID-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_AUTH_FAILURE=PASS");
+ if(!adapter.authenticate("P2.37-TEST-ONLY-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_AUTHENTICATE=PASS");
+ phone_supervisor::ProvisionedPhoneBinding provisioned{phoneId,endpointId,Ascii(observed.family),Ascii(observed.full),Ascii(observed.appSid),1};
+ auto wrong=provisioned;wrong.ai_phone_id="CLIENT-CHOSEN-IDENTITY";
+ phone_supervisor::TeamRoomAttachment attachment;
+ if(adapter.attach(wrong,attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_IDENTITY_MISMATCH=PASS");
+ if(!adapter.attach(provisioned,attachment)||attachment.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_ATTACH=PASS");
+ if(!adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_HEARTBEAT=PASS");
+ if(!adapter.reconnect(attachment,"P2.37-FRESH-CHALLENGE")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_RECONNECT=PASS");
+ phone_supervisor::TeamRoomMessage receipt;
+ if(adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)){*status=RPC_INTERNAL_ERROR;return;}
+ Log(L"TEAM_ROOM_PAIR_DENY=PASS");
+ if(!adapter.grantPairForTest(phoneId,recipientId)||
+    !adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)||
+    receipt.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
+ Log(L"TEAM_ROOM_SEND=PASS");Log(L"TEAM_ROOM_SENDER_IDENTITY=PASS sender_ai_phone_id=TEST-AI-PHONE-02");
+ std::vector<phone_supervisor::TeamRoomMessage> inbox;
+ if(!adapter.receive(attachment,inbox)||inbox.size()!=1||inbox.front().sender_ai_phone_id!="FAKE-REMOTE-SENDER"){*status=RPC_INTERNAL_ERROR;return;}
+ Log(L"TEAM_ROOM_RECEIVE=PASS");
+ if(!adapter.ack(attachment,inbox.front().message_id)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_ACK=PASS");
+ if(!adapter.credentialsConfined()){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS");
+ if(!adapter.detach(attachment)||adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_DETACH=PASS");
+ if(!adapter.revoke(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_REVOKE=PASS");
+ Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");*status=RPC_OK;
+}
+
 static void SetState(DWORD state,DWORD error=NO_ERROR,DWORD hint=0){gStatus.dwServiceType=SERVICE_WIN32_OWN_PROCESS;gStatus.dwCurrentState=state;gStatus.dwWin32ExitCode=error;gStatus.dwWaitHint=hint;gStatus.dwControlsAccepted=state==SERVICE_RUNNING?SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN:0;if(gStatusHandle)SetServiceStatus(gStatusHandle,&gStatus);}
 static void WINAPI Handler(DWORD c){if(c==SERVICE_CONTROL_STOP||c==SERVICE_CONTROL_SHUTDOWN){SetState(SERVICE_STOP_PENDING,NO_ERROR,15000);{std::lock_guard<std::mutex>l(gMutex);gStopping=true;}if(gStopEvent)SetEvent(gStopEvent);}}
 static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* context){
@@ -163,16 +209,16 @@ static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* conte
 static void WINAPI ServiceMain(DWORD,LPWSTR*){
  gStatusHandle=RegisterServiceCtrlHandlerW(L"TokenSaverPhone02Supervisor",Handler);if(!gStatusHandle)return;SetUnhandledExceptionFilter(SupervisorUnhandledException);SetState(SERVICE_START_PENDING,NO_ERROR,15000);int argc=0;LPWSTR*argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv||argc<3){if(argv)LocalFree(argv);SetState(SERVICE_STOPPED,ERROR_INVALID_PARAMETER);return;}gConfigPath=argv[2];LocalFree(argv);gLogPath=gConfigPath+L".log";gLogHandle=CreateFileW(gLogPath.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(gLogHandle!=INVALID_HANDLE_VALUE){LARGE_INTEGER logSize{};if(GetFileSizeEx(gLogHandle,&logSize)&&logSize.QuadPart==0){const BYTE bom[2]={0xFF,0xFE};DWORD bomWritten=0;WriteFile(gLogHandle,bom,sizeof(bom),&bomWritten,nullptr);FlushFileBuffers(gLogHandle);}}
- gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gRpcAllowedAppSid=ReadValue(L"RPC_CLIENT_APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");gRpcAllowedUserSid=ReadValue(L"RPC_CLIENT_USER_SID");
+ gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gRpcAllowedAppSid=ReadValue(L"RPC_CLIENT_APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");gRpcAllowedUserSid=ReadValue(L"RPC_CLIENT_USER_SID");gTeamRoomFakeMode=ReadValue(L"TEAM_ROOM_FAKE_MODE");gTeamRoomTestPhoneId=ReadValue(L"TEAM_ROOM_TEST_AI_PHONE_ID");gTeamRoomTestEndpointId=ReadValue(L"TEAM_ROOM_TEST_ENDPOINT_ID");gTeamRoomTestRecipientId=ReadValue(L"TEAM_ROOM_TEST_RECIPIENT_ID");
  if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gRpcAllowedAppSid.empty()||gRpcAllowedUserSid.empty()||gServiceSid.empty()||gExpectedUserSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
  if(!ServiceSidInToken()){Log(L"SERVICE_SID_IN_TOKEN=FAIL");SetState(SERVICE_STOPPED,ERROR_ACCESS_DENIED);return;}
  Log(L"SERVICE_IDENTITY=PASS SERVICE_NAME=TokenSaverPhone02Supervisor SERVICE_SID_IN_TOKEN=TRUE ACCOUNT=LocalService");
  gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}std::wstring rpcSddl=L"D:P(A;;GA;;;"+gRpcAllowedUserSid+L")(A;;GA;;;"+gRpcAllowedAppSid+L")";
  PSECURITY_DESCRIPTOR sd=nullptr;
  if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(rpcSddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
- RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",sd);
+ RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1.1",sd);
  if(rc==RPC_S_OK)rc=RpcServerRegisterAuthInfoW(nullptr,RPC_C_AUTHN_WINNT,nullptr,nullptr);
- if(rc==RPC_S_OK)rc=RpcServerRegisterIf3(PhoneSupervisorRpc_v1_0_s_ifspec,nullptr,nullptr,
+ if(rc==RPC_S_OK)rc=RpcServerRegisterIf3(PhoneSupervisorRpc_v1_1_s_ifspec,nullptr,nullptr,
    RPC_IF_ALLOW_SECURE_ONLY|RPC_IF_ALLOW_LOCAL_ONLY,RPC_C_LISTEN_MAX_CALLS_DEFAULT,
    static_cast<unsigned int>(-1),SupervisorSecurityCallback,sd);
  LocalFree(sd);

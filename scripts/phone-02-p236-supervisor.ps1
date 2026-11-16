@@ -3,7 +3,7 @@ $root=Join-Path $env:RUNNER_TEMP 'phone02-p236'
 $evidence=Join-Path $env:RUNNER_TEMP 'phone02-p236-evidence'
 $build=Join-Path $root 'build';$pkg=Join-Path $root 'package'
 New-Item -ItemType Directory -Force -Path $build,$pkg,$evidence|Out-Null
-$service='TokenSaverPhone02Supervisor';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date;$testPrivateKeyUniqueName=$null;$testPrivateKeyProvider=$null
+$service='TokenSaverPhone02Supervisor';$teamRoomBridgePassed=$false;$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date;$testPrivateKeyUniqueName=$null;$testPrivateKeyProvider=$null
 Start-Transcript -Path (Join-Path $evidence 'transcript.log') -Force|Out-Null
 function Check($ok,$label){Write-Host ($label+'='+$(if($ok){'PASS'}else{'FAIL'}));if(-not $ok){throw ($label+' failed')}}
 try {
@@ -69,7 +69,7 @@ try {
  & sc.exe sidtype $service unrestricted|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM Service SID setup failed'}
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
  if(-not $serviceSid){throw 'Service SID not returned by SCM'}
- @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","RPC_CLIENT_USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)")|Set-Content $config -Encoding ASCII
+ @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","RPC_CLIENT_USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","TEAM_ROOM_FAKE_MODE=1","TEAM_ROOM_TEST_AI_PHONE_ID=TEST-AI-PHONE-02","TEAM_ROOM_TEST_ENDPOINT_ID=TEST-ENDPOINT-02","TEAM_ROOM_TEST_RECIPIENT_ID=FAKE-RECIPIENT-PHONE")|Set-Content $config -Encoding ASCII
  $serviceAce='NT SERVICE\'+$service+':(OI)(CI)M'
  & icacls.exe $root /inheritance:r /grant 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' $serviceAce|Out-Host
  if($LASTEXITCODE -ne 0){throw 'Service working directory ACL failed'}
@@ -127,7 +127,10 @@ public static class P236Activator {
  Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
  Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
  Check ($cl -match 'AUTHORIZATION_ALLOW=PASS') 'AUTHORIZATION_ALLOW'
- Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_LIFECYCLE'
+ Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'TEAM_ROOM_SCENARIO=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_AND_TEAM_ROOM_LIFECYCLE'
+ $teamRoomLog=Get-Content $svcLog -Raw
+ foreach($marker in @('TEAM_ROOM_AUTH_FAILURE=PASS','TEAM_ROOM_AUTHENTICATE=PASS','TEAM_ROOM_IDENTITY_MISMATCH=PASS','TEAM_ROOM_ATTACH=PASS','TEAM_ROOM_HEARTBEAT=PASS','TEAM_ROOM_RECONNECT=PASS','TEAM_ROOM_PAIR_DENY=PASS','TEAM_ROOM_SEND=PASS','TEAM_ROOM_SENDER_IDENTITY=PASS','TEAM_ROOM_RECEIVE=PASS','TEAM_ROOM_ACK=PASS','TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS','TEAM_ROOM_DETACH=PASS','TEAM_ROOM_REVOKE=PASS','TEAM_ROOM_FAKE_SCENARIO=PASS')){Check ($teamRoomLog -match [regex]::Escape($marker)) $marker}
+ $teamRoomBridgePassed=$true
  $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
  Check ($LASTEXITCODE -eq 0 -and (Get-Content $common -Raw) -match 'COMMON_PROCESS_REJECT=PASS') 'COMMON_PROCESS_REJECT'
  $svcLog=Join-Path $root 'supervisor.conf.log';$commonServiceLog=Get-Content $svcLog -Raw
@@ -135,6 +138,8 @@ public static class P236Activator {
  Copy-Item $svcLog (Join-Path $evidence 'service-allow-and-common-reject.log') -Force
  $idlText=Get-Content (Join-Path $env:GITHUB_WORKSPACE 'services\phone-supervisor\phone_supervisor_rpc.idl') -Raw
  Check ($idlText -notmatch '(?im)^\s*\[(?:in|in,out)[^\]]*\]\s*(?:unsigned\s+)?(?:long|wchar_t\s*\*)\s*(?:pid|user_sid|appcontainer_sid|package_family|package_full|ai_phone_id|ai_id)\b') 'CLIENT_IDENTITY_CLAIMS_ABSENT'
+ $idlExecutable=($idlText -split "`r?`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+ Check ($idlExecutable -notmatch '(?i)\b(ai_phone_id|sender_ai_phone_id|principal_id|execution_id|token|credential|secret)\b') 'TEAM_ROOM_RPC_NO_SECRETS_OR_AI_IDENTITY'
  $expectedUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
  $mismatchCases=@(
   @{Name='USER_SID_MISMATCH';UserSid='S-1-5-21-1-2-3-999';AppSid=$appSid;Reason='USER_SID_PIN_MISMATCH'},
@@ -247,6 +252,7 @@ finally {
  $sessionClean=($logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
  $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
+ if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'P2.37_WINDOWS_FAKE_BRIDGE=PASS'|Set-Content (Join-Path $evidence 'p2.37-classification.txt') -Encoding ASCII}else{'P2.37_WINDOWS_FAKE_BRIDGE=BLOCKED'|Set-Content (Join-Path $evidence 'p2.37-classification.txt') -Encoding ASCII}
  if(-not $cleanup){$final='BLOCKED'}
  ('P2.36.1_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  Stop-Transcript|Out-Null

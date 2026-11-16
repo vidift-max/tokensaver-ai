@@ -14,6 +14,7 @@ on:
       - security/phone-02-encrypted-result-store
       - security/phone-02-os-key-provider
       - security/phone-02-windows-acl
+      - mission/phone-02-controlled-integration
   pull_request:
     branches:
       - v2-saas-alpha

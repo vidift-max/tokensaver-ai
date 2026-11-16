@@ -528,6 +528,7 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     let phone_2_messages_path = format!("/ai-phone/{phone_2_id}/messages");
     let same_payload = serde_json::json!({
         "idempotency_key": "phone-02-concurrent-idempotency",
+        "sender_ai_phone_id": "00000000-0000-0000-0000-000000000001",
         "content": {"text": "durable message addressed to AI-PHONE-02"}
     });
     let (send_1, send_2, send_3) = tokio::join!(
@@ -565,6 +566,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
             created_messages += 1;
         }
         let message: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(message["sender_ai_phone_id"], phone_1_id.to_string(),
+            "a forged sender_ai_phone_id request field is ignored; sender identity is derived from the authenticated principal");
         message_ids.push(message["message_id"].as_str().unwrap().to_owned());
     }
     assert_eq!(
@@ -603,6 +606,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let second_message: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(Uuid::parse_str(second_message["sender_ai_phone_id"].as_str().unwrap()).unwrap(), phone_1_id,
+        "sender AI_PHONE_ID is derived from the authenticated principal");
     let first_message_id = Uuid::parse_str(&message_ids[0]).unwrap();
     let second_message_id =
         Uuid::parse_str(second_message["message_id"].as_str().unwrap()).unwrap();
@@ -739,6 +744,8 @@ async fn ai_phone_02_has_independent_identity_phone_mailbox_and_authorization() 
         "AI #2 endpoint reads its own durable mailbox"
     );
     let inbox: Vec<Value> = serde_json::from_slice(&body).unwrap();
+    assert!(inbox.iter().all(|message| message["sender_ai_phone_id"] == phone_1_id.to_string()),
+        "recipient receives the server-derived sender AI_PHONE_ID, never a caller claim");
     assert!(
         inbox
             .iter()

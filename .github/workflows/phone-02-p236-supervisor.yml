@@ -1,4 +1,4 @@
-name: Phone-02 P2.36 Supervisor Windows Service
+name: Phone-02 P2.37 Supervisor Team Room Fake Bridge Windows
 on:
   push:
     branches:
@@ -7,28 +7,28 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: phone02-p236-supervisor-${{ github.sha }}
+  group: phone02-p237-supervisor-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   supervisor-windows-service:
     runs-on: windows-2025
     timeout-minutes: 35
     steps:
-      - name: Checkout isolated P2.36 branch
+      - name: Checkout isolated P2.37 branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Execute P2.36 Windows Service and AppContainer regression
+      - name: Execute P2.37 Windows Service, AppContainer and Fake Team Room bridge
         shell: pwsh
         run: |
           $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\phone-02-p236-supervisor.ps1'
-          if (-not (Test-Path $script)) { throw 'P2.36 test script missing' }
+          if (-not (Test-Path $script)) { throw 'P2.37 supervisor test script missing' }
           & $script
-      - name: Upload P2.36 evidence
+      - name: Upload P2.37 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-p236-supervisor-evidence
+          name: phone02-p237-team-room-bridge-evidence
           path: ${{ runner.temp }}/phone02-p236-evidence
           if-no-files-found: warn

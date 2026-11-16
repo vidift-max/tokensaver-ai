@@ -86,6 +86,7 @@ pub struct PhoneMessage {
     pub message_id: Uuid,
     pub ai_phone_id: Uuid,
     pub sender_principal_id: Uuid,
+    pub sender_ai_phone_id: Uuid,
     pub sequence_no: i64,
     pub idempotency_key: String,
     pub message_state: String,
@@ -1046,7 +1047,7 @@ async fn message_list_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
-    let rows = sqlx::query_as::<_, PhoneMessage>("SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND m.message_state IN ('PENDING','DELIVERED') AND EXISTS(SELECT 1 FROM phone_pair_grants g JOIN ai_phones sp ON sp.ai_phone_id=g.sender_ai_phone_id AND sp.tenant_id=g.tenant_id JOIN ai_identity_principals ip ON ip.ai_id=sp.ai_id AND ip.tenant_id=sp.tenant_id WHERE g.tenant_id=m.tenant_id AND g.sender_ai_phone_id=sp.ai_phone_id AND g.recipient_ai_phone_id=p.ai_phone_id AND g.grant_status='ACTIVE' AND g.revoked_at IS NULL AND ip.principal_id=m.sender_principal_id) ORDER BY m.sequence_no")
+    let rows = sqlx::query_as::<_, PhoneMessage>("SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,(SELECT sp.ai_phone_id FROM ai_phones sp JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE sp.tenant_id=m.tenant_id AND sip.principal_id=m.sender_principal_id) AS sender_ai_phone_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m JOIN ai_phones p ON p.ai_phone_id=m.ai_phone_id AND p.tenant_id=m.tenant_id AND p.ai_id=m.recipient_ai_id WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND m.message_state IN ('PENDING','DELIVERED') AND EXISTS(SELECT 1 FROM phone_pair_grants g JOIN ai_phones sp ON sp.ai_phone_id=g.sender_ai_phone_id AND sp.tenant_id=g.tenant_id JOIN ai_identity_principals ip ON ip.ai_id=sp.ai_id AND ip.tenant_id=sp.tenant_id WHERE g.tenant_id=m.tenant_id AND g.sender_ai_phone_id=sp.ai_phone_id AND g.recipient_ai_phone_id=p.ai_phone_id AND g.grant_status='ACTIVE' AND g.revoked_at IS NULL AND ip.principal_id=m.sender_principal_id) ORDER BY m.sequence_no")
         .bind(phone_id).bind(identity.tenant_id).fetch_all(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit()
         .await
@@ -1092,7 +1093,7 @@ async fn message_send_handler(
     require_pair_grant(&mut tx, identity.tenant_id, sender_phone.ai_phone_id, phone.1)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    let existing = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE ai_phone_id=$1 AND tenant_id=$2 AND sender_principal_id=$3 AND idempotency_key=$4")
+    let existing = sqlx::query_as::<_, PhoneMessage>("SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,(SELECT sp.ai_phone_id FROM ai_phones sp JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE sp.tenant_id=m.tenant_id AND sip.principal_id=m.sender_principal_id) AS sender_ai_phone_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m WHERE m.ai_phone_id=$1 AND m.tenant_id=$2 AND m.sender_principal_id=$3 AND m.idempotency_key=$4")
         .bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(&request.idempotency_key).fetch_optional(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(existing) = existing {
         if existing.content != request.content {
@@ -1110,7 +1111,7 @@ async fn message_send_handler(
         .bind(message_id).bind(phone_id).bind(identity.tenant_id).bind(identity.principal_id).bind(phone.0)
         .bind(sequence).bind(&request.idempotency_key).bind(&request.content)
         .execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let row = sqlx::query_as::<_, PhoneMessage>("SELECT message_id,ai_phone_id,sender_principal_id,sequence_no,idempotency_key,message_state,content,attempt_count,created_at,delivered_at,acknowledged_at FROM phone_messages WHERE message_id=$1")
+    let row = sqlx::query_as::<_, PhoneMessage>("SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,(SELECT sp.ai_phone_id FROM ai_phones sp JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE sp.tenant_id=m.tenant_id AND sip.principal_id=m.sender_principal_id) AS sender_ai_phone_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m WHERE m.message_id=$1")
         .bind(message_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     record_phone_event(&mut tx, &identity, phone_id, "MESSAGE_RECEIVED", "phone.message.sent",
         serde_json::json!({"message_id":message_id,"sequence_no":sequence,"sender_principal_id":identity.principal_id})
@@ -1204,7 +1205,7 @@ async fn sent_message_list_handler(
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
     let rows = sqlx::query_as::<_, PhoneMessage>(
-        "SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m JOIN ai_phones rp ON rp.ai_phone_id=m.ai_phone_id AND rp.tenant_id=m.tenant_id AND rp.ai_id=m.recipient_ai_id JOIN ai_phones sp ON sp.tenant_id=m.tenant_id JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE m.tenant_id=$1 AND m.sender_principal_id=$2 AND sip.principal_id=m.sender_principal_id AND EXISTS(SELECT 1 FROM phone_pair_grants g WHERE g.tenant_id=m.tenant_id AND g.sender_ai_phone_id=sp.ai_phone_id AND g.recipient_ai_phone_id=rp.ai_phone_id AND g.grant_status='ACTIVE' AND g.revoked_at IS NULL) ORDER BY m.created_at DESC LIMIT 200"
+        "SELECT m.message_id,m.ai_phone_id,m.sender_principal_id,(SELECT sp.ai_phone_id FROM ai_phones sp JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE sp.tenant_id=m.tenant_id AND sip.principal_id=m.sender_principal_id) AS sender_ai_phone_id,m.sequence_no,m.idempotency_key,m.message_state,m.content,m.attempt_count,m.created_at,m.delivered_at,m.acknowledged_at FROM phone_messages m JOIN ai_phones rp ON rp.ai_phone_id=m.ai_phone_id AND rp.tenant_id=m.tenant_id AND rp.ai_id=m.recipient_ai_id JOIN ai_phones sp ON sp.tenant_id=m.tenant_id JOIN ai_identity_principals sip ON sip.ai_id=sp.ai_id AND sip.tenant_id=sp.tenant_id WHERE m.tenant_id=$1 AND m.sender_principal_id=$2 AND sip.principal_id=m.sender_principal_id AND EXISTS(SELECT 1 FROM phone_pair_grants g WHERE g.tenant_id=m.tenant_id AND g.sender_ai_phone_id=sp.ai_phone_id AND g.recipient_ai_phone_id=rp.ai_phone_id AND g.grant_status='ACTIVE' AND g.revoked_at IS NULL) ORDER BY m.created_at DESC LIMIT 200"
     ).bind(identity.tenant_id).bind(identity.principal_id).fetch_all(&mut *tx).await
       .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     tx.commit()

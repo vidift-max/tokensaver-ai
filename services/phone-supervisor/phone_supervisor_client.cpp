@@ -21,9 +21,10 @@ static RPC_STATUS SafeBegin(handle_t b,wchar_t* corr,wchar_t** sid,wchar_t** non
 static RPC_STATUS SafeAuthorize(handle_t b,wchar_t* corr,wchar_t* sid,wchar_t* nonce,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{Authorize(b,corr,sid,nonce,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
 static RPC_STATUS SafeHeartbeat(handle_t b,wchar_t* corr,wchar_t* sid,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{Heartbeat(b,corr,sid,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
 static RPC_STATUS SafeClose(handle_t b,wchar_t* corr,wchar_t* sid,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{CloseSession(b,corr,sid,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
+static RPC_STATUS SafeTeamRoomScenario(handle_t b,wchar_t* corr,wchar_t* sid,long* status){RPC_STATUS ex=RPC_S_OK;RpcTryExcept{TeamRoomScenario(b,corr,sid,status);}RpcExcept(1){ex=RpcExceptionCode();}RpcEndExcept return ex;}
 int wmain(int argc,wchar_t**argv){
  RPC_WSTR str=nullptr;RPC_BINDING_HANDLE binding=nullptr;
- RPC_STATUS rc=RpcStringBindingComposeW(nullptr,(RPC_WSTR)L"ncalrpc",nullptr,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",nullptr,&str);
+ RPC_STATUS rc=RpcStringBindingComposeW(nullptr,(RPC_WSTR)L"ncalrpc",nullptr,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1.1",nullptr,&str);
  if(rc==RPC_S_OK)rc=RpcBindingFromStringBindingW(str,&binding);if(str)RpcStringFreeW(&str);
  if(rc==RPC_S_OK)rc=RpcBindingSetAuthInfoW(binding,nullptr,RPC_C_AUTHN_LEVEL_PKT_PRIVACY,RPC_C_AUTHN_WINNT,nullptr,RPC_C_AUTHZ_NONE);
  if(rc==RPC_S_OK)rc=RpcBindingSetOption(binding,RPC_C_OPT_CALL_TIMEOUT,5000);
@@ -48,7 +49,7 @@ int wmain(int argc,wchar_t**argv){
  callStatus=SafeHeartbeat(binding,corr,session,&status);
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_HEARTBEAT_RPC_EXCEPTION="+std::to_wstring(callStatus));midl_user_free(session);RpcBindingFree(&binding);return 18;}
  if(status!=RPC_OK){Log(L"HEARTBEAT=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 14;}
- Log(L"HEARTBEAT=PASS");callStatus=SafeClose(binding,corr,session,&status);
+ Log(L"HEARTBEAT=PASS");callStatus=SafeTeamRoomScenario(binding,corr,session,&status);if(callStatus!=RPC_S_OK||status!=RPC_OK){Log(L"TEAM_ROOM_SCENARIO=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 20;}Log(L"TEAM_ROOM_SCENARIO=PASS");callStatus=SafeClose(binding,corr,session,&status);
  midl_user_free(session);RpcBindingFree(&binding);if(callStatus!=RPC_S_OK){Log(L"CLIENT_CLOSE_RPC_EXCEPTION="+std::to_wstring(callStatus));return 19;}
  if(status!=RPC_OK){Log(L"CLOSE_SESSION=FAIL");return 15;}Log(L"CLOSE_SESSION=PASS");return 0;
 }
