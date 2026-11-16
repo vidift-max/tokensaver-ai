@@ -114,15 +114,33 @@ public static class PhoneAclNative
         AceFlags inheritanceFlags = isDirectory
             ? (AceFlags.ContainerInherit | AceFlags.ObjectInherit)
             : AceFlags.None;
-        AceFlags expectedFlags = inheritanceFlags | (expectInherited ? AceFlags.Inherited : AceFlags.None);
 
         for (int i = 0; i < descriptor.DiscretionaryAcl.Count; i++)
         {
             GenericAce generic = descriptor.DiscretionaryAcl[i];
             QualifiedAce ace = generic as QualifiedAce;
             if (ace == null || generic.AceType != AceType.AccessAllowed || ace.AceQualifier != AceQualifier.AccessAllowed ||
-                ace.IsCallback || ace.AccessMask != FULL_CONTROL || generic.AceFlags != expectedFlags)
-                throw new InvalidOperationException("Unexpected ACL ACE type, rights, inheritance or provenance for " + path);
+                ace.IsCallback || ace.AccessMask != FULL_CONTROL)
+                throw new InvalidOperationException("Unexpected ACL ACE type or rights for " + path);
+
+            AceFlags flags = generic.AceFlags;
+            if (!expectInherited)
+            {
+                if (flags != inheritanceFlags)
+                    throw new InvalidOperationException("Unexpected explicit ACL inheritance flags for " + path);
+            }
+            else
+            {
+                if ((flags & AceFlags.Inherited) == 0 ||
+                    (flags & (AceFlags.InheritOnly | AceFlags.NoPropagateInherit)) != 0)
+                    throw new InvalidOperationException("Expected an effective inherited ACE for " + path);
+                if (isDirectory && (flags & inheritanceFlags) != inheritanceFlags)
+                    throw new InvalidOperationException("Inherited directory ACE must continue to protect descendants: " + path);
+                if (!isDirectory && (flags & AceFlags.ContainerInherit) != 0)
+                    throw new InvalidOperationException("File ACE cannot carry container inheritance: " + path);
+                if (!isDirectory && (flags & ~(AceFlags.Inherited | AceFlags.ObjectInherit)) != 0)
+                    throw new InvalidOperationException("Unexpected file inheritance flags for " + path);
+            }
 
             string sid = ace.SecurityIdentifier.Value;
             if (!expected.Contains(sid) || !observed.Add(sid))
