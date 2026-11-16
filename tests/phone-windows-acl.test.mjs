@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { secureWindowsResultDirectory, verifyWindowsResultAcl } from "../scripts/phone-windows-acl.mjs";
+import { secureWindowsResultDirectory, verifyWindowsAclConstruction, verifyWindowsResultAcl } from "../scripts/phone-windows-acl.mjs";
 
 test("Windows ACL helper builds a non-interpolated PowerShell command and verifies its marker", () => {
   let captured;
@@ -21,7 +21,9 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
       assert.match(script, /RawSecurityDescriptor/);
       assert.match(script, /new DiscretionaryAcl\(isDirectory, false, allowedSids\.Length\)/);
       assert.match(script, /dacl\.AddAccess\(AccessControlType\.Allow, sid, FULL_CONTROL, inheritance, PropagationFlags\.None\)/);
-      assert.match(script, /dacl\.Count != allowedSids\.Length/);
+      assert.match(script, /dacl\.Count != 3/);
+      assert.match(script, /VerifyConstructedDacl/);
+      assert.match(script, /PHONE_RESULT_ACL_CONSTRUCTION_OK/);
       assert.doesNotMatch(script, /\bInsertAce\b/);
       assert.match(script, /InheritanceFlags\.ContainerInherit \| InheritanceFlags\.ObjectInherit/);
       assert.match(script, /Unexpected or duplicate ACL SID/);
@@ -42,6 +44,16 @@ test("Windows ACL helper builds a non-interpolated PowerShell command and verifi
   assert.equal(captured.command, "powershell.exe");
   assert.equal(captured.args.includes("-EncodedCommand"), true);
   assert.equal(captured.options.timeout, 60000);
+});
+
+test("real Windows DACL construction independently verifies three exact ACEs in memory", async t => {
+  if (process.platform !== "win32") return t.skip("Windows ACL construction requires a Windows runner");
+  const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-acl-build-"));
+  try {
+    verifyWindowsAclConstruction(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Windows ACL helper fails closed if ACL application or verification fails", () => {
