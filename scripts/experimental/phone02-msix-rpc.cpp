@@ -198,7 +198,7 @@ static int RpcClient(const std::wstring&family,const std::wstring&sid,const std:
  return callStatus==RPC_S_OK?0:65;
 }
 static int RpcReplayClient(const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&endpoint,const std::wstring&staleNonce){
- std::wstring claims=MakeClaims(L"spoof-all",family,sid,full)+L"SEQ=1;";
+ std::wstring claims=MakeClaims(L"rpc",family,sid,full)+L"SEQ=1;";
  RPC_WSTR sb=nullptr;RPC_BINDING_HANDLE binding=nullptr;
  RPC_STATUS s=RpcStringBindingComposeW(nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),nullptr,reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(endpoint.c_str())),nullptr,&sb);
  if(s!=RPC_S_OK)return 71;s=RpcBindingFromStringBindingW(sb,&binding);RpcStringFreeW(&sb);if(s!=RPC_S_OK)return 72;
@@ -206,6 +206,7 @@ static int RpcReplayClient(const std::wstring&family,const std::wstring&sid,cons
  long authorized=-1;RPC_STATUS callStatus=SafePhone02Authorize(binding,const_cast<wchar_t*>(staleNonce.c_str()),const_cast<wchar_t*>(claims.c_str()),&authorized);
  RpcBindingFree(&binding);
  wprintf(L"RPC_REPLAY_ATTEMPT=TRUE STALE_NONCE=%s CALL_STATUS=%lu AUTHORIZATION=%s\n",staleNonce.c_str(),callStatus,authorized==1?L"ALLOW":L"REJECT");
+ ClientLog(L"RPC_REPLAY_ATTEMPT=TRUE STALE_NONCE="+staleNonce+L" CALL_STATUS="+std::to_wstring(callStatus)+L" AUTHORIZATION="+(authorized==1?L"ALLOW":L"REJECT"));
  return callStatus==RPC_S_OK?0:74;
 }
 #endif
