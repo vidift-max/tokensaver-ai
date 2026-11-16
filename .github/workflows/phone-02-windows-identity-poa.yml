@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - security/phone-02-windows-identity-poa
+  workflow_dispatch:
 
 permissions:
   contents: read
