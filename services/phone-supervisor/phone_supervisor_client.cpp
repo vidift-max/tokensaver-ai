@@ -8,12 +8,14 @@
 #include "phone_supervisor_rpc.h"
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Ole32.lib")
+static const long RPC_OK=0;
+static const long RPC_ACCESS_DENIED=2;
 extern "C" void* __RPC_USER midl_user_allocate(size_t n){return malloc(n);}
 extern "C" void __RPC_USER midl_user_free(void*p){free(p);}
 static void Log(const std::wstring&s){
  wchar_t p[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",p,32768);
  std::wstring path=(n&&n<32768)?std::wstring(p)+L"\\PhoneSupervisor-P236-client.log":L"PhoneSupervisor-P236-client.log";
- std::wofstream f(path,std::ios::app);if(f){f<<s<<L"\n";f.flush();}wprintf(L"%s\n",s.c_str());fflush(stdout);
+ std::wofstream f(path,std::ios::app);if(f){f<<s<<L"\n";f.flush();}wprintf(L"%s\n",s.c_str());fflush(stdout);wprintf(L"%s\n",s.c_str());fflush(stdout);
 }
 int wmain(int argc,wchar_t**argv){
  RPC_WSTR str=nullptr;RPC_BINDING_HANDLE binding=nullptr;
