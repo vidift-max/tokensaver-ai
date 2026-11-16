@@ -8,7 +8,7 @@ permissions:
   contents: read
 concurrency:
   group: phone02-msix-package-poa-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   msix-package-poa:
     name: Windows MSIX package and activation PoA

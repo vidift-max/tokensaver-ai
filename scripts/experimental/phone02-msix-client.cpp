@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <wchar.h>
+#include <objbase.h>
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
 static std::wstring PIPE_NAME=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881";
@@ -42,8 +43,42 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
  std::wstring w=L"CLAIMED_PACKAGE_FAMILY="+f+L";CLAIMED_PACKAGE_FULL_NAME="+pfn+L";CLAIMED_APPCONTAINER_SID="+s+L";CLAIMED_PACKAGE_SID="+ps+L";HANDSHAKE="+hs;
  return ToUtf8(w);
 }
-static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName){
+struct __declspec(uuid("2E941141-7F97-4756-BA1D-9DECDE894A3D")) IPhone02ApplicationActivationManager : IUnknown {
+ virtual HRESULT STDMETHODCALLTYPE ActivateApplication(LPCWSTR appUserModelId,LPCWSTR arguments,DWORD options,DWORD* processId)=0;
+ virtual HRESULT STDMETHODCALLTYPE ActivateForFile(LPCWSTR appUserModelId,void* itemArray,LPCWSTR verb,DWORD* processId)=0;
+ virtual HRESULT STDMETHODCALLTYPE ActivateForProtocol(LPCWSTR appUserModelId,void* uri,DWORD* processId)=0;
+};
+static const CLSID CLSID_Phone02ApplicationActivationManager={0x45BA127D,0x10A8,0x46EA,{0x8A,0xB7,0x56,0xEA,0x90,0x78,0x94,0x3C}};
+static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid){
+ std::wstring family=PackageValueFromProcess(GetCurrentProcess(),false);
+ if(family.empty()||family==L"NO_PACKAGE_IDENTITY"||family.find(L"TokenSaver.Phone02.IdentityPoA_")!=0){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=DENY PACKAGE_FAMILY="+family);return false;}
+ HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);bool uninit=SUCCEEDED(init);
+ IPhone02ApplicationActivationManager* manager=nullptr;
+ HRESULT hr=CoCreateInstance(CLSID_Phone02ApplicationActivationManager,nullptr,CLSCTX_LOCAL_SERVER,__uuidof(IPhone02ApplicationActivationManager),reinterpret_cast<void**>(&manager));
+ if(FAILED(hr)){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_COM_CREATE=FAIL HRESULT="+std::to_wstring((unsigned long)hr));if(uninit)CoUninitialize();return false;}
+ std::wstring aumid=family+L"!Supervisor",args=std::to_wstring(clientPid)+L" \""+pipeName+L"\"";DWORD supervisorPid=0;
+ hr=manager->ActivateApplication(aumid.c_str(),args.c_str(),0,&supervisorPid);manager->Release();if(uninit)CoUninitialize();
+ if(FAILED(hr)||!supervisorPid){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)hr));return false;}
+ ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS PID="+std::to_wstring(supervisorPid)+L" AUMID="+aumid+L" CLIENT_PID="+std::to_wstring(clientPid));return true;
+}
+static int PackageSupervisor(DWORD expectedPid,const std::wstring&pipeName){
+ std::wstring family=PackageValueFromProcess(GetCurrentProcess(),false),full=PackageValueFromProcess(GetCurrentProcess(),true);
+ if(family==L"NO_PACKAGE_IDENTITY"||full==L"NO_PACKAGE_IDENTITY"||family.empty()||full.empty())return 41;
+ UINT32 n=0;LONG rc=GetPackagePathByFullName(full.c_str(),&n,nullptr);if(rc!=ERROR_INSUFFICIENT_BUFFER||!n)return 42;
+ std::vector<wchar_t> pathBuffer(n);rc=GetPackagePathByFullName(full.c_str(),&n,pathBuffer.data());if(rc!=ERROR_SUCCESS)return 43;
+ std::wstring installPath(pathBuffer.data());if(!installPath.empty()&&installPath.back()!=L'\\')installPath+=L'\\';
+ std::wstring expectedPath=installPath+L"client.exe";PSID appSid=nullptr;
+ LONG sidRc=DeriveAppContainerSidFromAppContainerName(family.c_str(),&appSid);if(sidRc!=ERROR_SUCCESS||!appSid)return 44;
+ std::wstring sid=SidString(appSid);FreeSid(appSid);
+ wchar_t local[32768]{};DWORD localLen=GetEnvironmentVariableW(L"LOCALAPPDATA",local,32768);
+ if(localLen&&localLen<32768){std::wstring logPath=std::wstring(local)+L"\\Phone02-MsixPoA-supervisor-"+std::to_wstring(expectedPid)+L".log";FILE* fp=nullptr;_wfreopen_s(&fp,logPath.c_str(),L"w",stdout);setvbuf(stdout,nullptr,_IONBF,0);}
+ HANDLE selfToken=nullptr;DWORD selfApp=0;if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&selfToken)){selfApp=TokenApp(selfToken);CloseHandle(selfToken);}
+ wprintf(L"PACKAGE_SUPERVISOR_PROCESS=TRUE PID=%lu SESSION=%lu TOKEN_IS_APPCONTAINER=%u PACKAGE_FAMILY=%s PACKAGE_FULL_NAME=%s EXPECTED_CLIENT_PID=%lu EXPECTED_CLIENT_PATH=%s EXPECTED_APPCONTAINER_SID=%s PIPE=%s\n",GetCurrentProcessId(),SessionId(GetCurrentProcessId()),selfApp,family.c_str(),full.c_str(),expectedPid,expectedPath.c_str(),sid.c_str(),pipeName.c_str());
+ return Supervisor(family,sid,full,expectedPath,L"same-package-fulltrust",pipeName,expectedPid);
+}
+static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName,bool launchSibling=false){
  PIPE_NAME=pipeName;
+ if(launchSibling&&!LaunchPackageSupervisor(PIPE_NAME,GetCurrentProcessId()))return 22;
  ClientDiagnostic(L"CLIENT_MAIN_ENTER PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(SessionId(GetCurrentProcessId()))+L" MODE="+mode+L" PIPE="+PIPE_NAME);
  HANDLE h=INVALID_HANDLE_VALUE;
  for(int attempt=0;attempt<150;attempt++){
@@ -115,7 +150,8 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
 }
 int wmain(int argc,wchar_t**argv){
  if(argc>1&&wcscmp(argv[1],L"--supervisor")==0){if(argc<9)return 10;return Supervisor(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],(DWORD)_wtoi(argv[8]));}
- if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6]);}
+ if(argc>1&&wcscmp(argv[1],L"--package-supervisor")==0){if(argc<4)return 12;return PackageSupervisor((DWORD)_wtoi(argv[2]),argv[3]);}
+ if(argc>1&&wcscmp(argv[1],L"--adversary")==0){if(argc<7)return 11;return Client(argv[2],argv[3],argv[4],argv[5],argv[6],false);}
  std::wstring family=argc>1?argv[1]:L"",sid=argc>2?argv[2]:L"",full=argc>3?argv[3]:L"",mode=argc>4?argv[4]:L"legit";
  if(family.empty()||sid.empty()||full.empty()){
    HANDLE token=nullptr;
@@ -127,5 +163,5 @@ int wmain(int argc,wchar_t**argv){
    }
  }
  std::wstring pipeName=L"\\\\.\\pipe\\LOCAL\\TokenSaver.Phone02.MsixPoA52881."+std::to_wstring(GetCurrentProcessId());
- return Client(mode,family,sid,full,pipeName);
+ return Client(mode,family,sid,full,pipeName,true);
 }

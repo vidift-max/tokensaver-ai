@@ -44,7 +44,7 @@ try {
   $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /DUNICODE /D_UNICODE "'+$source+'" /Fe:"'+$harness+'" advapi32.lib userenv.lib kernel32.lib'
   & cmd.exe /d /s /c $cmd
   if($LASTEXITCODE -ne 0){throw "C++ compile failed: $LASTEXITCODE"}
-  Copy-Item $harness (Join-Path $root 'supervisor.exe'); Copy-Item $harness (Join-Path $root 'common.exe'); Copy-Item $harness (Join-Path $pkg 'client.exe')
+  Copy-Item $harness (Join-Path $root 'supervisor.exe'); Copy-Item $harness (Join-Path $root 'common.exe'); Copy-Item $harness (Join-Path $pkg 'client.exe'); Copy-Item $harness (Join-Path $pkg 'supervisor.exe')
   Write-Host 'ROUND_4 — DACL policy; pipe reachability is not authorization'
   Write-Host 'DACL_POLICY=User SID + expected AppContainer SID; same-user process may connect, then must be rejected by OS-observed token.'
   Write-Host 'DACL_SAME_USER_LIMITATION=TRUE'
@@ -52,13 +52,13 @@ try {
   $publisher='CN=TokenSaver Phone02 PoA TEST ONLY'
   $manifest=@"
 <?xml version="1.0" encoding="utf-8"?>
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" IgnorableNamespaces="uap uap10">
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap10 rescap">
 <Identity Name="TokenSaver.Phone02.IdentityPoA" Publisher="$publisher" Version="1.0.0.0" ProcessorArchitecture="x64"/>
 <Properties><DisplayName>Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets/StoreLogo.png</Logo></Properties>
 <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
 <Resources><Resource Language="en-us"/></Resources>
-<Applications><Application Id="App" Executable="client.exe" EntryPoint="Windows.PartialTrustApplication" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone02 Identity PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application></Applications>
-<Capabilities/>
+<Applications><Application Id="App" Executable="client.exe" EntryPoint="Windows.PartialTrustApplication" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone02 Identity PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application><Application Id="Supervisor" Executable="supervisor.exe" EntryPoint="Windows.FullTrustApplication" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="Phone02 Identity PoA Supervisor" Description="Disposable full-trust IPC supervisor" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png"/></Application></Applications>
+<Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
 </Package>
 "@
   Set-Content (Join-Path $pkg 'AppxManifest.xml') $manifest -Encoding utf8
