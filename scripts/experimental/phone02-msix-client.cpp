@@ -16,6 +16,7 @@ static std::wstring TokenSid(HANDLE t,TOKEN_INFORMATION_CLASS c){DWORD n=0;GetTo
 static DWORD TokenApp(HANDLE t){DWORD v=0,n=0;return GetTokenInformation(t,TokenIsAppContainer,&v,sizeof(v),&n)?v:0;}
 static std::wstring PackageValue(HANDLE t,bool full){HMODULE mod=GetModuleHandleW(L"kernel32.dll");const char* name=full?"GetPackageFullNameFromToken":"GetPackageFamilyNameFromToken";using QueryFn=LONG(WINAPI*)(HANDLE,UINT32*,PWSTR);auto fn=reinterpret_cast<QueryFn>(GetProcAddress(mod,name));if(!fn)return L"API_UNAVAILABLE";UINT32 n=0;LONG rc=fn(t,&n,nullptr);if(rc!=ERROR_INSUFFICIENT_BUFFER||!n)return L"NO_PACKAGE_IDENTITY";std::vector<wchar_t>b(n);rc=fn(t,&n,b.data());return rc==ERROR_SUCCESS?std::wstring(b.data()):L"QUERY_FAILED";}
 static std::wstring ProcessPath(HANDLE p){wchar_t b[32768]{};DWORD n=32768;return QueryFullProcessImageNameW(p,0,b,&n)?std::wstring(b,n):L"UNAVAILABLE";}
+static DWORD SessionId(DWORD pid){DWORD id=0;return ProcessIdToSessionId(pid,&id)?id:0xFFFFFFFF;}
 static bool Same(const std::wstring&a,const std::wstring&b){return a!=L"UNAVAILABLE"&&a!=L"NO_PACKAGE_IDENTITY"&&a!=L"API_UNAVAILABLE"&&a!=L"QUERY_FAILED"&&a==b;}
 static std::string ToUtf8(const std::wstring&w){int n=WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,nullptr,0,nullptr,nullptr);if(n<=1)return {};std::string s(n,'\0');WideCharToMultiByte(CP_UTF8,0,w.c_str(),-1,&s[0],n,nullptr,nullptr);s.pop_back();return s;}
 static std::string ClaimValue(const std::string&message,const char*key){std::string prefix=std::string(key)+"=";size_t p=message.find(prefix);if(p==std::string::npos)return {};p+=prefix.size();size_t e=message.find(';',p);return message.substr(p,e==std::string::npos?std::string::npos:e-p);}
@@ -42,7 +43,7 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
 }
 static int Client(const std::wstring&mode,const std::wstring&family,const std::wstring&sid,const std::wstring&full,const std::wstring&pipeName){
  PIPE_NAME=pipeName;
- ClientDiagnostic(L"CLIENT_MAIN_ENTER PID="+std::to_wstring(GetCurrentProcessId())+L" MODE="+mode+L" PIPE="+PIPE_NAME);
+ ClientDiagnostic(L"CLIENT_MAIN_ENTER PID="+std::to_wstring(GetCurrentProcessId())+L" SESSION="+std::to_wstring(SessionId(GetCurrentProcessId()))+L" MODE="+mode+L" PIPE="+PIPE_NAME);
  HANDLE h=INVALID_HANDLE_VALUE;
  for(int attempt=0;attempt<150;attempt++){
    h=CreateFileW(PIPE_NAME.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr);
@@ -73,7 +74,7 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
    activationApp=TokenApp(activatedToken);activationSid=TokenSid(activatedToken,TokenAppContainerSid);
    activationFamily=PackageValue(activatedToken,false);activationFull=PackageValue(activatedToken,true);
    CloseHandle(activatedToken);CloseHandle(activated);
-   wprintf(L"ACTIVATED_PROCESS_PID=%lu ACTIVATED_TOKEN_IS_APPCONTAINER=%u OBSERVED_APPCONTAINER_SID=%s OBSERVED_PACKAGE_FAMILY=%s OBSERVED_PACKAGE_FULL_NAME=%s\n",expectedPid,activationApp,activationSid.c_str(),activationFamily.c_str(),activationFull.c_str());
+   wprintf(L"ACTIVATED_PROCESS_PID=%lu ACTIVATED_SESSION=%lu SUPERVISOR_PID=%lu SUPERVISOR_SESSION=%lu ACTIVATED_TOKEN_IS_APPCONTAINER=%u OBSERVED_APPCONTAINER_SID=%s OBSERVED_PACKAGE_FAMILY=%s OBSERVED_PACKAGE_FULL_NAME=%s\n",expectedPid,SessionId(expectedPid),GetCurrentProcessId(),SessionId(GetCurrentProcessId()),activationApp,activationSid.c_str(),activationFamily.c_str(),activationFull.c_str());
    if(activationApp!=1||activationSid==L"UNAVAILABLE"){wprintf(L"ACTIVATED_PROCESS_NOT_APP_CONTAINER=TRUE\n");return 33;}
    aclSid=activationSid;
  }
@@ -82,7 +83,7 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
  SECURITY_ATTRIBUTES sa{sizeof(sa),sd,FALSE};
  HANDLE pipe=CreateNamedPipeW(PIPE_NAME.c_str(),PIPE_ACCESS_DUPLEX,PIPE_TYPE_MESSAGE|PIPE_READMODE_MESSAGE|PIPE_WAIT|PIPE_REJECT_REMOTE_CLIENTS,1,4096,4096,10000,&sa);LocalFree(sd);
  if(pipe==INVALID_HANDLE_VALUE){wprintf(L"PIPE_CREATE_FAIL=%lu\n",GetLastError());return 7;}
- wprintf(L"SUPERVISOR_READY CASE=%s PIPE=%s USER_SID=%s EXPECTED_APPCONTAINER_SID=%s ACL_APPCONTAINER_SID=%s EXPECTED_ACTIVATED_PID=%lu DACL_SAME_USER_LIMITATION=TRUE\n",caseName.c_str(),PIPE_NAME.c_str(),userSid.c_str(),expectedSid.c_str(),aclSid.c_str(),expectedPid);fflush(stdout);
+ wprintf(L"SUPERVISOR_READY CASE=%s PIPE=%s SUPERVISOR_SESSION=%lu EXPECTED_CLIENT_SESSION=%lu USER_SID=%s EXPECTED_APPCONTAINER_SID=%s ACL_APPCONTAINER_SID=%s EXPECTED_ACTIVATED_PID=%lu DACL_SAME_USER_LIMITATION=TRUE\n",caseName.c_str(),PIPE_NAME.c_str(),SessionId(GetCurrentProcessId()),expectedPid?SessionId(expectedPid):0xFFFFFFFF,userSid.c_str(),expectedSid.c_str(),aclSid.c_str(),expectedPid);fflush(stdout);
  BOOL connected=ConnectNamedPipe(pipe,nullptr)?TRUE:(GetLastError()==ERROR_PIPE_CONNECTED);
  if(!connected){wprintf(L"PIPE_CONNECT_FAIL=%lu\n",GetLastError());CloseHandle(pipe);return 8;}
  ULONG clientPid=0;BOOL pidOk=GetNamedPipeClientProcessId(pipe,&clientPid);
