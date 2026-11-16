@@ -30,7 +30,7 @@ static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpected
 static std::mutex gMutex;
 static bool gStopping=false;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
-struct ObservedIdentity{DWORD pid=0,windowsSession=0;FILETIME created{};std::wstring userSid,appSid,family,full;};
+struct ObservedIdentity{DWORD pid=0,windowsSession=0;FILETIME created{};bool isAppContainer=false;std::wstring userSid,appSid,family,full;};
 struct Session{ObservedIdentity identity;std::vector<UCHAR>nonceHash;ULONGLONG expiresAt=0;bool nonceUsed=false,authorized=false;};
 static std::map<std::wstring,Session>gSessions;
 extern "C" void* __RPC_USER midl_user_allocate(size_t n){return malloc(n);}
@@ -51,41 +51,50 @@ static bool ObserveCaller(handle_t binding,ObservedIdentity&out,std::wstring*rea
  if(callStatus!=RPC_S_OK)return fail(L"CALL_ATTRIBUTES");
  if(a.ProtocolSequence!=RPC_PROTSEQ_LRPC||a.IsClientLocal!=rcclLocal||a.AuthenticationService!=RPC_C_AUTHN_WINNT||a.AuthenticationLevel<RPC_C_AUTHN_LEVEL_PKT_PRIVACY||a.NullSession)return fail(L"RPC_SECURITY_ATTRIBUTES");
  out.pid=(DWORD)(ULONG_PTR)a.ClientPID;if(!out.pid)return fail(L"CLIENT_PID_ZERO");
- HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,out.pid);if(!process)return fail(L"OPEN_PROCESS");
- HANDLE token=nullptr;bool ok=false;
+ if(RpcImpersonateClient(binding)!=RPC_S_OK)return fail(L"RPC_IMPERSONATE_CLIENT");
+ HANDLE process=nullptr,token=nullptr;bool ok=false;std::wstring localReason=L"UNKNOWN";
  do{
-  if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)) {if(reason)*reason=L"PROCESS_CREATION_TIME";break;}
-  if(!ProcessIdToSessionId(out.pid,&out.windowsSession)){if(reason)*reason=L"WINDOWS_SESSION";break;}
-  if(!OpenProcessToken(process,TOKEN_QUERY,&token)){if(reason)*reason=L"OPEN_PROCESS_TOKEN";break;}
-  DWORD app=0,n=0;if(!GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&n)){if(reason)*reason=L"TOKEN_IS_APPCONTAINER_QUERY";break;}
-  if(app!=1){if(reason)*reason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
+  if(!OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,TRUE,&token)){localReason=L"OPEN_IMPERSONATED_THREAD_TOKEN";break;}
+  process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,out.pid);
+  if(!process){localReason=L"OPEN_PROCESS_AS_CALLER";break;}
+  if(!GetProcessTimes(process,&out.created,nullptr,nullptr,nullptr)){localReason=L"PROCESS_CREATION_TIME";break;}
+  if(!ProcessIdToSessionId(out.pid,&out.windowsSession)){localReason=L"WINDOWS_SESSION";break;}
+  DWORD app=0,n=0;if(!GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&n)){localReason=L"TOKEN_IS_APPCONTAINER_QUERY";break;}
+  out.isAppContainer=(app==1);if(!out.isAppContainer){localReason=L"TOKEN_IS_NOT_APPCONTAINER";break;}
   std::vector<BYTE>user,container;
-  if(!TokenInfo(token,TokenUser,user)){if(reason)*reason=L"TOKEN_USER_QUERY";break;}
-  if(!TokenInfo(token,TokenAppContainerSid,container)){if(reason)*reason=L"TOKEN_APPCONTAINER_SID_QUERY";break;}
+  if(!TokenInfo(token,TokenUser,user)){localReason=L"TOKEN_USER_QUERY";break;}
+  if(!TokenInfo(token,TokenAppContainerSid,container)){localReason=L"TOKEN_APPCONTAINER_SID_QUERY";break;}
   out.userSid=SidText(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
   out.appSid=SidText(reinterpret_cast<TOKEN_APPCONTAINER_INFORMATION*>(container.data())->TokenAppContainer);
-  if(out.userSid.empty()){if(reason)*reason=L"USER_SID_EMPTY";break;}
-  if(out.appSid.empty()){if(reason)*reason=L"APPCONTAINER_SID_EMPTY";break;}
+  if(out.userSid.empty()){localReason=L"USER_SID_EMPTY";break;}
+  if(out.appSid.empty()){localReason=L"APPCONTAINER_SID_EMPTY";break;}
   UINT32 size=0;LONG rc=GetPackageFamilyName(process,&size,nullptr);
-  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){if(reason)*reason=L"PACKAGE_FAMILY_QUERY";break;}
+  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FAMILY_QUERY";break;}
   std::vector<wchar_t>family(size);
-  if(GetPackageFamilyName(process,&size,family.data())!=ERROR_SUCCESS){if(reason)*reason=L"PACKAGE_FAMILY_READ";break;}
+  if(GetPackageFamilyName(process,&size,family.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FAMILY_READ";break;}
   out.family=family.data();
   size=0;rc=GetPackageFullName(process,&size,nullptr);
-  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){if(reason)*reason=L"PACKAGE_FULL_QUERY";break;}
+  if(rc!=ERROR_INSUFFICIENT_BUFFER||!size){localReason=L"PACKAGE_FULL_QUERY";break;}
   std::vector<wchar_t>full(size);
-  if(GetPackageFullName(process,&size,full.data())!=ERROR_SUCCESS){if(reason)*reason=L"PACKAGE_FULL_READ";break;}
+  if(GetPackageFullName(process,&size,full.data())!=ERROR_SUCCESS){localReason=L"PACKAGE_FULL_READ";break;}
   out.full=full.data();
-  Log(L"RPC_OBSERVED pid="+std::to_wstring(out.pid)+L" session="+std::to_wstring(out.windowsSession)+L" user_sid="+out.userSid+L" app_sid="+out.appSid+L" package_family="+out.family+L" package_full="+out.full);
-  if(out.userSid!=gExpectedUserSid){if(reason)*reason=L"USER_SID_PIN_MISMATCH";break;}
-  if(out.appSid!=gExpectedAppSid){if(reason)*reason=L"APPCONTAINER_SID_PIN_MISMATCH";break;}
-  if(out.family!=gExpectedFamily){if(reason)*reason=L"PACKAGE_FAMILY_PIN_MISMATCH";break;}
-  if(out.full!=gExpectedFull){if(reason)*reason=L"PACKAGE_FULL_PIN_MISMATCH";break;}
-  ok=true;
+  if(out.userSid!=gExpectedUserSid){localReason=L"USER_SID_PIN_MISMATCH";break;}
+  if(out.appSid!=gExpectedAppSid){localReason=L"APPCONTAINER_SID_PIN_MISMATCH";break;}
+  if(out.family!=gExpectedFamily){localReason=L"PACKAGE_FAMILY_PIN_MISMATCH";break;}
+  if(out.full!=gExpectedFull){localReason=L"PACKAGE_FULL_PIN_MISMATCH";break;}
+  ok=true;localReason=L"OK";
  }while(false);
- if(token)CloseHandle(token);CloseHandle(process);return ok;
+ if(token)CloseHandle(token);if(process)CloseHandle(process);
+ RPC_STATUS revertStatus=RpcRevertToSelf();
+ if(revertStatus!=RPC_S_OK){ok=false;localReason=L"RPC_REVERT_TO_SELF_FAILED";}
+ if(reason)*reason=localReason;
+ if(out.pid){
+  ULARGE_INTEGER created{};created.LowPart=out.created.dwLowDateTime;created.HighPart=out.created.dwHighDateTime;
+  Log(L"RPC_OBSERVED pid="+std::to_wstring(out.pid)+L" process_created_100ns="+std::to_wstring(created.QuadPart)+L" windows_session="+std::to_wstring(out.windowsSession)+L" token_is_appcontainer="+(out.isAppContainer?L"1":L"0")+L" user_sid="+out.userSid+L" appcontainer_sid="+out.appSid+L" package_family="+out.family+L" package_full="+out.full+L" result="+(ok?L"IDENTITY_MATCH":localReason));
+ }
+ return ok;
 }
-static bool SameIdentity(const ObservedIdentity&a,const ObservedIdentity&b){return a.pid==b.pid&&a.windowsSession==b.windowsSession&&a.created.dwHighDateTime==b.created.dwHighDateTime&&a.created.dwLowDateTime==b.created.dwLowDateTime&&a.userSid==b.userSid&&a.appSid==b.appSid&&a.family==b.family&&a.full==b.full;}
+static bool SameIdentity(const ObservedIdentity&a,const ObservedIdentity&b){return a.pid==b.pid&&a.windowsSession==b.windowsSession&&a.isAppContainer==b.isAppContainer&&a.created.dwHighDateTime==b.created.dwHighDateTime&&a.created.dwLowDateTime==b.created.dwLowDateTime&&a.userSid==b.userSid&&a.appSid==b.appSid&&a.family==b.family&&a.full==b.full;}
 static bool IsStopping(){std::lock_guard<std::mutex>l(gMutex);return gStopping;}
 void BeginSession(handle_t binding,wchar_t*correlation,wchar_t**sessionId,wchar_t**nonce,long*status){
  if(sessionId)*sessionId=nullptr;if(nonce)*nonce=nullptr;if(status)*status=RPC_INTERNAL_ERROR;if(!correlation||!sessionId||!nonce||!status||wcslen(correlation)>80){if(status)*status=RPC_INVALID_ARGUMENT;return;}if(IsStopping()){*status=RPC_SERVICE_STOPPING;return;}
