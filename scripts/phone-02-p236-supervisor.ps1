@@ -15,7 +15,8 @@ try {
  $midl=Join-Path $sdk.FullName 'x64\midl.exe';$makeappx=Join-Path $sdk.FullName 'x64\MakeAppx.exe';$signtool=Join-Path $sdk.FullName 'x64\SignTool.exe'
  foreach($p in @($vcvars,$midl,$makeappx,$signtool)){if(-not(Test-Path $p)){throw ('Missing tool '+$p)}}
  $src=Join-Path $env:GITHUB_WORKSPACE 'services\phone-supervisor'
- & $midl /nologo /env x64 /h (Join-Path $build 'phone_supervisor_rpc.h') /iid (Join-Path $build 'phone_supervisor_rpc_i.c') /out $build (Join-Path $src 'phone_supervisor_rpc.idl')
+ $cmdMidl='"'+$vcvars+'" && "'+$midl+'" /nologo /env x64 /h "'+(Join-Path $build 'phone_supervisor_rpc.h')+'" /iid "'+(Join-Path $build 'phone_supervisor_rpc_i.c')+'" /out "'+$build+'" "'+(Join-Path $src 'phone_supervisor_rpc.idl')+'"'
+ & cmd.exe /d /s /c $cmdMidl
  if($LASTEXITCODE -ne 0){throw 'MIDL failed'}
  $svcExe=Join-Path $root 'supervisor.exe';$cliExe=Join-Path $root 'client.exe'
  $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $src 'phone_supervisor.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_s.c')+'" "'+(Join-Path $build 'phone_supervisor_rpc_i.c')+'" /Fe:"'+$svcExe+'" advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib'
@@ -50,6 +51,8 @@ try {
  Add-AppxPackage -Path $msix -ErrorAction Stop;$installed=$true
  $app=Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Select-Object -First 1
  if(-not $app){throw 'MSIX package registration missing'}
+ if($app.Publisher -ne $publisher){throw 'Installed package publisher does not match the disposable test signer'}
+ Write-Host ('PACKAGE_PUBLISHER='+$app.Publisher)
  Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class P236Sid{[DllImport("userenv.dll",CharSet=CharSet.Unicode)]public static extern int DeriveAppContainerSidFromAppContainerName(string n,out IntPtr s);[DllImport("advapi32.dll",CharSet=CharSet.Unicode)]public static extern bool ConvertSidToStringSid(IntPtr s,out IntPtr t);[DllImport("kernel32.dll")]public static extern IntPtr LocalFree(IntPtr h);}'
  $sp=[IntPtr]::Zero;$hr=[P236Sid]::DeriveAppContainerSidFromAppContainerName($app.PackageFamilyName,[ref]$sp);if($hr -ne 0){throw 'AppContainer SID derive failed'}
  $tp=[IntPtr]::Zero;if(-not [P236Sid]::ConvertSidToStringSid($sp,[ref]$tp)){throw 'AppContainer SID stringify failed'}
@@ -100,6 +103,9 @@ finally {
   Write-Host ('SERVICE_SHUTDOWN='+$(if($state -eq 'Stopped'){'PASS'}else{'FAIL'}))
   $svcLog=Join-Path $root 'supervisor.conf.log'
   if(Test-Path $svcLog){$sl=Get-Content $svcLog -Raw;Write-Host ('CLEANUP_COMPLETE='+$(if($sl -match 'SERVICE_CLEANUP_COMPLETE=TRUE'){'PASS'}else{'FAIL'}));Copy-Item $svcLog (Join-Path $evidence 'service.log') -Force}
+  if($state -ne 'Stopped'){ $final='BLOCKED'; Write-Host 'SERVICE_SHUTDOWN=FAIL' }
+  $svcLog=Join-Path $root 'supervisor.conf.log'
+  if(-not(Test-Path $svcLog) -or (Get-Content $svcLog -Raw) -notmatch 'SERVICE_CLEANUP_COMPLETE=TRUE'){ $final='BLOCKED'; Write-Host 'CLEANUP_COMPLETE=FAIL' }
   & sc.exe delete $service|Out-Host
  }
  if($installed){Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest'|Remove-AppxPackage -ErrorAction SilentlyContinue;Write-Host 'MSIX_UNINSTALL=ATTEMPTED'}

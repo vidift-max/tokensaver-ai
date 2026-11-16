@@ -13,7 +13,7 @@ extern "C" void __RPC_USER midl_user_free(void*p){free(p);}
 static void Log(const std::wstring&s){
  wchar_t p[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",p,32768);
  std::wstring path=(n&&n<32768)?std::wstring(p)+L"\\PhoneSupervisor-P236-client.log":L"PhoneSupervisor-P236-client.log";
- std::wofstream f(path,std::ios::app);if(f){f<<s<<L"\n";f.flush();}
+ std::wofstream f(path,std::ios::app);if(f){f<<s<<L"\n";f.flush();}wprintf(L"%s\n",s.c_str());fflush(stdout);
 }
 int wmain(int argc,wchar_t**argv){
  RPC_WSTR str=nullptr;RPC_BINDING_HANDLE binding=nullptr;
