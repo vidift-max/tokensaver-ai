@@ -178,7 +178,7 @@ finally {
  }
  $eventPath=Join-Path $evidence 'windows-events.txt'
  foreach($ln in @('Application','System')){
-  try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=$testStart}|Where-Object {$_.ProviderName -match 'Application Error|Service Control Manager|Windows Error Reporting'}|Select-Object -First 30 TimeCreated,Id,ProviderName,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}
+  try{Get-WinEvent -FilterHashtable @{LogName=$ln;StartTime=$testStart;ProviderName=@('Application Error','Service Control Manager','Windows Error Reporting')} -MaxEvents 30|Select-Object TimeCreated,Id,ProviderName,LevelDisplayName,Message|Format-List|Out-String|Add-Content $eventPath}catch{}
  }
  if(Test-Path $root){Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue}
  $tempGone=(-not(Test-Path $root))
