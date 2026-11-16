@@ -29,10 +29,11 @@ try {
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" IgnorableNamespaces="uap uap10">
   <Identity Name="TokenSaver.Phone02.IdentityPoA" Publisher="$publisher" Version="1.0.0.0" ProcessorArchitecture="x64" />
-  <Properties><DisplayName>TokenSaver Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets\\StoreLogo.png</Logo></Properties>
+  <Properties><DisplayName>TokenSaver Phone02 Identity PoA TEST ONLY</DisplayName><PublisherDisplayName>TEST ONLY</PublisherDisplayName><Logo>Assets/StoreLogo.png</Logo></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
   <Resources><Resource Language="en-us" /></Resources>
-  <Applications><Application Id="App" Executable="client.exe" EntryPoint="Windows.FullTrustApplication"><uap:VisualElements DisplayName="TokenSaver Phone02 PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets\\Square150x150Logo.png" Square44x44Logo="Assets\\Square44x44Logo.png" /><Extensions><desktop:Extension Category="windows.fullTrustProcess" Executable="client.exe"><desktop:FullTrustProcess /></desktop:Extension></Extensions></Application></Applications>
+  <Applications><Application Id="App" Executable="client.exe" EntryPoint="windows.partialTrustApplication" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp"><uap:VisualElements DisplayName="TokenSaver Phone02 PoA" Description="Disposable identity test" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png" /></Application></Applications>
+  <Capabilities/>
 </Package>
 "@
   Set-Content -Path (Join-Path $pkg 'AppxManifest.xml') -Value $manifest -Encoding utf8
