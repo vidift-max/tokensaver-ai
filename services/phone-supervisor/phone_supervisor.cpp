@@ -26,7 +26,7 @@ static const ULONGLONG SESSION_IDLE_MS=60000;
 static SERVICE_STATUS_HANDLE gStatusHandle=nullptr;
 static SERVICE_STATUS gStatus{};
 static HANDLE gStopEvent=nullptr;
-static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gServiceSid,gExpectedUserSid;
+static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gServiceSid,gExpectedUserSid;
 static std::mutex gMutex;static std::mutex gLogMutex;static HANDLE gLogHandle=INVALID_HANDLE_VALUE;
 static bool gStopping=false;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
@@ -159,11 +159,11 @@ static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* conte
 static void WINAPI ServiceMain(DWORD,LPWSTR*){
  gStatusHandle=RegisterServiceCtrlHandlerW(L"TokenSaverPhone02Supervisor",Handler);if(!gStatusHandle)return;SetUnhandledExceptionFilter(SupervisorUnhandledException);SetState(SERVICE_START_PENDING,NO_ERROR,15000);int argc=0;LPWSTR*argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv||argc<3){if(argv)LocalFree(argv);SetState(SERVICE_STOPPED,ERROR_INVALID_PARAMETER);return;}gConfigPath=argv[2];LocalFree(argv);gLogPath=gConfigPath+L".log";gLogHandle=CreateFileW(gLogPath.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(gLogHandle!=INVALID_HANDLE_VALUE){LARGE_INTEGER logSize{};if(GetFileSizeEx(gLogHandle,&logSize)&&logSize.QuadPart==0){const BYTE bom[2]={0xFF,0xFE};DWORD bomWritten=0;WriteFile(gLogHandle,bom,sizeof(bom),&bomWritten,nullptr);FlushFileBuffers(gLogHandle);}}
- gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");
- if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gServiceSid.empty()||gExpectedUserSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
+ gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gRpcAllowedAppSid=ReadValue(L"RPC_CLIENT_APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");
+ if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gRpcAllowedAppSid.empty()||gServiceSid.empty()||gExpectedUserSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
  if(!ServiceSidInToken()){Log(L"SERVICE_SID_IN_TOKEN=FAIL");SetState(SERVICE_STOPPED,ERROR_ACCESS_DENIED);return;}
  Log(L"SERVICE_IDENTITY=PASS SERVICE_NAME=TokenSaverPhone02Supervisor SERVICE_SID_IN_TOKEN=TRUE ACCOUNT=LocalService");
- gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}std::wstring rpcSddl=L"D:P(A;;GA;;;"+gExpectedUserSid+L")(A;;GA;;;"+gExpectedAppSid+L")";
+ gStopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!gStopEvent){SetState(SERVICE_STOPPED,GetLastError());return;}std::wstring rpcSddl=L"D:P(A;;GA;;;"+gExpectedUserSid+L")(A;;GA;;;"+gRpcAllowedAppSid+L")";
  PSECURITY_DESCRIPTOR sd=nullptr;
  if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(rpcSddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){Log(L"RPC_ENDPOINT_ACL=FAIL");SetState(SERVICE_STOPPED,GetLastError());CloseHandle(gStopEvent);return;}
  RPC_STATUS rc=RpcServerUseProtseqEpW((RPC_WSTR)L"ncalrpc",20,(RPC_WSTR)L"TokenSaver.Phone02.Supervisor.v1",sd);
