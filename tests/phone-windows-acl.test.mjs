@@ -48,6 +48,16 @@ test("Windows ACL helper fails closed if ACL application or verification fails",
   );
 });
 
+test("Windows ACL helper fails closed when the success marker is absent", () => {
+  assert.throws(
+    () => secureWindowsResultDirectory("C:\\\\safe\\\\results", {
+      platform: "win32",
+      execFileSync() { return "PowerShell completed without an ACL verification marker"; }
+    }),
+    error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /marker missing/.test(error.message)
+  );
+});
+
 test("real Windows ACL hardening rejects a directory junction (reparse point)", async t => {
   if (process.platform !== "win32") return t.skip("Windows reparse-point integration requires a Windows runner");
   const root = await mkdtemp(path.join(os.tmpdir(), "tokensaver-phone-reparse-"));
@@ -67,6 +77,22 @@ test("real Windows ACL hardening rejects a directory junction (reparse point)", 
     }
     assert.throws(
       () => secureWindowsResultDirectory(directory),
+      error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /Reparse point found/.test(error.message)
+    );
+
+    const symlinkRoot = path.join(root, "file-symlink-case");
+    const symlinkDirectory = path.join(symlinkRoot, "private-results");
+    const fileTarget = path.join(symlinkRoot, "outside.txt");
+    await mkdir(symlinkDirectory, { recursive: true });
+    await writeFile(fileTarget, "outside");
+    try {
+      await symlink(fileTarget, path.join(symlinkDirectory, "outside-link.txt"), "file");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+      return t.skip("Runner does not permit creating a file symlink");
+    }
+    assert.throws(
+      () => secureWindowsResultDirectory(symlinkDirectory),
       error => error.code === "PHONE_RESULT_WINDOWS_ACL_FAILED" && /Reparse point found/.test(error.message)
     );
   } finally {
@@ -121,7 +147,8 @@ test("real Windows ACL application protects existing nested items and newly inhe
       path.join(directory, "created-after-hardening.json"),
       path.join(laterDirectory, "nested-new-file.json")
     ];
-    verifyWindowsResultAcl(directory, existingPaths, auditPaths);  } finally {
+    verifyWindowsResultAcl(directory, existingPaths, auditPaths);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
