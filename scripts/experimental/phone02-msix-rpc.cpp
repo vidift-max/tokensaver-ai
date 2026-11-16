@@ -116,7 +116,7 @@ static RPC_STATUS SafePhone02Authorize(RPC_BINDING_HANDLE binding,wchar_t*nonce,
 #if defined(PHONE02_RPC_SERVER_ONLY)
 extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*nonce,wchar_t*claims,long*authorized){
  if(authorized)*authorized=0;
- RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID;
+ RPC_CALL_ATTRIBUTES_V2_W a{};a.Version=2;a.Flags=RPC_QUERY_CLIENT_PID|RPC_QUERY_IS_CLIENT_LOCAL;
  RPC_STATUS attrStatus=RpcServerInqCallAttributesW(hBinding,&a);
  DWORD pid=attrStatus==RPC_S_OK?static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(a.ClientPID)):0;
  bool nonceMatch=false,noncePidMatch=false,nonceUnused=false;
@@ -139,12 +139,14 @@ extern "C" void Phone02Authorize(handle_t hBinding,wchar_t*nonce,wchar_t*claims,
  bool userMatch=Same(processUser,gUserSid)&&Same(threadUser,gUserSid);
  std::wstring c=claims?claims:L"";
  bool claimsMatch=ClaimValue(c,L"PID")==std::to_wstring(pid)&&ClaimValue(c,L"APP")==L"1"&&Same(ClaimValue(c,L"SID"),processSid)&&Same(ClaimValue(c,L"FAMILY"),family)&&Same(ClaimValue(c,L"FULL"),full)&&ClaimValue(c,L"SEQ")==L"1";
+ bool claimsPretendLegit=ClaimValue(c,L"APP")==L"1"&&Same(ClaimValue(c,L"SID"),gExpectedSid)&&Same(ClaimValue(c,L"FAMILY"),gExpectedFamily)&&Same(ClaimValue(c,L"FULL"),gExpectedFull)&&ClaimValue(c,L"SEQ")==L"1";
  bool allow=attrStatus==RPC_S_OK&&pid!=0&&nonceMatch&&noncePidMatch&&nonceUnused&&processTokenOk&&threadTokenOk&&processApp==1&&threadApp==1&&correlation&&packageMatch&&pathMatch&&sessionMatch&&userMatch&&claimsMatch;
  wprintf(L"RPC_CALL_RECEIVED=TRUE RPC_CLIENT_PID=%lu ATTR_STATUS=%lu RPC_PROTOCOL=%lu RPC_LOCALITY=%u AUTH_LEVEL=%lu AUTH_SERVICE=%lu NULL_SESSION=%u\n",pid,attrStatus,a.ProtocolSequence,a.IsClientLocal,a.AuthenticationLevel,a.AuthenticationService,a.NullSession);
  wprintf(L"RPC_CLIENT_SESSION=%lu SUPERVISOR_SESSION=%lu TOKEN_IS_APPCONTAINER=%u THREAD_TOKEN_IS_APPCONTAINER=%u\n",processSession,ProcessSession(GetCurrentProcessId()),processApp,threadApp);
  wprintf(L"OBSERVED_USER_SID=%s THREAD_USER_SID=%s\nOBSERVED_APPCONTAINER_SID=%s THREAD_APPCONTAINER_SID=%s\n",processUser.c_str(),threadUser.c_str(),processSid.c_str(),threadSid.c_str());
  wprintf(L"OBSERVED_PACKAGE_FAMILY=%s\nOBSERVED_PACKAGE_FULL_NAME=%s\nOBSERVED_PROCESS_PATH=%s\n",family.c_str(),full.c_str(),path.c_str());
  wprintf(L"NONCE_MATCH=%s NONCE_PID_MATCH=%s NONCE_ONE_TIME=%s\n",nonceMatch?L"PASS":L"FAIL",noncePidMatch?L"PASS":L"FAIL",nonceUnused?L"PASS":L"FAIL");
+ wprintf(L"CLIENT_CLAIMS_PRETEND_LEGIT=%s CLAIMED_APP=%s CLAIMED_SID=%s CLAIMED_FAMILY=%s CLAIMED_FULL=%s\n",claimsPretendLegit?L"TRUE":L"FALSE",ClaimValue(c,L"APP").c_str(),ClaimValue(c,L"SID").c_str(),ClaimValue(c,L"FAMILY").c_str(),ClaimValue(c,L"FULL").c_str());
  wprintf(L"PID_PROCESS_TOKEN_CORRELATION=%s PACKAGE_IDENTITY_MATCH=%s PROCESS_PATH_MATCH=%s SESSION_MATCH=%s USER_MATCH=%s CLIENT_CLAIMS_MATCH_OBSERVED=%s\n",correlation?L"PASS":L"FAIL",packageMatch?L"PASS":L"FAIL",pathMatch?L"PASS":L"FAIL",sessionMatch?L"PASS":L"FAIL",userMatch?L"PASS":L"FAIL",claimsMatch?L"TRUE":L"FALSE");
  wprintf(L"CLAIMS_IGNORED_AS_AUTHORITY=TRUE AUTHORIZATION_RESULT=%s\n",allow?L"ALLOW":L"REJECT");fflush(stdout);
  if(authorized)*authorized=allow?1:0;
