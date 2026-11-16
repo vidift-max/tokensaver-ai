@@ -210,7 +210,9 @@ public static class PackageActivator {
   if($legit.TimedOut){
     $diagnosticPath=Join-Path $root "Phone02-MsixPoA-client-$activatedPid.log"
     $diagnostic=if(Test-Path $diagnosticPath){Get-Content $diagnosticPath -Raw}else{''}
-    if($diagnostic -match 'CLIENT_PIPE_FIRST_ERROR=2' -and $diagnostic -match 'SESSION=2'){
+    $clientSession=[regex]::Match($diagnostic,'SESSION=(\d+)').Groups[1].Value
+    $supervisorSession=[regex]::Match($legit.Content,'SUPERVISOR_SESSION=(\d+)').Groups[1].Value
+    if($diagnostic -match 'CLIENT_PIPE_FIRST_ERROR=2' -and $clientSession -and $clientSession -eq $supervisorSession){
       Write-Host 'APPCONTAINER_PIPE_VISIBILITY=BLOCKED ERROR=ERROR_FILE_NOT_FOUND'
       Write-Host 'SESSION_CORRELATION=PASS — activated client and full-trust Supervisor both reported session 2'
       Write-Host 'FULLTRUST_PIPE_VISIBILITY=PASS — same-user full-trust control connected and was rejected by token'
