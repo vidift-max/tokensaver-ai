@@ -204,30 +204,22 @@ public static class PackageActivator {
   Write-Host "FULLTRUST_PIPE_VISIBILITY=PASS CLIENT_EXIT=$($probeClient.ExitCode) SUPERVISOR_EXIT=$($probeResult.ExitCode)"
   Write-Host 'ROUND_6 — legitimate MSIX client and same-user ordinary process'
   $activatedPid=Activate-PackagedClient
-  $legitPipe="\\.\pipe\LOCAL\TokenSaver.Phone02.MsixPoA52881.$activatedPid"
-  $s=Start-Supervisor 'legitimate-msix' $legitPipe $activatedPid
-  $legit=Finish-Case $s 'legitimate-msix' -AllowTimeout
-  if($legit.TimedOut){
-    $diagnosticName="Phone02-MsixPoA-client-$activatedPid.log"
-    $diagnosticMatch=Get-ChildItem -Path $env:LOCALAPPDATA -Filter $diagnosticName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    $diagnosticPath=if($diagnosticMatch){$diagnosticMatch.FullName}else{Join-Path $root $diagnosticName}
-    $diagnostic=if(Test-Path $diagnosticPath){Get-Content $diagnosticPath -Raw}else{''}
-    if(Test-Path $diagnosticPath){Copy-Item $diagnosticPath (Join-Path $root $diagnosticName) -Force -ErrorAction SilentlyContinue}
-    $clientSession=[regex]::Match($diagnostic,'SESSION=(\d+)').Groups[1].Value
-    $supervisorSession=[regex]::Match($legit.Content,'SUPERVISOR_SESSION=(\d+)').Groups[1].Value
-    if($diagnostic -match 'CLIENT_PIPE_FIRST_ERROR=2' -and $clientSession -and $clientSession -eq $supervisorSession){
-      Write-Host 'APPCONTAINER_PIPE_VISIBILITY=BLOCKED ERROR=ERROR_FILE_NOT_FOUND'
-      Write-Host "SESSION_CORRELATION=PASS CLIENT_SESSION=$clientSession SUPERVISOR_SESSION=$supervisorSession"
-      Write-Host 'FULLTRUST_PIPE_VISIBILITY=PASS — same-user full-trust control connected and was rejected by token'
-      Write-Host 'ROUND_7 — BLOCKED; protocol spoof matrix not executed because packaged AppContainer client cannot reach the pipe'
-      Write-Host 'ROUND_8 — BLOCKED; simultaneous package-instance authorization not executed'
-      Write-Host 'ROUND_9 — BLOCKED; reconnect test not executed; disposable package and certificate cleanup follows'
-      Write-Host 'ROUND_10 — final classification and cleanup evidence'
-      Write-Host 'POA_RESULT=BLOCKED — REQUIRED WINDOWS CAPABILITY UNAVAILABLE'
-      return
-    }
-    throw 'Supervisor timed out without the required AppContainer pipe-visibility diagnostic'
-  }
+  $clientLogName="Phone02-MsixPoA-client-$activatedPid.log";$supervisorLogName="Phone02-MsixPoA-supervisor-$activatedPid.log"
+  $deadline=(Get-Date).AddSeconds(30);$clientPath=$null;$supervisorPath=$null;$clientContent='';$supervisorContent=''
+  do {
+    Start-Sleep -Milliseconds 250
+    $cm=Get-ChildItem -Path $env:LOCALAPPDATA -Filter $clientLogName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    $sm=Get-ChildItem -Path $env:LOCALAPPDATA -Filter $supervisorLogName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if($cm){$clientPath=$cm.FullName;$clientContent=Get-Content $clientPath -Raw}
+    if($sm){$supervisorPath=$sm.FullName;$supervisorContent=Get-Content $supervisorPath -Raw}
+  } while(((-not $clientContent.Contains('CLIENT_PIPE_RESULT')) -or (-not $supervisorContent.Contains('AUTHORIZATION_RESULT='))) -and (Get-Date) -lt $deadline)
+  if($clientPath){Copy-Item $clientPath (Join-Path $root $clientLogName) -Force}
+  if($supervisorPath){Copy-Item $supervisorPath (Join-Path $root $supervisorLogName) -Force}
+  Write-Host "PACKAGED_CLIENT_LOG=$clientPath";Write-Host $clientContent
+  Write-Host "PACKAGED_SUPERVISOR_LOG=$supervisorPath";Write-Host $supervisorContent
+  if($clientContent -notmatch 'FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS' -or $clientContent -notmatch 'CLIENT_PIPE_OPEN=ALLOW' -or $supervisorContent -notmatch 'AUTHORIZATION_RESULT=ALLOW' -or $supervisorContent -notmatch 'TOKEN_PROCESS_CORRELATION=PASS'){throw 'Same-package full-trust supervisor did not authorize the legitimate AppContainer client'}
+  $legit=@{Content=$supervisorContent;ExitCode=0;TimedOut=$false}
+  Write-Host 'SAME_PACKAGE_FULLTRUST_IPC=PASS'
   $oldProcessDeadline=(Get-Date).AddSeconds(5)
   do { Start-Sleep -Milliseconds 100; $oldProcess=Get-Process -Id $activatedPid -ErrorAction SilentlyContinue } while($oldProcess -and (Get-Date) -lt $oldProcessDeadline)
   Write-Host "INITIAL_CLIENT_PROCESS_EXITED=$(-not [bool]$oldProcess) PID=$activatedPid"

@@ -43,6 +43,7 @@ static std::string MessageFor(const std::wstring&mode,const std::wstring&family,
  std::wstring w=L"CLAIMED_PACKAGE_FAMILY="+f+L";CLAIMED_PACKAGE_FULL_NAME="+pfn+L";CLAIMED_APPCONTAINER_SID="+s+L";CLAIMED_PACKAGE_SID="+ps+L";HANDSHAKE="+hs;
  return ToUtf8(w);
 }
+static int Supervisor(const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,const std::wstring&,DWORD);
 struct __declspec(uuid("2E941141-7F97-4756-BA1D-9DECDE894A3D")) IPhone02ApplicationActivationManager : IUnknown {
  virtual HRESULT STDMETHODCALLTYPE ActivateApplication(LPCWSTR appUserModelId,LPCWSTR arguments,DWORD options,DWORD* processId)=0;
  virtual HRESULT STDMETHODCALLTYPE ActivateForFile(LPCWSTR appUserModelId,void* itemArray,LPCWSTR verb,DWORD* processId)=0;
@@ -56,7 +57,7 @@ static bool LaunchPackageSupervisor(const std::wstring&pipeName,DWORD clientPid)
  IPhone02ApplicationActivationManager* manager=nullptr;
  HRESULT hr=CoCreateInstance(CLSID_Phone02ApplicationActivationManager,nullptr,CLSCTX_LOCAL_SERVER,__uuidof(IPhone02ApplicationActivationManager),reinterpret_cast<void**>(&manager));
  if(FAILED(hr)){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_COM_CREATE=FAIL HRESULT="+std::to_wstring((unsigned long)hr));if(uninit)CoUninitialize();return false;}
- std::wstring aumid=family+L"!Supervisor",args=std::to_wstring(clientPid)+L" \""+pipeName+L"\"";DWORD supervisorPid=0;
+ std::wstring aumid=family+L"!Supervisor",args=L"--package-supervisor "+std::to_wstring(clientPid)+L" \""+pipeName+L"\"";DWORD supervisorPid=0;
  hr=manager->ActivateApplication(aumid.c_str(),args.c_str(),0,&supervisorPid);manager->Release();if(uninit)CoUninitialize();
  if(FAILED(hr)||!supervisorPid){ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=FAIL HRESULT="+std::to_wstring((unsigned long)hr));return false;}
  ClientDiagnostic(L"FULLTRUST_SUPERVISOR_LAUNCH=SUCCESS PID="+std::to_wstring(supervisorPid)+L" AUMID="+aumid+L" CLIENT_PID="+std::to_wstring(clientPid));return true;
@@ -111,8 +112,7 @@ static int Supervisor(const std::wstring&expectedFamily,const std::wstring&expec
    activationFamily=PackageValueFromProcess(activated,false);activationFull=PackageValueFromProcess(activated,true);
    CloseHandle(activatedToken);CloseHandle(activated);
    wprintf(L"ACTIVATED_PROCESS_PID=%lu ACTIVATED_SESSION=%lu SUPERVISOR_PID=%lu SUPERVISOR_SESSION=%lu ACTIVATED_TOKEN_IS_APPCONTAINER=%u OBSERVED_APPCONTAINER_SID=%s OBSERVED_PACKAGE_FAMILY=%s OBSERVED_PACKAGE_FULL_NAME=%s\n",expectedPid,SessionId(expectedPid),GetCurrentProcessId(),SessionId(GetCurrentProcessId()),activationApp,activationSid.c_str(),activationFamily.c_str(),activationFull.c_str());
-   if(activationApp!=1||activationSid==L"UNAVAILABLE"){wprintf(L"ACTIVATED_PROCESS_NOT_APP_CONTAINER=TRUE\n");return 33;}
-   aclSid=activationSid;
+   if(activationApp==1&&activationSid!=L"UNAVAILABLE")aclSid=activationSid;else wprintf(L"EXPECTED_CLIENT_NOT_APPCONTAINER=TRUE OBSERVED_APP=%u OBSERVED_SID=%s\n",activationApp,activationSid.c_str());
  }
  std::wstring sddl=L"D:P(A;;GA;;;"+userSid+L")(A;;GA;;;"+aclSid+L")S:(ML;;NW;;;LW)";
  PSECURITY_DESCRIPTOR sd=nullptr;if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&sd,nullptr)){wprintf(L"SDDL_FAIL=%lu\n",GetLastError());return 6;}
