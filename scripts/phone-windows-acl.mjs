@@ -1,4 +1,10 @@
 import { spawnSync } from "node:child_process";
+import {
+  chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdtempSync,
+  openSync, rmdirSync, unlinkSync, writeFileSync
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -251,28 +257,114 @@ while ($pending.Count -gt 0) {
 Write-Output 'PHONE_RESULT_ACL_OK'
 `;
 
-function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
-  const runner = options.spawnSync ?? spawnSync;
-  const input = POWERSHELL_SCRIPT;
+export function runPowerShellScript(script, options = {}) {
+  if (typeof script !== "string" || script.length === 0) {
+    throw new TypeError("A non-empty PowerShell script is required");
+  }
+  const tempRoot = options.tempRoot ?? os.tmpdir();
+  let tempDirectory;
+  let scriptPath;
+  let fd;
   let result;
+  let primaryError;
+
   try {
+    // mkdtemp creates a new directory atomically with an unpredictable suffix.
+    tempDirectory = mkdtempSync(path.join(tempRoot, "tokensaver-phone-acl-"));
+    const directoryStat = lstatSync(tempDirectory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error("Temporary PowerShell directory is not a plain directory");
+    }
+
+    scriptPath = path.join(tempDirectory, "acl-helper.ps1");
+    // wx prevents replacement/reuse; the parent directory is exclusively created above.
+    fd = openSync(scriptPath, "wx", 0o600);
+    const fileStat = lstatSync(scriptPath);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+      throw new Error("Temporary PowerShell script is not a plain file");
+    }
+    try {
+      writeFileSync(fd, script, { encoding: "utf8" });
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+      fd = undefined;
+    }
+    // On POSIX this tightens mode explicitly. On Windows, inherited ACLs from the
+    // per-user temporary directory remain authoritative; chmod is best effort.
+    try { chmodSync(scriptPath, 0o600); } catch (error) {
+      if (process.platform !== "win32") throw error;
+    }
+    if (options.onTemporaryScriptCreated) options.onTemporaryScriptCreated(scriptPath);
+
+    const runner = options.spawnSync ?? spawnSync;
     result = runner("powershell.exe", [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath
     ], {
       encoding: "utf8",
-      input,
       windowsHide: true,
       timeout: 60000,
+      env: { ...process.env, ...(options.env ?? {}) },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    if (result.error) {
+      const error = new Error(
+        "PowerShell process execution failed: " +
+        "exitCode=" + String(result.status) +
+        "\nstdout:\n" + String(result.stdout ?? "") +
+        "\nstderr:\n" + String(result.stderr ?? "") +
+        "\noriginal cause:\n" + (result.error?.stack || result.error?.message || String(result.error)),
+        { cause: result.error }
+      );
+      error.code = "PHONE_RESULT_WINDOWS_ACL_FAILED";
+      error.stdout = String(result.stdout ?? "");
+      error.stderr = String(result.stderr ?? "");
+      error.exitCode = result.status;
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    let cleanupError;
+    try {
+      if (fd !== undefined) closeSync(fd);
+      if (scriptPath && existsSync(scriptPath)) unlinkSync(scriptPath);
+      if (tempDirectory && existsSync(tempDirectory)) rmdirSync(tempDirectory);
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleanupError) {
+      const message = "Temporary PowerShell cleanup failed: " +
+        (cleanupError?.stack || cleanupError?.message || String(cleanupError));
+      if (primaryError) {
+        primaryError.cleanupError = cleanupError;
+        primaryError.message += "\n" + message;
+      } else {
+        const error = new Error(message, { cause: cleanupError });
+        error.code = "PHONE_RESULT_WINDOWS_ACL_CLEANUP_FAILED";
+        throw error;
+      }
+    }
+  }
+}
+
+function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
+  let result;
+  try {
+    result = runPowerShellScript(POWERSHELL_SCRIPT, {
+      ...options,
       env: {
-        ...process.env,
         TOKENSAVER_PHONE_RESULT_DIRECTORY: directory,
         ...extraEnvironment
-      },
-      stdio: ["pipe", "pipe", "pipe"]
+      }
     });
   } catch (cause) {
+    if (cause.code === "PHONE_RESULT_WINDOWS_ACL_FAILED") throw cause;
     const error = new Error(
-      "Unable to start Windows ACL PowerShell process: " +
+      "Unable to create or execute temporary Windows ACL PowerShell script: " +
       (cause?.stack || cause?.message || String(cause)),
       { cause }
     );
@@ -290,11 +382,10 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
     : extraEnvironment.TOKENSAVER_PHONE_ACL_AUDIT_ITEMS
       ? "PHONE_RESULT_ACL_AUDIT_OK"
       : "PHONE_RESULT_ACL_OK";
-  if (result.error || result.status !== 0 || stderr.length > 0 || !stdout.includes(expectedMarker)) {
-    const cause = result.error ??
-      (stderr.length > 0
-        ? new Error("PowerShell emitted stderr despite exit code " + String(result.status))
-        : new Error("PowerShell did not emit required marker " + expectedMarker));
+  if (result.status !== 0 || stderr.length > 0 || !stdout.includes(expectedMarker)) {
+    const cause = stderr.length > 0
+      ? new Error("PowerShell emitted stderr despite exit code " + String(result.status))
+      : new Error("PowerShell did not emit required marker " + expectedMarker);
     const detail = [
       "expectedMarker=" + expectedMarker,
       "exitCode=" + String(result.status),
@@ -304,7 +395,7 @@ function invokeAclScript(directory, extraEnvironment = {}, options = {}) {
       "stderr:",
       stderr,
       "cause:",
-      cause?.stack || cause?.message || String(cause)
+      cause.stack || cause.message
     ].join("\n");
     const error = new Error(
       "Unable to apply and verify restrictive Windows ACLs for Phone-02 result storage: " + detail,
