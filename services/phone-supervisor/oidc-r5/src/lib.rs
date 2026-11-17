@@ -183,6 +183,7 @@ fn acquire(secret_bytes: &[u8]) -> Result<(Zeroizing<String>, u64), i32> {
     let c = client()?;
     let d = get_discovery(&c)?;
     let (status, body) = post_token(&c, &d.token_endpoint, CLIENT_ID, &secret, SCOPE)?;
+    if status == 502 || status == 503 || status == 504 { return Err(20 + status as i32); }
     if status != 200 { return Err(100 + status as i32); }
     let response: TokenResponse = serde_json::from_slice(&body).map_err(|_| 30)?;
     if !response.token_type.eq_ignore_ascii_case("bearer") { return Err(33); }
@@ -279,7 +280,7 @@ pub extern "system" fn r5_probe_tls_failure() -> i32 {
         if !valid_url(url, "/realms/phone02-p238b/.well-known/openid-configuration", true) { return Err(120); }
         let socket = std::net::TcpStream::connect_timeout(&"127.0.0.1:8444".parse().map_err(|_| 121)?, Duration::from_secs(2)).map_err(|_| 122)?;
         drop(socket);
-        match c.get(url).send() { Err(_) => Ok::<(), i32>(()), Ok(_) => Err(123) }
+        match c.get(url).send() { Err(e) => { let message=e.to_string().to_lowercase(); if message.contains("certificate")||message.contains("cert")||message.contains("tls")||message.contains("issuer")||message.contains("trust") { Ok::<(), i32>(()) } else { Err(124) } }, Ok(_) => Err(123) }
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
 }
