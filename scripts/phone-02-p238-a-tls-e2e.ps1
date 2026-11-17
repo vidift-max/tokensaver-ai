@@ -268,6 +268,9 @@ try {
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
  if(-not $serviceSid){throw 'Service SID not returned by SCM'}
  @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","RPC_CLIENT_USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","TEAM_ROOM_FAKE_MODE=0","TEAM_ROOM_HTTPS_ENDPOINT=$p238Endpoint")|Set-Content $config -Encoding ASCII
+  $configText=Get-Content $config -Raw
+  Check ($configText -notmatch '(?i)(CLIENT_SECRET|ACCESS_TOKEN|TEAM_ROOM_SESSION|ENDPOINT_CREDENTIAL|OPERATOR_KEY|PASSWORD)') 'SUPERVISOR_SECRET_MATERIAL_ABSENT'
+  Check (-not (Test-Path 'C:\ProgramData\Phone02CredentialStoreR3')) 'R3_TEST_STORE_NOT_LEFT_BEHIND'
  $script:root=$root;$script:evidence=$evidence;$script:service=$service;$script:config=$config
  $p238HostsOriginal=[IO.File]::ReadAllText($p238HostsPath)
  if($p238HostsOriginal -notmatch '(?im)^\s*127\.0\.0\.1\s+team-room\.p238\.test(?:\s|$)'){Add-Content $p238HostsPath '127.0.0.1 team-room.p238.test' -Encoding ASCII}
@@ -481,7 +484,7 @@ finally {
  Write-Host ('TEAM_ROOM_PROCESS_REMOVED='+$(if($teamRoomProcessGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_CA_AND_CERTIFICATES_REMOVED='+$(if($p238CertsGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_PRIVATE_KEYS_REMOVED='+$(if($p238KeysGone){'PASS'}else{'FAIL'}));Write-Host ('HOSTS_ENTRY_RESTORED='+$(if($p238HostsRestored){'PASS'}else{'FAIL'}))
  $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean -and $teamRoomProcessGone -and $p238CertsGone -and $p238KeysGone -and $p238HostsRestored)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
- if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'P2.38-A_TLS_E2E=PASS'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}else{'P2.38-A_TLS_E2E=BLOCKED'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}
+ if($env:P238_R4_FAIL_CLOSED -eq '1'){('P2.38-B_R4_FAIL_CLOSED='+$(if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'PASS'}else{'BLOCKED'}))|Set-Content (Join-Path $evidence 'r4-classification.txt') -Encoding ASCII}else{if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'P2.38-A_TLS_E2E=PASS'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}else{'P2.38-A_TLS_E2E=BLOCKED'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}}
  if(-not $cleanup){$final='BLOCKED'}
  ('P2.38-A.1_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  @("commit=$env:GITHUB_SHA","run_id=$env:GITHUB_RUN_ID","job=windows-appcontainer-supervisor-teamroom-tls","hostname=team-room.p238.test","endpoint=https://team-room.p238.test:8443/health/live","classification=$final")|Set-Content (Join-Path $evidence 'run-metadata.txt') -Encoding ASCII
