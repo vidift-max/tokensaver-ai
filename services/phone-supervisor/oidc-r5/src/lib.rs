@@ -253,8 +253,8 @@ pub unsafe extern "system" fn r5_probe_wrong_scope(secret_ptr: *const u8, secret
         let d = get_discovery(&c)?;
         let (status, body) = post_token(&c, &d.token_endpoint, CLIENT_ID, &secret, "team_room:admin")?;
         if status == 400 {
-            let error: Value = serde_json::from_slice(&body).map_err(|_| 111)?;
-            let code = error.get("error").and_then(Value::as_str).unwrap_or("");
+            let error: serde_json::Value = serde_json::from_slice(&body).map_err(|_| 111)?;
+            let code = error.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
             let description = error.get("error_description").and_then(Value::as_str).unwrap_or("").to_lowercase();
             if code == "invalid_scope" || (code == "invalid_request" && description.contains("scope")) { return Ok::<(), i32>(()); }
             return Err(112);
