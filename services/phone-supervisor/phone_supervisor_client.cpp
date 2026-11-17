@@ -53,7 +53,7 @@ int wmain(int argc,wchar_t**argv){
  callStatus=SafeHeartbeat(binding,corr,session,&status);
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_HEARTBEAT_RPC_EXCEPTION="+std::to_wstring(callStatus));midl_user_free(session);RpcBindingFree(&binding);return 18;}
  if(status!=RPC_OK){Log(L"HEARTBEAT=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 14;}
- Log(L"HEARTBEAT=PASS");callStatus=SafeTeamRoomScenario(binding,corr,session,&status);if(callStatus!=RPC_S_OK||status!=RPC_OK){Log(L"TEAM_ROOM_SCENARIO=FAIL");midl_user_free(session);RpcBindingFree(&binding);return 20;}Log(L"TEAM_ROOM_SCENARIO=PASS");callStatus=SafeClose(binding,corr,session,&status);
+ Log(L"HEARTBEAT=PASS");callStatus=SafeTeamRoomScenario(binding,corr,session,&status);if(callStatus!=RPC_S_OK){Log(L"TEAM_ROOM_SCENARIO=FAIL");Log(L"TEAM_ROOM_FAIL_CLOSED=FAIL_RPC_EXCEPTION");midl_user_free(session);RpcBindingFree(&binding);return 20;}if(status==RPC_ACCESS_DENIED){Log(L"TEAM_ROOM_SCENARIO=FAIL");Log(L"TEAM_ROOM_FAIL_CLOSED=PASS");}else{Log(L"TEAM_ROOM_SCENARIO=FAIL");Log(status==RPC_OK?L"TEAM_ROOM_FALSE_SUCCESS=FAIL":L"TEAM_ROOM_FAIL_CLOSED=FAIL_UNEXPECTED_STATUS");}long scenarioStatus=status;callStatus=SafeClose(binding,corr,session,&status);
  midl_user_free(session);RpcBindingFree(&binding);if(callStatus!=RPC_S_OK){Log(L"CLIENT_CLOSE_RPC_EXCEPTION="+std::to_wstring(callStatus));return 19;}
- if(status!=RPC_OK){Log(L"CLOSE_SESSION=FAIL");return 15;}Log(L"CLOSE_SESSION=PASS");return 0;
+ if(status!=RPC_OK){Log(L"CLOSE_SESSION=FAIL");return 15;}Log(L"CLOSE_SESSION=PASS");return scenarioStatus==RPC_ACCESS_DENIED?0:20;
 }
