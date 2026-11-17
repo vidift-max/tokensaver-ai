@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "=0.8.0", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
