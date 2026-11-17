@@ -49,7 +49,7 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
           New-Item -ItemType Directory -Force $root | Out-Null
           $testExe = Join-Path $env:RUNNER_TEMP 'phone-supervisor-r4-tests.exe'
-          $src = Join-Path $env:GITHUB_WORKSPACE 'services\\phone-supervisor\\phone_supervisor_r4_tests.cpp'
+          $src = Join-Path (Join-Path (Join-Path $env:GITHUB_WORKSPACE 'services') 'phone-supervisor') 'phone_supervisor_r4_tests.cpp'
           cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE $src /Fe:$testExe ncrypt.lib
           if ($LASTEXITCODE -ne 0) { throw 'R4 policy test compilation failed' }
           & $testExe *> (Join-Path $root 'r4-policy-tests.log')
