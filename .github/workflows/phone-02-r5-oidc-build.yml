@@ -103,11 +103,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json' }
-          $run = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44188631595"
-          $artifacts = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44188631595/artifacts"
-          $artifact = $artifacts.artifacts | Where-Object { $_.id -eq 14374149971 }
-          if ($run.conclusion -ne 'success' -or -not $artifact -or $artifact.expired -or $artifact.digest -ne 'sha256:69e317dd3b7d280ecef5fef2eed8f2d8308c11af211a0ed017a74d5912c639ea') { throw 'R4_REAL_APPCONTAINER_EVIDENCE_INVALID' }
-          'R4_APP_CONTAINER_EVIDENCE=PASS' | Out-File "$env:RUNNER_TEMP/r4-appcontainer-evidence.txt"
+          $run = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44192932167"
+          $artifacts = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44192932167/artifacts"
+          $artifact = $artifacts.artifacts | Where-Object { $_.id -eq 14376783563 }
+          if ($run.conclusion -ne 'success' -or -not $artifact -or $artifact.expired -or $artifact.digest -ne 'sha256:f6d98fd7c7370f1dcb41010c7db9d549c07f13743dd43e08589d4d93762e730b') { throw 'R4_REAL_APPCONTAINER_EVIDENCE_INVALID' }
+          @('R4_APP_CONTAINER_EVIDENCE=PASS','R4_RUN_ID=44192932167','R4_ARTIFACT_ID=14376783563','R4_ARTIFACT_SHA256=f6d98fd7c7370f1dcb41010c7db9d549c07f13743dd43e08589d4d93762e730b') | Out-File "$env:RUNNER_TEMP/r4-appcontainer-evidence.txt"
       - name: Run real R5 HTTPS Keycloak client_credentials and DPAPI-NG integration
         shell: pwsh
         run: |
@@ -140,7 +140,10 @@ jobs:
           $files = Get-ChildItem $evidence -File
           $allText = ($files | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
           if ($allText -match '(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|client_secret\s*=\s*[^<\s]{12,}|access_token\s*=\s*[^<\s]{12,}') { throw 'R5_ARTIFACT_SECRET_SCAN_FAILED' }
-          $lines = Get-Content $summaryPath | Where-Object { $_ -notmatch '^ARTIFACT_SCAN=' -and $_ -notmatch '^R5_VERDICT=' }
+          $lines = Get-Content $summaryPath | Where-Object { $_ -notmatch '^ARTIFACT_SCAN=' -and $_ -notmatch '^R5_VERDICT=' -and $_ -notmatch '^R4_RUN_ID=' -and $_ -notmatch '^R4_ARTIFACT_ID=' -and $_ -notmatch '^R4_ARTIFACT_SHA256=' }
+          $lines += 'R4_RUN_ID=44192932167'
+          $lines += 'R4_ARTIFACT_ID=14376783563'
+          $lines += 'R4_ARTIFACT_SHA256=f6d98fd7c7370f1dcb41010c7db9d549c07f13743dd43e08589d4d93762e730b'
           $lines += 'ARTIFACT_SCAN=PASS'
           $lines += 'R5_VERDICT=PASS'
           $lines | Set-Content $summaryPath -Encoding utf8
