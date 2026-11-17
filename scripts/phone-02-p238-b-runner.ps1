@@ -87,16 +87,18 @@ try {
     $env:P238B_KEYCLOAK_PG_PASSWORD=$pgPassword;$env:PGPASSWORD=$pgPassword
     $bootstrapScript=Join-Path $env:GITHUB_WORKSPACE 'scripts\phone-02-p238b-keycloak-bootstrap.ps1'
     Assert-Check (Test-Path $bootstrapScript) 'KEYCLOAK_P238B_BOOTSTRAP_PRESENT'
-    $keycloakProcess=& $bootstrapScript -KeycloakBat $kcBat -KeycloakHome $keycloakHome -Evidence $evidence -PsqlPath $psql
-    if(-not $keycloakProcess -or -not $keycloakProcess.Id){throw 'Keycloak bootstrap did not return a live process handle'}
+    $bootstrapResult=& $bootstrapScript -KeycloakBat $kcBat -KeycloakHome $keycloakHome -Evidence $evidence -PsqlPath $psql
+    if(-not $bootstrapResult -or -not $bootstrapResult.Process -or -not $bootstrapResult.Secret){throw 'Keycloak bootstrap did not return its in-memory result'}
+    $keycloakProcess=$bootstrapResult.Process;$oidcClientSecret=$bootstrapResult.Secret
     Remove-Item Env:PGPASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue
     Write-Host 'OIDC_ACCESS_TOKEN=NOT_REQUESTED'
     Write-Host 'TEAM_ROOM_AUTH_EXCHANGE=NOT_CALLED'
     Write-Host 'AI_PHONE_ACTIVATION=NOT_PERFORMED'
-    Write-Host 'P238B_PHASE1_ONLY=PASS'
+    Write-Host 'P238B_PHASE1_BOOTSTRAP=CHECKS_COMPLETED_PENDING_CLEANUP'
 }
 catch {
     $failure=$_
+    if($_.Exception.Data.Contains('OIDC_SECRET_IN_MEMORY')){$oidcClientSecret=[string]$_.Exception.Data['OIDC_SECRET_IN_MEMORY']}
     Write-Host ('P238B_RUNNER_FAILURE='+$_.Exception.Message)
 }
 finally {
@@ -109,6 +111,36 @@ finally {
     $kcRemaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
     $cleanup.Add('KEYCLOAK_CHILD_PROCESSES_STOP='+$(if($kcRemaining.Count -eq 0){'PASS'}else{'FAIL'}))
     if($keycloakProcess){Stop-TrackedProcess $keycloakProcess 'KEYCLOAK_LAUNCHER_STOP'}else{$cleanup.Add('KEYCLOAK_LAUNCHER_STOP=BOOTSTRAP_DID_NOT_RETURN')}
+    try {Stop-Transcript | Out-Null} catch {$failure=[System.Exception]::new('Transcript shutdown failed before secret sanitization')}
+    # Keycloak and transcript writers are stopped before evidence files are read.
+    $sanitizationFailed=$false;$sanitizationReason='none'
+    try {
+        foreach($file in Get-ChildItem $evidence -File -ErrorAction Stop) {
+            $raw=[IO.File]::ReadAllText($file.FullName)
+            if($null -ne $oidcClientSecret -and $oidcClientSecret.Length -gt 0){$raw=$raw.Replace($oidcClientSecret,'[REDACTED_OIDC_SECRET]')}
+            $raw=$raw.Replace($pgPassword,'[REDACTED_PG_PASSWORD]')
+            $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
+            [IO.File]::WriteAllText($file.FullName,$raw)
+        }
+        foreach($file in Get-ChildItem $evidence -File -ErrorAction Stop) {
+            $check=[IO.File]::ReadAllText($file.FullName)
+            if(($null -ne $oidcClientSecret -and $oidcClientSecret.Length -gt 0 -and $check.Contains($oidcClientSecret)) -or $check.Contains($pgPassword)){throw 'secret material remains in evidence'}
+        }
+    } catch {
+        $sanitizationFailed=$true
+        $sanitizationReason='evidence_read_redact_or_verify_failed;type='+$_.Exception.GetType().FullName+';hresult='+('0x{0:X8}' -f $_.Exception.HResult)
+    }
+    if($sanitizationFailed) {
+        Write-Host 'OIDC_SECRET_SANITIZATION=FAIL'
+        Write-Host ('OIDC_SECRET_SANITIZATION_REASON='+$sanitizationReason)
+        $cleanup.Add('OIDC_SECRET_SANITIZATION=FAIL')
+        if($null -eq $failure){$failure=[System.Exception]::new('OIDC secret sanitization failed')}
+    } else {Write-Host 'OIDC_SECRET_SANITIZATION=PASS';$cleanup.Add('OIDC_SECRET_SANITIZATION=PASS')}
+    $oidcClientSecret=$null;$bootstrapResult=$null
+    if($failure -and $failure.Exception.Data.Contains('OIDC_SECRET_IN_MEMORY')){$failure.Exception.Data.Remove('OIDC_SECRET_IN_MEMORY')}
+    if($failure -and $failure.Exception.Data.Contains('ORIGINAL_EXCEPTION')){$failure.Exception.Data.Remove('ORIGINAL_EXCEPTION')}
+    try {Remove-Item $root -Recurse -Force -ErrorAction Stop;$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=PASS')} catch {$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=FAIL')}
+    if(Test-Path $root){$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_VERIFY=FAIL')}else{$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_VERIFY=PASS')}
     if($pgService) {
         try {
             $env:PGPASSWORD=$pgPassword
@@ -124,15 +156,8 @@ finally {
     if($pgInstalled) {
         try {& choco uninstall postgresql16 -y --no-progress --limit-output | Out-Null;if($LASTEXITCODE -ne 0){throw 'Chocolatey uninstall returned non-zero'};$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')} catch {$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
     } else {$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=NOT_INSTALLED')}
-    try {Stop-Transcript | Out-Null} catch {}
-    foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue) {
-        try {
-            $raw=Get-Content $file.FullName -Raw -ErrorAction Stop
-            $raw=$raw.Replace($pgPassword,'[REDACTED]')
-            $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
-            Set-Content -Path $file.FullName -Value $raw -Encoding utf8
-        } catch {}
-    }
+    if($cleanup -match '=FAIL'){$cleanupResult='FAIL';if($null -eq $failure){$failure=[System.Exception]::new('One or more ephemeral cleanup checks failed')}}else{$cleanupResult='PASS'}
+    Write-Host ('CLEANUP='+$cleanupResult)
     @(
         'branch='+$env:GITHUB_REF
         'sha='+$env:GITHUB_SHA
@@ -144,16 +169,6 @@ finally {
         'oidc_flow=NOT_EXECUTED'
         'cleanup='+($cleanup -join ';')
     ) | Set-Content (Join-Path $evidence 'runner-metadata.txt') -Encoding utf8
-    foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue) {
-        try {
-            $raw=Get-Content $file.FullName -Raw -ErrorAction Stop
-            $raw=$raw.Replace($pgPassword,'[REDACTED]')
-            $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
-            Set-Content -Path $file.FullName -Value $raw -Encoding utf8
-        } catch {}
-    }
-    try {Remove-Item $root -Recurse -Force -ErrorAction Stop;$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=PASS')} catch {$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=FAIL')}
-    if($cleanup -match '=FAIL' -and $null -eq $failure){$failure=[System.Exception]::new('One or more ephemeral cleanup checks failed')}
     $hashLines=Get-ChildItem $evidence -File | Where-Object Name -ne 'SHA256SUMS' | ForEach-Object {(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()+'  '+$_.Name}
     $hashLines | Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
 }

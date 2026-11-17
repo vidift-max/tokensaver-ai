@@ -45,11 +45,17 @@ try {
  $tables=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'";Mark 'KEYCLOAK_POSTGRES_SCHEMA_PERSISTED' ([int]$tables -gt 10)
  Write-Host 'KEYCLOAK_EFFECTIVE_DATASTORE=postgresql'
  Remove-Item -LiteralPath $importFile -Force;Mark 'OIDC_IMPORT_SECRET_FILE_REMOVED' (!(Test-Path $importFile))
- $leak=$false;foreach($f in Get-ChildItem $Evidence -File -Recurse){if([IO.File]::ReadAllText($f.FullName).Contains($secret)){$leak=$true}}
- Mark 'OIDC_SECRET_SANITIZATION' (!$leak)
- $secret=$null;[Array]::Clear($secretBytes,0,$secretBytes.Length);$secretBytes=$null
+ # Stop Keycloak before returning so stdout/stderr handles are released.
+ $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($KeycloakHome)})
+ foreach($child in $kcChildren){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
+ if($process -and !$process.HasExited){Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue}
+ if($process){Wait-Process -InputObject $process -Timeout 15 -ErrorAction Stop}
+ $stopDeadline=(Get-Date).AddSeconds(20)
+ do {$remaining=@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($KeycloakHome)});if($remaining.Count -eq 0){break};Start-Sleep -Seconds 1} while((Get-Date) -lt $stopDeadline)
+ if($remaining.Count -gt 0){throw 'Keycloak process tree did not terminate'}
+ Write-Host 'KEYCLOAK_PROCESS_TREE_STOP=PASS'
  Write-Host 'OIDC_ACCESS_TOKEN=NOT_REQUESTED';Write-Host 'OIDC_TOKEN_ENDPOINT=NOT_CALLED';Write-Host 'TEAM_ROOM_AUTH_EXCHANGE=NOT_CALLED'
- return $process
+ return [pscustomobject]@{Process=$process;Secret=$secret}
 } catch {
  if(Test-Path $importFile){Remove-Item $importFile -Force -ErrorAction SilentlyContinue}
  # kc.bat may have spawned a Java child that outlives the launcher. Stop the
@@ -64,5 +70,10 @@ try {
   Start-Sleep -Seconds 1
  } while((Get-Date) -lt $stopDeadline)
  if($remaining.Count -gt 0){Write-Host 'KEYCLOAK_FAILURE_PROCESS_CLEANUP=FAIL'}else{Write-Host 'KEYCLOAK_FAILURE_PROCESS_CLEANUP=PASS'}
- throw 'P2.38-B Keycloak bootstrap failed; inspect sanitized evidence logs'
+ $safeType=$_.Exception.GetType().FullName;$safeHResult=('0x{0:X8}' -f $_.Exception.HResult)
+ Write-Host ('P238B_BOOTSTRAP_EXCEPTION_TYPE='+$safeType);Write-Host ('P238B_BOOTSTRAP_EXCEPTION_HRESULT='+$safeHResult)
+ $safeException=[System.Exception]::new('P2.38-B Keycloak bootstrap failed [type='+$safeType+';hresult='+$safeHResult+']')
+ $safeException.Data['ORIGINAL_EXCEPTION']=$_.Exception
+ if($null -ne $secret){$safeException.Data['OIDC_SECRET_IN_MEMORY']=$secret}
+ throw $safeException
 } finally {$secret=$null;if($secretBytes){[Array]::Clear($secretBytes,0,$secretBytes.Length)};Remove-Item Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue}
