@@ -17,10 +17,11 @@ extern "C" SECURITY_STATUS WINAPI NCryptCloseProtectionDescriptor(NCRYPT_DESCRIP
 extern "C" SECURITY_STATUS WINAPI NCryptProtectSecret(NCRYPT_DESCRIPTOR_HANDLE,DWORD,const BYTE*,ULONG,const void*,HWND,BYTE**,ULONG*);
 extern "C" SECURITY_STATUS WINAPI NCryptUnprotectSecret(NCRYPT_DESCRIPTOR_HANDLE*,DWORD,const BYTE*,ULONG,const void*,HWND,BYTE**,ULONG*);
 static const wchar_t* SERVICE_NAME=L"TokenSaverPhone02Supervisor";
+static const wchar_t* SERVICE_ACCOUNT=L"NT SERVICE\\TokenSaverPhone02Supervisor";
 static const wchar_t* ROOT=L"C:\\ProgramData\\Phone02CredentialStoreR3";
 static const wchar_t* STORE=L"C:\\ProgramData\\Phone02CredentialStoreR3\\credential.bin";
 static void logline(const char* s){std::ofstream f("C:\\ProgramData\\Phone02CredentialStoreR3\\result.txt",std::ios::app);f<<s<<"\n";}
-static bool sidDescriptor(std::wstring& d){DWORD n=0,m=0;SID_NAME_USE u;LookupAccountNameW(nullptr,SERVICE_NAME,nullptr,&n,nullptr,&m,&u);std::vector<BYTE>b(n);if(!LookupAccountNameW(nullptr,SERVICE_NAME,b.data(),&n,nullptr,&m,&u))return false;LPWSTR p=nullptr;if(!ConvertSidToStringSidW(b.data(),&p))return false;d=L"SID=";d+=p;LocalFree(p);return true;}
+static bool sidDescriptor(std::wstring& d){DWORD n=0,m=0;SID_NAME_USE u;LookupAccountNameW(nullptr,SERVICE_ACCOUNT,nullptr,&n,nullptr,&m,&u);std::vector<BYTE>b(n);if(!LookupAccountNameW(nullptr,SERVICE_NAME,b.data(),&n,nullptr,&m,&u))return false;LPWSTR p=nullptr;if(!ConvertSidToStringSidW(b.data(),&p))return false;d=L"SID=";d+=p;LocalFree(p);return true;}
 static bool protect(const std::vector<BYTE>& x,std::vector<BYTE>& y){std::wstring d;if(!sidDescriptor(d))return false;NCRYPT_DESCRIPTOR_HANDLE h=nullptr;PBYTE p=nullptr;ULONG n=0;auto s=NCryptCreateProtectionDescriptor(d.c_str(),0,&h);if(s==0)s=NCryptProtectSecret(h,0,(PBYTE)x.data(),(ULONG)x.size(),nullptr,nullptr,&p,&n);if(h)NCryptCloseProtectionDescriptor(h);if(s!=0)return false;y.assign(p,p+n);LocalFree(p);return true;}
 static bool unprotect(const std::vector<BYTE>& x,std::vector<BYTE>& y){NCRYPT_DESCRIPTOR_HANDLE h=nullptr;PBYTE p=nullptr;ULONG n=0;auto s=NCryptUnprotectSecret(&h,0,(PBYTE)x.data(),(ULONG)x.size(),nullptr,nullptr,&p,&n);if(h)NCryptCloseProtectionDescriptor(h);if(s!=0)return false;y.assign(p,p+n);LocalFree(p);return true;}
 static bool readblob(std::vector<BYTE>& x){std::ifstream f(STORE,std::ios::binary);if(!f)return false;x.assign(std::istreambuf_iterator<char>(f),{});return !x.empty();}
