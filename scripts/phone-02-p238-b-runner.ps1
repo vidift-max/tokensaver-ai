@@ -92,10 +92,12 @@ try {
     Remove-Item Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD -ErrorAction SilentlyContinue
     Wait-Http 'http://127.0.0.1:9000/health/ready' 180 'KEYCLOAK_HEALTH'
     Wait-Http 'http://127.0.0.1:8080/realms/master/.well-known/openid-configuration' 30 'KEYCLOAK_DISCOVERY'
-    $kcConnections = & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='keycloak_p238b' AND usename='postgres' AND application_name='keycloak-p238b'"
+    $env:PGPASSWORD=$pgPassword
+    $kcConnections = & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='keycloak_p238b' AND usename='postgres'"
     if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL activity'}
     $kcTableCount = & $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -Atc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"
     if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL schema'}
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
     Assert-Check ([int]$kcConnections -gt 0) 'KEYCLOAK_POSTGRES_ACTIVE_CONNECTION'
     Assert-Check ([int]$kcTableCount -gt 0) 'KEYCLOAK_POSTGRES_SCHEMA_PRESENT'
     Write-Host 'KEYCLOAK_EFFECTIVE_DATASTORE=postgresql'
