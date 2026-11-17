@@ -1,0 +1,48 @@
+name: Phone-02 P2.38-A real Supervisor HTTPS TLS E2E
+on:
+  push:
+    branches:
+      - mission/phone-02-controlled-integration
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: phone02-p238a-tls-e2e-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  windows-appcontainer-supervisor-teamroom-tls:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact isolated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install stable Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build Team Room TLS server and execute real AppContainer to Supervisor to HTTPS tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host ('P238A_COMMIT=' + $env:GITHUB_SHA)
+          Write-Host ('P238A_RUN_ID=' + $env:GITHUB_RUN_ID)
+          Write-Host ('P238A_JOB=windows-appcontainer-supervisor-teamroom-tls')
+          & .\scripts\phone-02-p238-a-tls-e2e.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'P2.38-A Windows TLS E2E script failed' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
+          @(
+            "commit=$env:GITHUB_SHA"
+            "run_id=$env:GITHUB_RUN_ID"
+            "job=windows-appcontainer-supervisor-teamroom-tls"
+            "hostname=team-room.p238.test"
+            "endpoint=https://team-room.p238.test:8443/health/live"
+            "classification=$(Get-Content (Join-Path $evidence 'classification.txt') -Raw)"
+          ) | Set-Content (Join-Path $evidence 'run-metadata.txt') -Encoding ASCII
+      - name: Upload sanitized P2.38-A Windows TLS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-p238a-real-https-tls-e2e
+          path: ${{ runner.temp }}/phone02-p238a-evidence
+          if-no-files-found: warn

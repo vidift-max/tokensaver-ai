@@ -110,7 +110,16 @@ fn allow_exchange(peer: Option<SocketAddr>) -> bool {
     true
 }
 
-async fn live() -> (StatusCode, Json<HealthResponse>) {
+async fn live() -> axum::response::Response {
+    // Explicit test-only redirect switch exercises WinHTTP's no-redirect policy.
+    if env::var("TEAM_ROOM_TLS_PROBE_ONLY").as_deref() == Ok("1")
+        && env::var("TEAM_ROOM_TEST_REDIRECT_HTTP").as_deref() == Ok("1")
+    {
+        return axum::response::Redirect::temporary(
+            "http://team-room.p238.test:8081/health/live",
+        )
+        .into_response();
+    }
     (
         StatusCode::OK,
         Json(HealthResponse {
@@ -118,6 +127,7 @@ async fn live() -> (StatusCode, Json<HealthResponse>) {
             status: "live",
         }),
     )
+        .into_response()
 }
 
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
@@ -835,6 +845,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    // Disposable TLS-only mode used by the Windows P2.38-A integration test.
+    // It serves the same Team Room liveness handler and does not replace or
+    // alter the normal HTTP listener used by existing tests.
+    if env::var("TEAM_ROOM_TLS_PROBE_ONLY").as_deref() == Ok("1") {
+        let bind: SocketAddr = env::var("TEAM_ROOM_TLS_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:8443".to_string())
+            .parse()?;
+        if !bind.ip().is_loopback() || bind.port() != 8443 {
+            return Err("TLS probe mode is restricted to loopback port 8443".into());
+        }
+        let http_bind: SocketAddr = env::var("TEAM_ROOM_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:8081".to_string())
+            .parse()?;
+        if !http_bind.ip().is_loopback() || http_bind.port() != 8081 {
+            return Err("TLS probe HTTP listener is restricted to loopback port 8081".into());
+        }
+        let cert = env::var("TEAM_ROOM_TLS_CERT_PATH")
+            .map_err(|_| "TEAM_ROOM_TLS_CERT_PATH is required in TLS probe mode")?;
+        let key = env::var("TEAM_ROOM_TLS_KEY_PATH")
+            .map_err(|_| "TEAM_ROOM_TLS_KEY_PATH is required in TLS probe mode")?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+        let app = Router::new().route("/health/live", get(live));
+        let http_listener = tokio::net::TcpListener::bind(http_bind).await?;
+        let http_app = app.clone();
+        let http_task = tokio::spawn(async move {
+            tracing::info!(%http_bind, "AI Team Room test HTTP listener ready");
+            axum::serve(http_listener, http_app.into_make_service()).await
+        });
+        tracing::info!(%bind, "AI Team Room ephemeral HTTPS listener starting (TLS probe mode)");
+        let https_result = axum_server::bind_rustls(bind, tls)
+            .serve(app.into_make_service())
+            .await;
+        http_task.abort();
+        https_result?;
+        return Ok(());
+    }
 
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must point to the shared PostgreSQL service")?;
