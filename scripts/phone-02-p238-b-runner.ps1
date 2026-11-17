@@ -16,7 +16,7 @@ function Assert-Check([bool]$Condition,[string]$Name) {
 function Wait-Http([string]$Uri,[int]$Seconds,[string]$Name) {
     $deadline=(Get-Date).AddSeconds($Seconds)
     do {
-        try { $response=Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 3; if($response.StatusCode -ge 200 -and $response.StatusCode -lt 500){Write-Host ($Name+'=READY');return} } catch {}
+        try { $response=Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 3; if($response.StatusCode -eq 200){Write-Host ($Name+'=READY');return} } catch {}
         Start-Sleep -Seconds 2
     } while((Get-Date) -lt $deadline)
     throw ($Name+' did not become ready: '+$Uri)
@@ -117,7 +117,11 @@ finally {
     Stop-TrackedProcess $teamRoomProcess 'TEAM_ROOM_FULL_PROCESS_STOP'
     if($keycloakProcess) {
         $kcDir=Join-Path $root 'keycloak-26.3.5'
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}
+        $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
+        foreach($child in $kcChildren){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
+        Start-Sleep -Seconds 2
+        $kcRemaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
+        $cleanup.Add('KEYCLOAK_CHILD_PROCESSES_STOP='+$(if($kcRemaining.Count -eq 0){'PASS'}else{'FAIL'}))
         Stop-TrackedProcess $keycloakProcess 'KEYCLOAK_LAUNCHER_STOP'
     } else {$cleanup.Add('KEYCLOAK_LAUNCHER_STOP=NOT_STARTED')}
     if($pgService) {
@@ -150,6 +154,16 @@ finally {
         'oidc_flow=NOT_EXECUTED'
         'cleanup='+($cleanup -join ';')
     ) | Set-Content (Join-Path $evidence 'runner-metadata.txt') -Encoding utf8
+    foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue) {
+        try {
+            $raw=Get-Content $file.FullName -Raw -ErrorAction Stop
+            $raw=$raw.Replace($pgPassword,'[REDACTED]').Replace($kcPassword,'[REDACTED]')
+            $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
+            Set-Content -Path $file.FullName -Value $raw -Encoding utf8
+        } catch {}
+    }
+    try {Remove-Item $root -Recurse -Force -ErrorAction Stop;$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=PASS')} catch {$cleanup.Add('EPHEMERAL_DOWNLOAD_DIRECTORY_REMOVED=FAIL')}
+    if($cleanup -match '=FAIL' -and $null -eq $failure){$failure=[System.Exception]::new('One or more ephemeral cleanup checks failed')}
     $hashLines=Get-ChildItem $evidence -File | Where-Object Name -ne 'SHA256SUMS' | ForEach-Object {(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()+'  '+$_.Name}
     $hashLines | Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
 }
