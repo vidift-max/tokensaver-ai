@@ -14,7 +14,7 @@ function Register-P238Certificate($c){
  if($rsa){$rsa.Dispose()}
 }
 function New-P238Root($subject){
- $c=New-SelfSignedCertificate -Type Custom -Subject $subject -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage CertSign,CRLSign,DigitalSignature -TextExtension @('2.5.29.19={critical}{text}ca=TRUE&pathlength=1') -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(3)
+ $c=New-SelfSignedCertificate -Type Custom -Subject $subject -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage KeyCertSign,CrlSign,DigitalSignature -TextExtension @('2.5.29.19={critical}{text}ca=1&pathlength=1') -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(3)
  Register-P238Certificate $c
  return $c
 }
