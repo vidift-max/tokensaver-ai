@@ -55,6 +55,21 @@ bool EnsureDirectory(const std::wstring& path) {
     if(CreateDirectoryW(path.c_str(),nullptr))return true;
     return GetLastError()==ERROR_ALREADY_EXISTS;
 }
+bool SidEqualsWellKnown(PSID sid,WELL_KNOWN_SID_TYPE type) {
+    BYTE storage[SECURITY_MAX_SID_SIZE]{};DWORD size=sizeof(storage);
+    return CreateWellKnownSid(type,nullptr,storage,&size)&&EqualSid(sid,storage);
+}
+bool CurrentTokenHasEnabledServiceSid(const std::wstring& serviceSid) {
+    PSID expected=nullptr;if(!ConvertStringSidToSidW(serviceSid.c_str(),&expected))return false;
+    HANDLE token=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){LocalFree(expected);return false;}
+    DWORD needed=0;GetTokenInformation(token,TokenGroups,nullptr,0,&needed);
+    std::vector<BYTE> buffer(needed);bool found=false;
+    if(needed&&GetTokenInformation(token,TokenGroups,buffer.data(),needed,&needed)){
+        auto* groups=reinterpret_cast<TOKEN_GROUPS*>(buffer.data());
+        for(DWORD i=0;i<groups->GroupCount;i++)if(EqualSid(groups->Groups[i].Sid,expected)&&(groups->Groups[i].Attributes&SE_GROUP_ENABLED)){found=true;break;}
+    }
+    CloseHandle(token);LocalFree(expected);return found;
+}
 }
 SecureBuffer::~SecureBuffer(){Clear();}
 SecureBuffer::SecureBuffer(SecureBuffer&& other) noexcept:bytes_(std::move(other.bytes_)),locked_(other.locked_){other.locked_=false;}
@@ -71,7 +86,7 @@ void SecureBuffer::Clear() noexcept {
     if(!bytes_.empty()){
         SecureZeroMemory(bytes_.data(),bytes_.size());
         if(locked_)VirtualUnlock(bytes_.data(),bytes_.size());
-        bytes_.clear();bytes_.shrink_to_fit();
+        std::vector<BYTE>().swap(bytes_);
     }
     locked_=false;
 }
@@ -100,15 +115,15 @@ bool SupervisorCredentialStore::VerifyProtectedDacl(const std::wstring& path,std
     bool protectedDacl=GetSecurityDescriptorControl(descriptor,&control,&revision)&&((control&SE_DACL_PROTECTED)!=0);
     bool hasSystem=false,hasAdmins=false,hasService=false,hasEveryone=false,hasUsers=false,hasInteractive=false;
     if(dacl){for(DWORD i=0;i<dacl->AceCount;i++){void* raw=nullptr;if(!GetAce(dacl,i,&raw))continue;auto* header=static_cast<ACE_HEADER*>(raw);if(header->AceType!=ACCESS_ALLOWED_ACE_TYPE)continue;auto* ace=static_cast<ACCESS_ALLOWED_ACE*>(raw);PSID sid=&ace->SidStart;
-        if(EqualSid(sid,GetWellKnownSid(WinLocalSystemSid)))hasSystem=true;
-        if(EqualSid(sid,GetWellKnownSid(WinBuiltinAdministratorsSid)))hasAdmins=true;
+        if(SidEqualsWellKnown(sid,WinLocalSystemSid))hasSystem=true;
+        if(SidEqualsWellKnown(sid,WinBuiltinAdministratorsSid))hasAdmins=true;
         PSID expected=nullptr;if(ConvertStringSidToSidW(serviceSid_.c_str(),&expected)){if(EqualSid(sid,expected))hasService=true;LocalFree(expected);}
-        if(EqualSid(sid,GetWellKnownSid(WinWorldSid)))hasEveryone=true;
-        if(EqualSid(sid,GetWellKnownSid(WinBuiltinUsersSid)))hasUsers=true;
-        if(EqualSid(sid,GetWellKnownSid(WinInteractiveSid)))hasInteractive=true;
+        if(SidEqualsWellKnown(sid,WinWorldSid))hasEveryone=true;
+        if(SidEqualsWellKnown(sid,WinBuiltinUsersSid))hasUsers=true;
+        if(SidEqualsWellKnown(sid,WinInteractiveSid))hasInteractive=true;
     }}
     LocalFree(descriptor);
-    if(!protectedDacl||!hasSystem||!hasAdmins||!hasService||hasEveryone||hasUsers||hasInteractive){reason=L"PROTECTED_DACL_VERIFY_FAILED";return false;}
+    if(!protectedDacl||!dacl||dacl->AceCount!=3||!hasSystem||!hasAdmins||!hasService||hasEveryone||hasUsers||hasInteractive){reason=L"PROTECTED_DACL_VERIFY_FAILED";return false;}
     reason.clear();return true;
 }
 bool SupervisorCredentialStore::Initialize(std::wstring& reason) {
@@ -116,6 +131,7 @@ bool SupervisorCredentialStore::Initialize(std::wstring& reason) {
     if(!EnsureDirectory(L"C:\\ProgramData\\TokenSaver")||
        !EnsureDirectory(L"C:\\ProgramData\\TokenSaver\\Phone02")||
        !EnsureDirectory(root_)){reason=L"STORE_DIRECTORY_CREATE_FAILED";return false;}
+    if(!CurrentTokenHasEnabledServiceSid(serviceSid_)){reason=L"SERVICE_SID_NOT_ENABLED_IN_PROCESS_TOKEN";return false;}
     if(!ApplyProtectedDacl(root_,true,reason))return false;
     return VerifyProtectedDacl(root_,reason);
 }
@@ -126,7 +142,7 @@ bool SupervisorCredentialStore::WriteClientSecret(const SecureBuffer& secret,std
     const std::wstring temp=filePath_+L".tmp";
     HANDLE file=CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_HIDDEN|FILE_FLAG_WRITE_THROUGH,nullptr);
     if(file==INVALID_HANDLE_VALUE){SecureZeroMemory(blob.data(),blob.size());reason=L"STORE_TEMP_CREATE_FAILED";return false;}
-    DWORD written=0;bool ok=WriteFile(file,blob.data(),static_cast<DWORD>(blob.size()),&written,nullptr)&&written==blob.size()&&FlushFileBuffers(file);
+    DWORD written=0;bool ok=WriteFile(file,blob.data(),static_cast<DWORD>(blob.size()),&written,nullptr)&&written==static_cast<DWORD>(blob.size())&&FlushFileBuffers(file);
     CloseHandle(file);SecureZeroMemory(blob.data(),blob.size());blob.clear();
     if(!ok){DeleteFileW(temp.c_str());reason=L"STORE_CIPHERTEXT_WRITE_FAILED";return false;}
     if(!ApplyProtectedDacl(temp,false,reason)){DeleteFileW(temp.c_str());return false;}
@@ -135,6 +151,7 @@ bool SupervisorCredentialStore::WriteClientSecret(const SecureBuffer& secret,std
     return VerifyProtectedDacl(filePath_,reason);
 }
 bool SupervisorCredentialStore::ReadClientSecret(SecureBuffer& secret,std::wstring& reason) const {
+    if(!VerifyProtectedDacl(root_,reason)||!VerifyProtectedDacl(filePath_,reason))return false;
     HANDLE file=CreateFileW(filePath_.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE){reason=GetLastError()==ERROR_FILE_NOT_FOUND?L"CREDENTIAL_NOT_PROVISIONED":L"STORE_OPEN_FAILED";return false;}
     LARGE_INTEGER size{};if(!GetFileSizeEx(file,&size)||size.QuadPart<=0||size.QuadPart>static_cast<LONGLONG>(kMaxBlobBytes)){CloseHandle(file);reason=L"STORE_BLOB_SIZE_INVALID";return false;}
