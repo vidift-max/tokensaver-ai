@@ -350,6 +350,15 @@ finally{
  $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_PROTECTED=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS')
  $allServiceMarkers=$true
  foreach($marker in $required){if(-not $serviceBody.Contains($marker)){$allServiceMarkers=$false}}
+ if($svcLog -and (Test-Path $svcLog)){Copy-Item $svcLog (Join-Path $evidence 'supervisor-r5.log') -Force}
+ if($clientLog -and (Test-Path $clientLog)){Copy-Item $clientLog (Join-Path $evidence 'supervisor-client-common.log') -Force}
+ try{
+  if(Test-Path $clientLog){Remove-Item $clientLog -Force}
+  if(Test-Path $root){Remove-Item $root -Recurse -Force}
+  $cleanup.Add('TEMP_DIRECTORY_REMOVED='+$(if(-not(Test-Path $root)){'PASS'}else{'FAIL'}))
+ }catch{$cleanup.Add('TEMP_DIRECTORY_REMOVED=FAIL')}
+ $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
+ $cleanup.Add('CLEANUP='+$cleanupResult)
  $final=($null -eq $failure -and $cleanupResult -eq 'PASS' -and $allServiceMarkers -and $checks -contains 'RPC_TOKEN_EXPOSURE=PASS' -and $checks -contains 'COMMON_PROCESS_REJECT=PASS' -and $checks -contains 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS' -and $checks -contains 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -and $checks -contains 'TOKEN_LOG_EXPOSURE=PASS')
  $summary=@(
   'branch='+$env:GITHUB_REF
@@ -366,14 +375,6 @@ finally{
   'checks='+($checks -join ';')
   'cleanup='+($cleanup -join ';')
  )
- if($svcLog -and (Test-Path $svcLog)){Copy-Item $svcLog (Join-Path $evidence 'supervisor-r5.log') -Force}
- if($clientLog -and (Test-Path $clientLog)){Copy-Item $clientLog (Join-Path $evidence 'supervisor-client-common.log') -Force}
- try{if(Test-Path $clientLog){Remove-Item $clientLog -Force};if(Test-Path $root){Remove-Item $root -Recurse -Force};$cleanup.Add('TEMP_DIRECTORY_REMOVED='+$(if(-not(Test-Path $root)){'PASS'}else{'FAIL'}))}catch{$cleanup.Add('TEMP_DIRECTORY_REMOVED=FAIL')}
- $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
- $cleanup.Add('CLEANUP='+$cleanupResult)
- $summary=@($summary | Where-Object {$_ -notmatch '^CLEANUP='})
- $summary += 'CLEANUP='+$cleanupResult
- $summary += 'cleanup='+($cleanup -join ';')
  $summary|Set-Content (Join-Path $evidence 'r5-summary.txt') -Encoding utf8
  $hashes=Get-ChildItem $evidence -File|Where-Object Name -ne 'SHA256SUMS'|ForEach-Object {(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()+'  '+$_.Name}
  $hashes|Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
