@@ -85,7 +85,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $files = @("$env:RUNNER_TEMP/r5-oidc-exports.txt","$env:RUNNER_TEMP/r5-oidc-dll-sha256.txt","$env:RUNNER_TEMP/r5-supervisor-sha256.txt","$env:RUNNER_TEMP/r5-client-sha256.txt")
           $text = ($files | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content $_ -Raw }) -join "`n"
-          if ($text -match '(?i)eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}|client_secret\\s*=\\s*[^<\\s]{12,}|access_token\\s*=\\s*[^<\\s]{12,}') { throw 'R5_BUILD_SECRET_SCAN_FAILED' }
+          if ($text -match '(?i)eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|client_secret\s*=\s*[^<\s]{12,}|access_token\s*=\s*[^<\s]{12,}') { throw 'R5_BUILD_SECRET_SCAN_FAILED' }
           'R5_BUILD_SECRET_SCAN=PASS' | Out-File "$env:RUNNER_TEMP/r5-build-verdict.txt"
           'R5_RUST_TESTS=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
           'R5_OIDC_DLL=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
@@ -126,6 +126,7 @@ jobs:
           $serviceLog = Join-Path $evidence 'supervisor-r5.log'
           $clientLog = Join-Path $evidence 'supervisor-client-common.log'
           if ($summary -notmatch 'R5_RUNTIME_VERDICT=PASS' -or $summary -notmatch 'SECRET_SCAN=PASS' -or $summary -notmatch 'CLEANUP=PASS') { throw 'R5_RUNTIME_OR_SECRET_OR_CLEANUP_MARKER_MISSING' }
+          if (-not (Test-Path "$env:RUNNER_TEMP/r4-appcontainer-evidence.txt") -or -not (Test-Path "$env:RUNNER_TEMP/r5-powershell-syntax.txt")) { throw 'R4_OR_R5_HARNESS_EVIDENCE_MISSING' }
           if (-not (Test-Path $serviceLog) -or -not (Test-Path $clientLog)) { throw 'R5_SANITIZED_LOGS_MISSING' }
           $svc = Get-Content $serviceLog -Raw
           $cli = Get-Content $clientLog -Raw
@@ -143,6 +144,8 @@ jobs:
           $lines += 'ARTIFACT_SCAN=PASS'
           $lines += 'R5_VERDICT=PASS'
           $lines | Set-Content $summaryPath -Encoding utf8
+          $hashes = Get-ChildItem $evidence -File | Where-Object { $_.Name -ne 'SHA256SUMS' } | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + '  ' + $_.Name }
+          $hashes | Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
           'R5_ARTIFACT_SCAN=PASS' | Out-File "$env:RUNNER_TEMP/r5-artifact-scan.txt"
           'R5_VERDICT=PASS' | Out-File "$env:RUNNER_TEMP/r5-final-verdict.txt"
       - uses: actions/upload-artifact@v4
