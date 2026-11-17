@@ -68,7 +68,9 @@ int main() {
 
     const std::string invalidText="NOT-A-VALID-SUPERVISOR-CREDENTIAL";
     std::vector<BYTE> invalidPlain(invalidText.begin(),invalidText.end()),invalidBlob,roundTrip;
+    std::cout << "R4_DPAPI_STAGE=INVALID_PROTECT_START" << std::endl;
     bool invalidProtected=ProtectSynthetic(invalidPlain,invalidBlob);
+    std::cout << "R4_DPAPI_STAGE=INVALID_UNPROTECT_START" << std::endl;
     bool invalidDecrypted=invalidProtected&&UnprotectSynthetic(invalidBlob,roundTrip);
     bool invalidFormat=invalidDecrypted&&ValidSyntheticFormat(roundTrip);
     auto invalidState=ClassifySecretState(storeCreated,invalidProtected,invalidDecrypted,invalidFormat);
@@ -78,13 +80,16 @@ int main() {
 
     const std::string validText="R4-VALID-SUPERVISOR-SECRET-V1:synthetic-test-only";
     std::vector<BYTE> validPlain(validText.begin(),validText.end()),validBlob,validRoundTrip;
+    std::cout << "R4_DPAPI_STAGE=VALID_PROTECT_START" << std::endl;
     bool protectedOk=ProtectSynthetic(validPlain,validBlob);
+    std::cout << "R4_DPAPI_STAGE=VALID_UNPROTECT_START" << std::endl;
     bool decryptedOk=protectedOk&&UnprotectSynthetic(validBlob,validRoundTrip);
     bool formatOk=decryptedOk&&ValidSyntheticFormat(validRoundTrip)&&validRoundTrip==validPlain;
     ok &= Check(formatOk,"R4_DPAPI_NG_SYNTHETIC_ROUNDTRIP");
 
     bool corruptRejected=false;
     std::vector<BYTE> corruptBlob=validBlob,corruptPlain;
+    std::cout << "R4_DPAPI_STAGE=CORRUPT_UNPROTECT_START" << std::endl;
     if(!corruptBlob.empty()){
         for(size_t i=0;i<corruptBlob.size()&&!corruptRejected;i+=std::max<size_t>(1,corruptBlob.size()/11)){
             corruptBlob=validBlob;corruptBlob[i]^=0x5A;
@@ -92,6 +97,7 @@ int main() {
             if(!corruptPlain.empty()){SecureZeroMemory(corruptPlain.data(),corruptPlain.size());corruptPlain.clear();}
         }
     }
+    std::cout << "R4_DPAPI_STAGE=CORRUPT_UNPROTECT_COMPLETE=" << (corruptRejected?"YES":"NO") << std::endl;
     const auto corruptPath=temp/"credential.bin";
     {std::ofstream f(corruptPath,std::ios::binary|std::ios::trunc);if(!corruptBlob.empty())f.write(reinterpret_cast<const char*>(corruptBlob.data()),static_cast<std::streamsize>(corruptBlob.size()));}
     const bool corruptFilePresent=std::filesystem::exists(corruptPath);
