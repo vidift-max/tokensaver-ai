@@ -1,0 +1,92 @@
+name: Phone-02 R5 OIDC Build
+
+on:
+  push:
+    branches: [mission/phone-02-p238-b-oidc]
+    paths:
+      - 'services/phone-supervisor/oidc-r5/**'
+      - 'services/phone-supervisor/phone_supervisor.cpp'
+      - 'services/phone-supervisor/SupervisorCredentialStoreR5.*'
+      - 'services/phone-supervisor/SupervisorCredentialProvisioningR5.*'
+      - 'services/phone-supervisor/RealSupervisorTeamRoomHttpsAdapter.*'
+      - 'services/phone-supervisor/phone_supervisor_rpc.idl'
+      - '.github/workflows/phone-02-r5-oidc-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone02-r5-oidc-build-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build and test in-process OIDC DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = 'services/phone-supervisor/oidc-r5/Cargo.toml'
+          cargo test --manifest-path $manifest --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'R5_RUST_TESTS_FAILED' }
+          cargo build --release --manifest-path $manifest --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'R5_RUST_DLL_BUILD_FAILED' }
+          $dll = 'services/phone-supervisor/oidc-r5/target/x86_64-pc-windows-msvc/release/phone_supervisor_oidc_r5.dll'
+          if (-not (Test-Path $dll)) { throw 'R5_OIDC_DLL_MISSING' }
+          dumpbin /exports $dll | Tee-Object -FilePath "$env:RUNNER_TEMP/r5-oidc-exports.txt"
+          $exports = Get-Content "$env:RUNNER_TEMP/r5-oidc-exports.txt" -Raw
+          foreach ($name in @('r5_acquire_token','r5_probe_wrong_secret','r5_probe_wrong_client','r5_probe_wrong_scope','r5_probe_bad_endpoint','r5_probe_malformed_response','r5_probe_tls_failure','r5_probe_unavailable')) {
+            if ($exports -notmatch [regex]::Escape($name)) { throw "R5_EXPORT_MISSING_$name" }
+          }
+          Copy-Item $dll "$env:RUNNER_TEMP/phone_supervisor_oidc_r5.dll"
+          Get-FileHash "$env:RUNNER_TEMP/phone_supervisor_oidc_r5.dll" -Algorithm SHA256 | Format-List | Out-File "$env:RUNNER_TEMP/r5-oidc-dll-sha256.txt"
+      - name: Compile Supervisor with R5 store and provisioning modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = (Resolve-Path 'services/phone-supervisor').Path
+          $build = Join-Path $env:RUNNER_TEMP 'r5-build'
+          New-Item -ItemType Directory -Force -Path $build | Out-Null
+          $idl = Join-Path $src 'phone_supervisor_rpc.idl'
+          $rpcH = Join-Path $build 'phone_supervisor_rpc.h'
+          $rpcI = Join-Path $build 'phone_supervisor_rpc_i.c'
+          $rpcC = Join-Path $build 'phone_supervisor_rpc_c.c'
+          $rpcS = Join-Path $build 'phone_supervisor_rpc_s.c'
+          midl /nologo /env x64 /h $rpcH /iid $rpcI /cstub $rpcC /sstub $rpcS $idl
+          if ($LASTEXITCODE -ne 0) { throw 'R5_MIDL_FAILED' }
+          $exe = Join-Path $build 'phone_supervisor.exe'
+          $sources = @((Join-Path $src 'phone_supervisor.cpp'),(Join-Path $src 'RealSupervisorTeamRoomHttpsAdapter.cpp'),(Join-Path $src 'SupervisorCredentialStoreR5.cpp'),(Join-Path $src 'SupervisorCredentialProvisioningR5.cpp'),$rpcS)
+          & cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE "/I$build" "/I$src" $sources "/Fe:$exe" /link advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib ncrypt.lib
+          if ($LASTEXITCODE -ne 0) { throw 'R5_SUPERVISOR_COMPILE_FAILED' }
+          Copy-Item $exe "$env:RUNNER_TEMP/phone_supervisor.exe"
+          Get-FileHash "$env:RUNNER_TEMP/phone_supervisor.exe" -Algorithm SHA256 | Format-List | Out-File "$env:RUNNER_TEMP/r5-supervisor-sha256.txt"
+      - name: Scan build logs and binaries for secret material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @("$env:RUNNER_TEMP/r5-oidc-exports.txt","$env:RUNNER_TEMP/r5-oidc-dll-sha256.txt","$env:RUNNER_TEMP/r5-supervisor-sha256.txt")
+          $text = ($files | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content $_ -Raw }) -join "`n"
+          if ($text -match '(?i)eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}|client_secret\\s*=\\s*[^<\\s]{12,}|access_token\\s*=\\s*[^<\\s]{12,}') { throw 'R5_BUILD_SECRET_SCAN_FAILED' }
+          'R5_BUILD_SECRET_SCAN=PASS' | Out-File "$env:RUNNER_TEMP/r5-build-verdict.txt"
+          'R5_RUST_TESTS=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
+          'R5_OIDC_DLL=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
+          'R5_SUPERVISOR_COMPILE=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phone02-r5-oidc-build-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/r5-oidc-exports.txt
+            ${{ runner.temp }}/r5-oidc-dll-sha256.txt
+            ${{ runner.temp }}/r5-supervisor-sha256.txt
+            ${{ runner.temp }}/r5-build-verdict.txt
+          if-no-files-found: error
