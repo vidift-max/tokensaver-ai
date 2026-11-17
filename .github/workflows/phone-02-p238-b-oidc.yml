@@ -96,9 +96,34 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
           }
           $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs?per_page=100"
-          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
-          $current = $response.jobs | Where-Object { $_.name -eq $env:GITHUB_JOB } | Select-Object -First 1
-          $jobId = if ($current) { [string]$current.id } else { 'UNAVAILABLE' }
+          $provenanceFile = Join-Path $evidence 'github-provenance.txt'
+          $jobId = 'NOT_FOUND'
+          $provenanceStatus = 'FAIL'
+          $provenanceFailure = 'job_not_identified'
+          try {
+            $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+            $expectedBranch = 'mission/phone-02-p238-b-oidc'
+            $expectedDisplayName = 'Windows PostgreSQL + Keycloak + Team Room + Supervisor + MSIX/AppContainer'
+            $matchingJobs = @($response.jobs | Where-Object {
+              $_.run_id -eq [long]$env:GITHUB_RUN_ID -and
+              $_.head_sha -eq $env:GITHUB_SHA -and
+              $_.head_branch -eq $expectedBranch -and
+              $_.name -eq $expectedDisplayName -and
+              $_.runner_name -eq $env:RUNNER_NAME
+            })
+            if ($matchingJobs.Count -ne 1) {
+              throw "Expected exactly one matching job; found $($matchingJobs.Count)"
+            }
+            $numericJobId = 0L
+            if (-not [long]::TryParse([string]$matchingJobs[0].id, [ref]$numericJobId) -or $numericJobId -le 0) {
+              throw 'GitHub returned a non-numeric or invalid job ID'
+            }
+            $jobId = [string]$numericJobId
+            $provenanceStatus = 'PASS'
+            $provenanceFailure = 'none'
+          } catch {
+            $provenanceFailure = 'type=' + $_.Exception.GetType().FullName
+          }
           @(
             "run_id=$env:GITHUB_RUN_ID"
             "run_attempt=$env:GITHUB_RUN_ATTEMPT"
@@ -108,7 +133,17 @@ jobs:
             "sha=$env:GITHUB_SHA"
             "event=$env:GITHUB_EVENT_NAME"
             "runner=$env:RUNNER_NAME"
-          ) | Set-Content (Join-Path $evidence 'github-provenance.txt') -Encoding utf8
+            "GITHUB_JOB_PROVENANCE=$provenanceStatus"
+            "GITHUB_JOB_PROVENANCE_DIAGNOSTIC=$provenanceFailure"
+          ) | Set-Content $provenanceFile -Encoding utf8
+          $hashLines = Get-ChildItem $evidence -File | Where-Object Name -ne 'SHA256SUMS' | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + '  ' + $_.Name
+          }
+          $hashLines | Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
+          Write-Host "GITHUB_JOB_PROVENANCE=$provenanceStatus"
+          if ($provenanceStatus -ne 'PASS') {
+            throw "GITHUB_JOB_PROVENANCE=FAIL ($provenanceFailure)"
+          }
 
       - name: Upload sanitized Windows runner evidence, including FAIL logs
         id: upload

@@ -148,14 +148,75 @@ finally {
             if($LASTEXITCODE -ne 0){throw 'Keycloak database cleanup failed'}
             & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS team_room_p238b WITH (FORCE)' | Out-Null
             if($LASTEXITCODE -ne 0){throw 'Team Room database cleanup failed'}
-            Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
             $cleanup.Add('POSTGRESQL_DATABASES_DROP=PASS')
         } catch {$cleanup.Add('POSTGRESQL_DATABASES_DROP=FAIL')}
-        try {Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')} catch {$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}
-    } else {$cleanup.Add('POSTGRESQL_SERVICE_STOP=NOT_STARTED')}
+        # Verify database absence while PostgreSQL is still reachable.
+        try {
+            $dbCountText=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM pg_database WHERE datname IN ('team_room_p238b','keycloak_p238b')" 2>$null
+            $dbQueryOk=($LASTEXITCODE -eq 0)
+            $dbCount=-1
+            $dbParsed=[int]::TryParse((($dbCountText | Out-String).Trim()),[ref]$dbCount)
+            $dbAbsent=($dbQueryOk -and $dbParsed -and $dbCount -eq 0)
+            Write-Host ('POSTGRESQL_DATABASES_ABSENT='+$(if($dbAbsent){'PASS'}else{'FAIL'}))
+            $cleanup.Add('POSTGRESQL_DATABASES_ABSENT='+$(if($dbAbsent){'PASS'}else{'FAIL'}))
+            if(-not $dbAbsent -and $null -eq $failure){$failure=[System.Exception]::new('PostgreSQL disposable database absence verification failed')}
+        } catch {
+            Write-Host 'POSTGRESQL_DATABASES_ABSENT=FAIL';$cleanup.Add('POSTGRESQL_DATABASES_ABSENT=FAIL')
+            if($null -eq $failure){$failure=[System.Exception]::new('PostgreSQL database absence verification failed')}
+        }
+        try {
+            Stop-Service -Name $pgService.Name -Force -ErrorAction Stop
+            $serviceDeadline=(Get-Date).AddSeconds(30)
+            do {
+                $serviceAfterStop=Get-Service -Name $pgService.Name -ErrorAction Stop
+                if($serviceAfterStop.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Stopped){break}
+                Start-Sleep -Seconds 1
+            } while((Get-Date) -lt $serviceDeadline)
+            if($serviceAfterStop.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped){throw 'PostgreSQL service remains active'}
+            $cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')
+        } catch {$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}
+        try {
+            # Independent state read after Stop-Service and its bounded wait.
+            $serviceVerify=Get-Service -Name $pgService.Name -ErrorAction Stop
+            $serviceStopped=($serviceVerify.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Stopped)
+            Write-Host ('POSTGRESQL_SERVICE_STOPPED_VERIFY='+$(if($serviceStopped){'PASS'}else{'FAIL'}))
+            $cleanup.Add('POSTGRESQL_SERVICE_STOPPED_VERIFY='+$(if($serviceStopped){'PASS'}else{'FAIL'}))
+            if(-not $serviceStopped -and $null -eq $failure){$failure=[System.Exception]::new('PostgreSQL service post-stop verification failed')}
+        } catch {
+            Write-Host 'POSTGRESQL_SERVICE_STOPPED_VERIFY=FAIL';$cleanup.Add('POSTGRESQL_SERVICE_STOPPED_VERIFY=FAIL')
+            if($null -eq $failure){$failure=[System.Exception]::new('PostgreSQL service state could not be verified')}
+        }
+    } else {
+        Write-Host 'POSTGRESQL_DATABASES_ABSENT=FAIL';$cleanup.Add('POSTGRESQL_DATABASES_ABSENT=FAIL')
+        Write-Host 'POSTGRESQL_SERVICE_STOPPED_VERIFY=FAIL';$cleanup.Add('POSTGRESQL_SERVICE_STOPPED_VERIFY=FAIL')
+        $cleanup.Add('POSTGRESQL_SERVICE_STOP=NOT_STARTED')
+        if($null -eq $failure){$failure=[System.Exception]::new('PostgreSQL service was not provisioned; cleanup postconditions cannot pass')}
+    }
     if($pgInstalled) {
-        try {& choco uninstall postgresql16 -y --no-progress --limit-output | Out-Null;if($LASTEXITCODE -ne 0){throw 'Chocolatey uninstall returned non-zero'};$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')} catch {$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
-    } else {$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=NOT_INSTALLED')}
+        try {
+            & choco uninstall postgresql16 -y --no-progress --limit-output | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Chocolatey uninstall returned non-zero'}
+            $cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')
+        } catch {$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
+        try {
+            $inventory=& choco list --exact postgresql16 --limit-output 2>$null
+            $inventoryExit=$LASTEXITCODE
+            $packageListed=@($inventory | Where-Object {$_ -match '^postgresql16\|'}).Count -gt 0
+            $binaryPresent=Test-Path $psql
+            $packageAbsent=($inventoryExit -eq 0 -and -not $packageListed -and -not $binaryPresent)
+            Write-Host ('POSTGRESQL_PACKAGE_ABSENT='+$(if($packageAbsent){'PASS'}else{'FAIL'}))
+            $cleanup.Add('POSTGRESQL_PACKAGE_ABSENT='+$(if($packageAbsent){'PASS'}else{'FAIL'}))
+            if(-not $packageAbsent -and $null -eq $failure){$failure=[System.Exception]::new('PostgreSQL package or installation binary remains after uninstall')}
+        } catch {
+            Write-Host 'POSTGRESQL_PACKAGE_ABSENT=FAIL';$cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=FAIL')
+            if($null -eq $failure){$failure=[System.Exception]::new('PostgreSQL package absence verification failed')}
+        }
+    } else {
+        $cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=NOT_INSTALLED')
+        Write-Host 'POSTGRESQL_PACKAGE_ABSENT=FAIL';$cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=FAIL')
+        if($null -eq $failure){$failure=[System.Exception]::new('PostgreSQL package was not installed; expected runner package cannot be verified absent')}
+    }
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
     if($cleanup -match '=FAIL'){$cleanupResult='FAIL';if($null -eq $failure){$failure=[System.Exception]::new('One or more ephemeral cleanup checks failed')}}else{$cleanupResult='PASS'}
     Write-Host ('CLEANUP='+$cleanupResult)
     @(
