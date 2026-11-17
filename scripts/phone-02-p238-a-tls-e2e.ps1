@@ -99,7 +99,7 @@ function Start-P238TeamRoom($leaf,$redirect){
   # Match the backend PID obtained by the Team Room's own pool against
   # pg_stat_activity. This independently proves the same live connection,
   # its database, role, application_name and client address.
-  $teamDbSession=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT datname, usename, application_name, pid, COALESCE(client_addr::text,'') FROM pg_stat_activity WHERE pid=$teamRoomBackendPid"
+  $teamDbSession=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT datname, usename, application_name, pid, COALESCE(client_addr::text,''), COALESCE(host(client_addr),'') FROM pg_stat_activity WHERE pid=$teamRoomBackendPid"
   $sessionExit=$LASTEXITCODE
   if($sessionExit -ne 0){throw 'Could not inspect Team Room backend session identity'}
   $sessionFields=@("$teamDbSession".Trim() -split '\|')
@@ -108,7 +108,8 @@ function Start-P238TeamRoom($leaf,$redirect){
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_APPLICATION='+$sessionFields[2])
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_BACKEND_PID='+$sessionFields[3])
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_CLIENT_ADDR='+$sessionFields[4])
-  $sameBackend=($sessionFields.Count -eq 5 -and $sessionFields[0] -eq 'team_room_p238b' -and $sessionFields[1] -eq 'postgres' -and $sessionFields[2] -eq 'team-room-p238b' -and $sessionFields[3] -eq [string]$teamRoomBackendPid -and $sessionFields[4] -eq '127.0.0.1')
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_CLIENT_HOST='+$sessionFields[5])
+  $sameBackend=($sessionFields.Count -eq 6 -and $sessionFields[0] -eq 'team_room_p238b' -and $sessionFields[1] -eq 'postgres' -and $sessionFields[2] -eq 'team-room-p238b' -and $sessionFields[3] -eq [string]$teamRoomBackendPid -and $sessionFields[4] -eq '127.0.0.1/32' -and $sessionFields[5] -eq '127.0.0.1')
   Check ($teamRoomLoggedDatabase -eq 'team_room_p238b' -and $sameBackend) 'TEAM_ROOM_POSTGRES_DATABASE_IDENTITY'
   Check ($sameBackend) 'TEAM_ROOM_POSTGRES_ACTIVE_CONNECTION'
   Write-Host ('TEAM_ROOM_REAL_HTTPS_PROCESS_ID='+$script:teamRoomProcess.Id)
