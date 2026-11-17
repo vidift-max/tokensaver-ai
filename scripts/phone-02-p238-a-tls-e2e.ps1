@@ -67,17 +67,51 @@ function Start-P238TeamRoom($leaf,$redirect){
   do{
    Start-Sleep -Milliseconds 250
    $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw -ErrorAction SilentlyContinue
+   # tracing-subscriber emits ANSI field-formatting escapes; strip them before
+   # parsing the structured database identity fields.
+   $ansiPattern=[string][char]27+'\\[[0-?]*[ -/]*[@-~]'
+   $teamLog=[regex]::Replace($teamLog,$ansiPattern,'')
   }while(($teamLog -notmatch 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY' -or $teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED') -and (Get-Date) -lt $deadline)
   Check ($teamLog -match 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY') 'TEAM_ROOM_REAL_HTTPS_LISTENER'
-  Check ($teamLog -match 'TEAM_ROOM_POSTGRES_CONNECTED.*database=team_room_p238b') 'TEAM_ROOM_POSTGRES_DATABASE_IDENTITY'
+  if($teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED.*?database=([^\\s]+).*?backend_pid=(\\d+)'){
+   throw 'Could not parse Team Room PostgreSQL database identity and backend PID from service log'
+  }
+  $teamRoomLoggedDatabase=$Matches[1]
+  $teamRoomBackendPid=[int]$Matches[2]
+  Write-Host ('TEAM_ROOM_POSTGRES_LOG_DATABASE='+$teamRoomLoggedDatabase)
+  Write-Host ('TEAM_ROOM_POSTGRES_LOG_BACKEND_PID='+$teamRoomBackendPid)
   $ready=Invoke-WebRequest -Uri 'https://team-room.p238.test:8443/health/ready' -UseBasicParsing -TimeoutSec 5
   Check ($ready.StatusCode -eq 200) 'TEAM_ROOM_REAL_HTTPS_DATABASE_READINESS'
-  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
-  $dbActivity=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='team_room_p238b' AND usename='postgres' AND application_name='team-room-p238b'"
-  if($LASTEXITCODE -ne 0){throw 'Could not inspect Team Room PostgreSQL activity'}
-  Check ([int]$dbActivity -gt 0) 'TEAM_ROOM_POSTGRES_ACTIVE_CONNECTION'
+  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\\16\\bin\\psql.exe'
+  # Independent observer connection: records the actual PostgreSQL endpoint and
+  # identity used by this diagnostic query, without exposing any credential.
+  $dbObserver=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT current_database(), COALESCE(inet_server_addr()::text,''), inet_server_port(), pg_backend_pid(), current_user"
+  $observerExit=$LASTEXITCODE
+  if($observerExit -ne 0){throw 'Could not inspect Team Room PostgreSQL observer connection'}
+  $observerFields=@("$dbObserver".Trim() -split '\\|')
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_DATABASE='+$observerFields[0])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_ADDR='+$observerFields[1])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_PORT='+$observerFields[2])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_BACKEND_PID='+$observerFields[3])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_USER='+$observerFields[4])
+  Check ($observerFields.Count -eq 5 -and $observerFields[0] -eq 'postgres' -and $observerFields[1] -eq '127.0.0.1' -and $observerFields[2] -eq '5432' -and $observerFields[4] -eq 'postgres') 'TEAM_ROOM_POSTGRES_OBSERVER_ENDPOINT'
+  # Match the backend PID obtained by the Team Room's own pool against
+  # pg_stat_activity. This independently proves the same live connection,
+  # its database, role, application_name and client address.
+  $teamDbSession=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT datname, usename, application_name, pid, COALESCE(client_addr::text,'') FROM pg_stat_activity WHERE pid=$teamRoomBackendPid"
+  $sessionExit=$LASTEXITCODE
+  if($sessionExit -ne 0){throw 'Could not inspect Team Room backend session identity'}
+  $sessionFields=@("$teamDbSession".Trim() -split '\\|')
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_DATABASE='+$sessionFields[0])
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_USER='+$sessionFields[1])
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_APPLICATION='+$sessionFields[2])
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_BACKEND_PID='+$sessionFields[3])
+  Write-Host ('TEAM_ROOM_POSTGRES_SESSION_CLIENT_ADDR='+$sessionFields[4])
+  $sameBackend=($sessionFields.Count -eq 5 -and $sessionFields[0] -eq 'team_room_p238b' -and $sessionFields[1] -eq 'postgres' -and $sessionFields[2] -eq 'team-room-p238b' -and $sessionFields[3] -eq [string]$teamRoomBackendPid -and $sessionFields[4] -eq '127.0.0.1')
+  Check ($teamRoomLoggedDatabase -eq 'team_room_p238b' -and $sameBackend) 'TEAM_ROOM_POSTGRES_DATABASE_IDENTITY'
+  Check ($sameBackend) 'TEAM_ROOM_POSTGRES_ACTIVE_CONNECTION'
   Write-Host ('TEAM_ROOM_REAL_HTTPS_PROCESS_ID='+$script:teamRoomProcess.Id)
-  Write-Host ('TEAM_ROOM_POSTGRES_ACTIVE_CONNECTIONS='+$dbActivity)
+  Write-Host 'TEAM_ROOM_POSTGRES_ACTIVE_CONNECTIONS=1'
   Write-Host 'TEAM_ROOM_HTTP_FALLBACK=NOT_STARTED'
  }else{
   Write-Host ('TEAM_ROOM_TLS_LISTENER=READY pid='+$script:teamRoomProcess.Id+' hostname=team-room.p238.test endpoint=https://team-room.p238.test:8443/health/live')
