@@ -93,6 +93,18 @@ fn get_discovery(c: &Client) -> Result<Discovery, i32> {
     Ok(d)
 }
 
+struct ZeroizingReader { bytes: Zeroizing<Vec<u8>>, position: usize }
+impl Read for ZeroizingReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.bytes.len().saturating_sub(self.position);
+        let count = remaining.min(out.len());
+        if count == 0 { return Ok(0); }
+        out[..count].copy_from_slice(&self.bytes[self.position..self.position + count]);
+        self.position += count;
+        Ok(count)
+    }
+}
+
 fn form_body(client_id: &str, secret: &str, scope: &str) -> Zeroizing<String> {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("grant_type", "client_credentials");
@@ -105,10 +117,12 @@ fn form_body(client_id: &str, secret: &str, scope: &str) -> Zeroizing<String> {
 fn post_token(c: &Client, endpoint: &str, client_id: &str, secret: &str, scope: &str) -> Result<(u16, Zeroizing<Vec<u8>>), i32> {
     if !valid_url(endpoint, TOKEN_PATH, false) { return Err(18); }
     let body = form_body(client_id, secret, scope);
+    let request_bytes = Zeroizing::new(body.as_bytes().to_vec());
+    let request_body = reqwest::blocking::Body::new(ZeroizingReader { bytes: request_bytes, position: 0 });
     let response = c.post(endpoint)
         .header("Accept", "application/json")
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body.as_bytes().to_vec())
+        .body(request_body)
         .send().map_err(|_| 19)?;
     let status = response.status().as_u16();
     let mut bytes = Zeroizing::new(Vec::new());
