@@ -115,8 +115,8 @@ bool SupervisorCredentialStore::VerifyProtectedDacl(const std::wstring& path,std
     SECURITY_DESCRIPTOR_CONTROL control=0;DWORD revision=0;
     bool protectedDacl=GetSecurityDescriptorControl(descriptor,&control,&revision)&&((control&SE_DACL_PROTECTED)!=0);
     DWORD aceCount=dacl?dacl->AceCount:0;
-    bool hasSystem=false,hasAdmins=false,hasService=false,hasEveryone=false,hasUsers=false,hasInteractive=false;
-    if(dacl){for(DWORD i=0;i<dacl->AceCount;i++){void* raw=nullptr;if(!GetAce(dacl,i,&raw))continue;auto* header=static_cast<ACE_HEADER*>(raw);if(header->AceType!=ACCESS_ALLOWED_ACE_TYPE)continue;auto* ace=static_cast<ACCESS_ALLOWED_ACE*>(raw);PSID sid=&ace->SidStart;
+    bool hasSystem=false,hasAdmins=false,hasService=false,hasEveryone=false,hasUsers=false,hasInteractive=false,badMask=false;
+    if(dacl){for(DWORD i=0;i<dacl->AceCount;i++){void* raw=nullptr;if(!GetAce(dacl,i,&raw))continue;auto* header=static_cast<ACE_HEADER*>(raw);if(header->AceType!=ACCESS_ALLOWED_ACE_TYPE)continue;auto* ace=static_cast<ACCESS_ALLOWED_ACE*>(raw);if(ace->Mask!=FILE_ALL_ACCESS)badMask=true;PSID sid=&ace->SidStart;
         if(SidEqualsWellKnown(sid,WinLocalSystemSid))hasSystem=true;
         if(SidEqualsWellKnown(sid,WinBuiltinAdministratorsSid))hasAdmins=true;
         PSID expected=nullptr;if(ConvertStringSidToSidW(serviceSid_.c_str(),&expected)){if(EqualSid(sid,expected))hasService=true;LocalFree(expected);}
@@ -125,7 +125,7 @@ bool SupervisorCredentialStore::VerifyProtectedDacl(const std::wstring& path,std
         if(SidEqualsWellKnown(sid,WinInteractiveSid))hasInteractive=true;
     }}
     LocalFree(descriptor);
-    if(!protectedDacl||aceCount!=3||!hasSystem||!hasAdmins||!hasService||hasEveryone||hasUsers||hasInteractive){reason=L"PROTECTED_DACL_VERIFY_FAILED";return false;}
+    if(!protectedDacl||aceCount!=3||badMask||!hasSystem||!hasAdmins||!hasService||hasEveryone||hasUsers||hasInteractive){reason=L"PROTECTED_DACL_VERIFY_FAILED";return false;}
     reason.clear();return true;
 }
 bool SupervisorCredentialStore::Initialize(std::wstring& reason) {
