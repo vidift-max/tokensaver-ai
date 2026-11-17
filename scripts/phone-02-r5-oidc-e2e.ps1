@@ -322,12 +322,18 @@ finally{
   }catch{$cleanup.Add('SUPERVISOR_SERVICE_CLEANUP=FAIL')}
  }
  if($badTlsProcess){Stop-Process -Id $badTlsProcess.Id -Force -ErrorAction SilentlyContinue;Wait-Process -Id $badTlsProcess.Id -Timeout 10 -ErrorAction SilentlyContinue}
+ $badTlsClosed=Wait-TcpPort '127.0.0.1' 8444 15 $false
+ $cleanup.Add('BAD_TLS_PROCESS_CLEANUP='+$(if($badTlsClosed){'PASS'}else{'FAIL'}))
  if($keycloakProcess){Stop-Keycloak $keycloakProcess $kcHome}
+ $keycloakClosed=Wait-TcpPort '127.0.0.1' 8443 30 $false
+ $cleanup.Add('KEYCLOAK_PROCESS_CLEANUP='+$(if($keycloakClosed){'PASS'}else{'FAIL'}))
  if($pgService){
   try{
    $env:PGPASSWORD=$pgPassword
    & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $pgDatabase WITH (FORCE)"|Out-Null
    if($LASTEXITCODE -ne 0){throw 'DROP_DATABASE_FAILED'}
+   $remaining=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM pg_database WHERE datname='$pgDatabase'" 2>$null
+   if($LASTEXITCODE -ne 0 -or [int]$remaining -ne 0){throw 'DATABASE_STILL_PRESENT'}
    $cleanup.Add('POSTGRESQL_DATABASE_DROP=PASS')
   }catch{$cleanup.Add('POSTGRESQL_DATABASE_DROP=FAIL')}
   if($pgInstalled -or $pgStartedByUs){try{Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;Start-Sleep -Seconds 2;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')}catch{$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}}else{$cleanup.Add('POSTGRESQL_SERVICE_RESTORED=PASS')}
@@ -336,7 +342,7 @@ finally{
   try{& choco uninstall postgresql16 -y --no-progress --limit-output|Out-Null;if($LASTEXITCODE -ne 0){throw 'UNINSTALL_FAILED'};$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')}catch{$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
  }
  try{if($rootThumbprint){Remove-Item "Cert:\LocalMachine\Root\$rootThumbprint" -Force -ErrorAction Stop};$cleanup.Add('TEST_CA_REMOVED=PASS')}catch{$cleanup.Add('TEST_CA_REMOVED=FAIL')}
- try{if($hostsOriginal -ne $null){[IO.File]::WriteAllText($hostsPath,$hostsOriginal)};$cleanup.Add('HOSTS_FILE_RESTORED=PASS')}catch{$cleanup.Add('HOSTS_FILE_RESTORED=FAIL')}
+ try{if($hostsOriginal -ne $null){[IO.File]::WriteAllText($hostsPath,$hostsOriginal);$restored=[IO.File]::ReadAllText($hostsPath);if($restored -cne $hostsOriginal){throw 'HOSTS_RESTORE_MISMATCH'}};$cleanup.Add('HOSTS_FILE_RESTORED=PASS')}catch{$cleanup.Add('HOSTS_FILE_RESTORED=FAIL')}
  try{
   if(Test-Path $storeRoot){Remove-Item $storeRoot -Recurse -Force}
   $phone02Parent=Split-Path $storeRoot -Parent
