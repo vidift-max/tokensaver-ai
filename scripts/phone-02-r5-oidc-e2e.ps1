@@ -321,10 +321,12 @@ finally{
  }
  if($badTlsProcess){Stop-Process -Id $badTlsProcess.Id -Force -ErrorAction SilentlyContinue;Wait-Process -Id $badTlsProcess.Id -Timeout 10 -ErrorAction SilentlyContinue}
  $badTlsClosed=Wait-TcpPort '127.0.0.1' 8444 15 $false
- $cleanup.Add('BAD_TLS_PROCESS_CLEANUP='+$(if($badTlsClosed){'PASS'}else{'FAIL'}))
+ $badTlsAbsent=($null -eq (Get-Process -Id $badTlsProcess.Id -ErrorAction SilentlyContinue))
+ $cleanup.Add('BAD_TLS_PROCESS_CLEANUP='+$(if($badTlsClosed -and $badTlsAbsent){'PASS'}else{'FAIL'}))
  if($keycloakProcess){Stop-Keycloak $keycloakProcess $kcHome}
  $keycloakClosed=Wait-TcpPort '127.0.0.1' 8443 30 $false
- $cleanup.Add('KEYCLOAK_PROCESS_CLEANUP='+$(if($keycloakClosed){'PASS'}else{'FAIL'}))
+ $kcRemaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object {$_.CommandLine -and $kcHome -and $_.CommandLine.Contains($kcHome)})
+ $cleanup.Add('KEYCLOAK_PROCESS_CLEANUP='+$(if($keycloakClosed -and $kcRemaining.Count -eq 0){'PASS'}else{'FAIL'}))
  if($pgService){
   try{
    $env:PGPASSWORD=$pgPassword
@@ -337,7 +339,17 @@ finally{
   if($pgInstalled -or $pgStartedByUs){try{Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;Start-Sleep -Seconds 2;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')}catch{$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}}else{$cleanup.Add('POSTGRESQL_SERVICE_RESTORED=PASS')}
  }
  if($pgInstalled){
-  try{& choco uninstall postgresql16 -y --no-progress --limit-output|Out-Null;if($LASTEXITCODE -ne 0){throw 'UNINSTALL_FAILED'};$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')}catch{$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
+  try{
+   & choco uninstall postgresql16 -y --no-progress --limit-output|Out-Null
+   if($LASTEXITCODE -ne 0){throw 'UNINSTALL_FAILED'}
+   $inventory=& choco list --exact postgresql16 --limit-output 2>$null
+   $inventoryExit=$LASTEXITCODE
+   $packageListed=@($inventory|Where-Object {$_ -match '^postgresql16\|'}).Count -gt 0
+   $binaryPresent=Test-Path $psql
+   if($inventoryExit -ne 0 -or $packageListed -or $binaryPresent){throw 'POSTGRESQL_PACKAGE_REMAINS'}
+   $cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')
+   $cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=PASS')
+  }catch{$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL');$cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=FAIL')}
  }
  try{if($rootThumbprint){Remove-Item "Cert:\LocalMachine\Root\$rootThumbprint" -Force -ErrorAction Stop};$cleanup.Add('TEST_CA_REMOVED=PASS')}catch{$cleanup.Add('TEST_CA_REMOVED=FAIL')}
  try{if($hostsOriginal -ne $null){[IO.File]::WriteAllText($hostsPath,$hostsOriginal);$restored=[IO.File]::ReadAllText($hostsPath);if($restored -cne $hostsOriginal){throw 'HOSTS_RESTORE_MISMATCH'}};$cleanup.Add('HOSTS_FILE_RESTORED=PASS')}catch{$cleanup.Add('HOSTS_FILE_RESTORED=FAIL')}
