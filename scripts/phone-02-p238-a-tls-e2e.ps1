@@ -123,7 +123,7 @@ function Start-P238TeamRoom($leaf,$redirect,$verifyHttpsReadiness=$true){
   Write-Host ('TEAM_ROOM_TLS_LISTENER=READY pid='+$script:teamRoomProcess.Id+' hostname=team-room.p238.test endpoint=https://team-room.p238.test:8443/health/live')
  }
 }
-function Restart-P238Supervisor($endpoint){
+function Restart-P238Supervisor($endpoint,$fakeMode=$null){
  $before=Get-CimInstance Win32_Service -Filter "Name='$script:service'" -ErrorAction Stop
  $oldPid=[int]$before.ProcessId
  & sc.exe stop $script:service 2>&1|Out-Null
@@ -136,8 +136,9 @@ function Restart-P238Supervisor($endpoint){
  while($oldPid -gt 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline){Start-Sleep -Milliseconds 100}
  if($oldPid -gt 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue)){throw ('Supervisor reported STOPPED but old process is still alive; pid='+$oldPid)}
  Write-Host ('SUPERVISOR_PREVIOUS_PID_EXITED=PASS pid='+$oldPid)
- $lines=@(Get-Content $script:config|Where-Object {$_ -notmatch '^TEAM_ROOM_HTTPS_ENDPOINT='})
+ $lines=@(Get-Content $script:config|Where-Object {$_ -notmatch '^TEAM_ROOM_HTTPS_ENDPOINT=' -and ($null -eq $fakeMode -or $_ -notmatch '^TEAM_ROOM_FAKE_MODE=')})
  $lines += "TEAM_ROOM_HTTPS_ENDPOINT=$endpoint"
+ if($null -ne $fakeMode){$lines += "TEAM_ROOM_FAKE_MODE=$fakeMode"}
  Set-Content $script:config $lines -Encoding ASCII
  Remove-Item ($script:config+'.log') -Force -ErrorAction SilentlyContinue
  & sc.exe start $script:service|Out-Null
@@ -173,16 +174,19 @@ function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
  Wait-Process -Id $appPid -Timeout 10 -ErrorAction SilentlyContinue
  Check ($body -match 'LEGITIMATE_APPCONTAINER=PASS' -and $body -match 'AUTHORIZATION_ALLOW=PASS') ($label+'_APPCONTAINER_RPC_AUTH')
  $svcBody=Get-Content ($script:config+'.log') -Raw
- if($expected -eq 'PASS'){
+ if($expected -eq 'FAIL_CLOSED' -or $expected -eq 'FAKE_FAIL_CLOSED'){
+  Check ($body -match 'TEAM_ROOM_SCENARIO=FAIL' -and $body -match 'TEAM_ROOM_FAIL_CLOSED=PASS' -and $body -match 'CLOSE_SESSION=PASS') ($label+'_TEAM_ROOM_FAIL_CLOSED')
+  Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') ($label+'_HEALTH_RESPONSE_ONLY')
+  Check ($svcBody -match 'TEAM_ROOM_HEALTH_NOT_AUTH=PASS' -and $svcBody -match 'TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS') ($label+'_HEALTH_NOT_AUTH')
+  Check ($svcBody -match 'TEAM_ROOM_ACCESS_TOKEN_REQUESTED=NO' -and $svcBody -match 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO') ($label+'_NO_OIDC_OR_EXCHANGE')
+  if($expected -eq 'FAKE_FAIL_CLOSED'){
+   Check ($svcBody -match 'TEAM_ROOM_FAKE_SCENARIO=PASS' -and $svcBody -match 'TEAM_ROOM_FAKE_NOT_AUTHENTICATED=PASS' -and $svcBody -match 'TEAM_ROOM_FAKE_MODE_NOT_AUTH=PASS') ($label+'_FAKE_MODE_ISOLATED')
+  }else{
+   Check ($svcBody -match 'TEAM_ROOM_FAKE_MODE=DISABLED' -and $svcBody -notmatch 'TEAM_ROOM_FAKE_SCENARIO=PASS') ($label+'_REAL_MODE_HAS_NO_FAKE_SUCCESS')
+  }
+ }elseif($expected -eq 'PASS'){
   Check ($body -match 'TEAM_ROOM_SCENARIO=PASS' -and $body -match 'CLOSE_SESSION=PASS') ($label+'_SUPERVISOR_HTTPS_PASS')
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') ($label+'_TEAM_ROOM_RESPONSE')
-  if($env:P238_TEAM_ROOM_FULL_MODE -eq '1'){
-   $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw
-   # tracing-subscriber inserts ANSI escapes around structured field names and '='; normalize before correlating the real process PID.
-   $ansiPattern=[string][char]27+'\[[0-?]*[ -/]*[@-~]'
-   $teamLog=[regex]::Replace($teamLog,$ansiPattern,'')
-   Check ($teamLog -match ('TEAM_ROOM_HEALTH_REQUEST process_id='+$script:teamRoomProcess.Id)) 'SUPERVISOR_REQUEST_REACHED_REAL_TEAM_ROOM_PROCESS'
-  }
  }else{
   Check ($body -match 'TEAM_ROOM_SCENARIO=FAIL') ($label+'_APPCONTAINER_TLS_REJECT')
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=REJECT') ($label+'_SUPERVISOR_TLS_REJECT')
@@ -341,9 +345,10 @@ public static class P238AActivator {
  Check ($cl -match 'LEGITIMATE_APPCONTAINER=PASS') 'LEGITIMATE_APPCONTAINER'
  Check ($cl -match 'WINDOWS_IDENTITY=PASS') 'WINDOWS_IDENTITY'
  Check ($cl -match 'AUTHORIZATION_ALLOW=PASS') 'AUTHORIZATION_ALLOW'
- Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'TEAM_ROOM_SCENARIO=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_AND_TEAM_ROOM_LIFECYCLE'
+ Check ($cl -match 'HEARTBEAT=PASS' -and $cl -match 'TEAM_ROOM_SCENARIO=FAIL' -and $cl -match 'TEAM_ROOM_FAIL_CLOSED=PASS' -and $cl -match 'CLOSE_SESSION=PASS') 'SESSION_AND_TEAM_ROOM_FAIL_CLOSED'
  $teamRoomLog=Get-Content $svcLog -Raw
- Check ($teamRoomLog -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') 'SUPERVISOR_HTTPS_VALID_CERT_AND_HOSTNAME'
+ Check ($teamRoomLog -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200' -and $teamRoomLog -match 'TEAM_ROOM_HEALTH_NOT_AUTH=PASS' -and $teamRoomLog -match 'TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS') 'SUPERVISOR_HEALTH_IS_NOT_AUTHENTICATION'
+  Check ($teamRoomLog -match 'TEAM_ROOM_ACCESS_TOKEN_REQUESTED=NO' -and $teamRoomLog -match 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO') 'NO_ACCESS_TOKEN_OR_AUTH_EXCHANGE'
  Copy-Item $clientLog.FullName (Join-Path $evidence 'A-valid-appcontainer.log') -Force
  Copy-Item $svcLog (Join-Path $evidence 'A-valid-supervisor.log') -Force
  $teamRoomBridgePassed=$true
@@ -368,7 +373,7 @@ public static class P238AActivator {
   }
   Write-Host 'TEAM_ROOM_HTTP_FALLBACK=REJECTED'
   Restart-P238Supervisor $p238Endpoint
-  Invoke-P238AppContainerScenario 'H-real-team-room-no-http-fallback' 'PASS' $null
+  Invoke-P238AppContainerScenario 'H-real-team-room-no-http-fallback' 'FAIL_CLOSED' $null
  }else{
   Start-P238TeamRoom $goodLeaf $true
   Invoke-P238AppContainerScenario 'H-http-redirect' 'REJECT' 'TEAM_ROOM_HEALTH_HTTP_STATUS_307'
