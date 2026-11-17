@@ -110,7 +110,7 @@ bool SupervisorCredentialStore::ApplyProtectedDacl(const std::wstring& path,bool
 }
 bool SupervisorCredentialStore::VerifyProtectedDacl(const std::wstring& path,std::wstring& reason) const {
     PACL dacl=nullptr;PSECURITY_DESCRIPTOR descriptor=nullptr;
-    DWORD status=GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),SE_FILE_OBJECT,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,&dacl,nullptr,&descriptor);
+    DWORD status=GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),SE_FILE_OBJECT,DACL_SECURITY_INFORMATION,nullptr,nullptr,&dacl,nullptr,&descriptor);
     if(status!=ERROR_SUCCESS){reason=L"PROTECTED_DACL_READ_FAILED_"+std::to_wstring(status);return false;}
     SECURITY_DESCRIPTOR_CONTROL control=0;DWORD revision=0;
     bool protectedDacl=GetSecurityDescriptorControl(descriptor,&control,&revision)&&((control&SE_DACL_PROTECTED)!=0);
