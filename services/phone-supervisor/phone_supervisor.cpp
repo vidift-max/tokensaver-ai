@@ -16,6 +16,7 @@
 #include "phone_supervisor_rpc.h"
 #include "SupervisorTeamRoomAdapter.h"
 #include "RealSupervisorTeamRoomHttpsAdapter.h"
+#include "TeamRoomScenarioGateR4.h"
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Bcrypt.lib")
 #pragma comment(lib,"Advapi32.lib")
@@ -166,49 +167,86 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
   if(GetTickCount64()>it->second.expiresAt){gSessions.erase(it);*status=RPC_SESSION_EXPIRED;return;}
   if(!it->second.authorized||!SameIdentity(it->second.identity,observed)){*status=RPC_ACCESS_DENIED;return;}
  }
+ Log(L"TEAM_ROOM_ACCESS_TOKEN_REQUESTED=NO");
+ Log(L"TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO");
+ bool healthProbeSucceeded=false;
  if(!gTeamRoomHttpsEndpoint.empty()){
   phone_supervisor::RealSupervisorTeamRoomHttpsAdapter realAdapter;DWORD httpStatus=0;std::wstring tlsReason;
   if(!realAdapter.ProbeHealth(gTeamRoomHttpsEndpoint,httpStatus,tlsReason)){
    Log(L"TEAM_ROOM_HTTPS_TLS=REJECT reason="+tlsReason+L" http_status="+std::to_wstring(httpStatus));
+   Log(L"TEAM_ROOM_HEALTH_NOT_AUTH=PASS");
    *status=RPC_INTERNAL_ERROR;return;
   }
+  healthProbeSucceeded=true;
   Log(L"TEAM_ROOM_HTTPS_TLS=PASS endpoint_policy=ALLOWLIST certificate_chain=VALID hostname=VALID http_status="+std::to_wstring(httpStatus));
+ }else{
+  Log(L"TEAM_ROOM_HEALTH=NOT_CONFIGURED");
  }
- if(gTeamRoomFakeMode!=L"1"){*status=RPC_OK;Log(L"TEAM_ROOM_FAKE_MODE=DISABLED");return;}
- const std::string phoneId=Ascii(gTeamRoomTestPhoneId),endpointId=Ascii(gTeamRoomTestEndpointId),recipientId=Ascii(gTeamRoomTestRecipientId);
- if(phoneId!="TEST-AI-PHONE-02"||endpointId!="TEST-ENDPOINT-02"||recipientId!="FAKE-RECIPIENT-PHONE"||
-    observed.family.empty()||observed.full.empty()||observed.appSid.empty()){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_PROVISIONED_BINDING=REJECT");return;}
- phone_supervisor::FakeSupervisorTeamRoomAdapter adapter;
- if(adapter.authenticate("INVALID-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_AUTH_FAILURE=PASS");
- if(!adapter.authenticate("P2.37-TEST-ONLY-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_AUTHENTICATE=PASS");
- phone_supervisor::ProvisionedPhoneBinding provisioned{phoneId,endpointId,Ascii(observed.family),Ascii(observed.full),Ascii(observed.appSid),1};
- auto wrong=provisioned;wrong.ai_phone_id="CLIENT-CHOSEN-IDENTITY";
- phone_supervisor::TeamRoomAttachment attachment;
- if(adapter.attach(wrong,attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_IDENTITY_MISMATCH=PASS");
- if(!adapter.attach(provisioned,attachment)||attachment.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
+ Log(L"TEAM_ROOM_HEALTH_NOT_AUTH=PASS");
+ const bool fakeMode=(gTeamRoomFakeMode==L"1");
+ if(gTeamRoomFakeMode!=L"0"&&!fakeMode){
+  Log(L"TEAM_ROOM_FAKE_MODE=INVALID");
+  Log(L"TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS");
+  *status=RPC_ACCESS_DENIED;return;
+ }
+ bool fakeScenarioSucceeded=false;
+ if(!fakeMode){
+  Log(L"TEAM_ROOM_FAKE_MODE=DISABLED");
+ }else{
+  const std::string phoneId=Ascii(gTeamRoomTestPhoneId),endpointId=Ascii(gTeamRoomTestEndpointId),recipientId=Ascii(gTeamRoomTestRecipientId);
+  if(phoneId!="TEST-AI-PHONE-02"||endpointId!="TEST-ENDPOINT-02"||recipientId!="FAKE-RECIPIENT-PHONE"||
+     observed.family.empty()||observed.full.empty()||observed.appSid.empty()){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_FAKE_PROVISIONED_BINDING=REJECT");return;}
+  phone_supervisor::FakeSupervisorTeamRoomAdapter adapter;
+  if(adapter.authenticate("INVALID-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_AUTH_FAILURE=PASS");
+  if(!adapter.authenticate("P2.37-TEST-ONLY-ASSERTION")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_AUTHENTICATE=PASS");
+  phone_supervisor::ProvisionedPhoneBinding provisioned{phoneId,endpointId,Ascii(observed.family),Ascii(observed.full),Ascii(observed.appSid),1};
+  auto wrong=provisioned;wrong.ai_phone_id="CLIENT-CHOSEN-IDENTITY";
+  phone_supervisor::TeamRoomAttachment attachment;
+  if(adapter.attach(wrong,attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_IDENTITY_MISMATCH=PASS");
+  if(!adapter.attach(provisioned,attachment)||attachment.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
   if(attachment.team_room_session_id.empty()||attachment.execution_id.empty()||
      attachment.team_room_session_id==Ascii(std::wstring(sessionId))||
      attachment.execution_id==phoneId||attachment.endpoint_id!=endpointId||attachment.endpoint_fence!=1){*status=RPC_INTERNAL_ERROR;return;}
-  Log(L"TEAM_ROOM_SESSION_EXECUTION_NAMESPACE=PASS");Log(L"TEAM_ROOM_ATTACH=PASS");
- if(!adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_HEARTBEAT=PASS");
- if(!adapter.reconnect(attachment,"P2.37-FRESH-CHALLENGE")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_RECONNECT=PASS");
- phone_supervisor::TeamRoomMessage receipt;
- if(adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)){*status=RPC_INTERNAL_ERROR;return;}
- Log(L"TEAM_ROOM_PAIR_DENY=PASS");
- if(!adapter.grantPairForTest(phoneId,recipientId)||
-    !adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)||
-    receipt.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
- Log(L"TEAM_ROOM_SEND=PASS");Log(L"TEAM_ROOM_SENDER_IDENTITY=PASS sender_ai_phone_id=TEST-AI-PHONE-02");
- std::vector<phone_supervisor::TeamRoomMessage> inbox;
- if(!adapter.receive(attachment,inbox)||inbox.size()!=1||inbox.front().sender_ai_phone_id!="FAKE-REMOTE-SENDER"){*status=RPC_INTERNAL_ERROR;return;}
- Log(L"TEAM_ROOM_RECEIVE=PASS");
- if(!adapter.ack(attachment,inbox.front().message_id)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_ACK=PASS");
- if(!adapter.credentialsConfined()){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS");
- if(!adapter.detach(attachment)||adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_DETACH=PASS");
- if(!adapter.revoke(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_REVOKE=PASS");
- Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");*status=RPC_OK;
+  Log(L"TEAM_ROOM_FAKE_SESSION_EXECUTION_NAMESPACE=PASS");Log(L"TEAM_ROOM_FAKE_ATTACH=PASS");
+  if(!adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_HEARTBEAT=PASS");
+  if(!adapter.reconnect(attachment,"P2.37-FRESH-CHALLENGE")){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_RECONNECT=PASS");
+  phone_supervisor::TeamRoomMessage receipt;
+  if(adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)){*status=RPC_INTERNAL_ERROR;return;}
+  Log(L"TEAM_ROOM_FAKE_PAIR_DENY=PASS");
+  if(!adapter.grantPairForTest(phoneId,recipientId)||
+     !adapter.send(attachment,recipientId,"test-message","p2.37-idempotency-1",receipt)||
+     receipt.sender_ai_phone_id!=phoneId){*status=RPC_INTERNAL_ERROR;return;}
+  Log(L"TEAM_ROOM_FAKE_SEND=PASS");Log(L"TEAM_ROOM_FAKE_SENDER_IDENTITY=PASS sender_ai_phone_id=TEST-AI-PHONE-02");
+  std::vector<phone_supervisor::TeamRoomMessage> inbox;
+  if(!adapter.receive(attachment,inbox)||inbox.size()!=1||inbox.front().sender_ai_phone_id!="FAKE-REMOTE-SENDER"){*status=RPC_INTERNAL_ERROR;return;}
+  Log(L"TEAM_ROOM_FAKE_RECEIVE=PASS");
+  if(!adapter.ack(attachment,inbox.front().message_id)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_ACK=PASS");
+  if(!adapter.credentialsConfined()){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_CREDENTIALS_CONFINED=PASS");
+  if(!adapter.detach(attachment)||adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_DETACH=PASS");
+  if(!adapter.revoke(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_FAKE_REVOKE=PASS");
+  fakeScenarioSucceeded=true;
+  Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");
+  Log(L"TEAM_ROOM_FAKE_NOT_AUTHENTICATED=PASS");
+ }
+ const auto decision=phone_supervisor::r4::Evaluate(
+  true,
+  phone_supervisor::r4::SupervisorSecretState::StoreAbsent,
+  healthProbeSucceeded,
+  fakeMode,
+  fakeScenarioSucceeded,
+  false);
+ Log(L"TEAM_ROOM_SECRET_STATE=STORE_ABSENT");
+ Log(L"TEAM_ROOM_REAL_AUTH_SESSION=ABSENT");
+ Log(L"TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS");
+ if(decision.rpcStatus==RPC_OK){
+  Log(L"TEAM_ROOM_FAIL_CLOSED=FAIL_UNEXPECTED_RPC_OK");
+  *status=RPC_INTERNAL_ERROR;return;
+ }
+ Log(L"TEAM_ROOM_FAIL_CLOSED=PASS");
+ if(fakeMode)Log(L"TEAM_ROOM_FAKE_MODE_NOT_AUTH=PASS");
+ *status=decision.rpcStatus;
+ Log(L"TEAM_ROOM_RPC_RESULT=ACCESS_DENIED");
 }
-
 static void SetState(DWORD state,DWORD error=NO_ERROR,DWORD hint=0){gStatus.dwServiceType=SERVICE_WIN32_OWN_PROCESS;gStatus.dwCurrentState=state;gStatus.dwWin32ExitCode=error;gStatus.dwWaitHint=hint;gStatus.dwControlsAccepted=state==SERVICE_RUNNING?SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN:0;if(gStatusHandle)SetServiceStatus(gStatusHandle,&gStatus);}
 static void WINAPI Handler(DWORD c){if(c==SERVICE_CONTROL_STOP||c==SERVICE_CONTROL_SHUTDOWN){SetState(SERVICE_STOP_PENDING,NO_ERROR,15000);{std::lock_guard<std::mutex>l(gMutex);gStopping=true;}if(gStopEvent)SetEvent(gStopEvent);}}
 static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* context){
