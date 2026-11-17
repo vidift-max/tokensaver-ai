@@ -45,9 +45,6 @@ static bool gStopping=false;
 static bool gR5TestMode=false,gR5CredentialLoaded=false;
 static std::wstring gCredentialStoreRoot;
 static phone_supervisor::r5::SecureBuffer gOidcAccessToken;
-static bool gR5TestMode=false,gR5CredentialLoaded=false;
-static std::wstring gCredentialStoreRoot;
-static phone_supervisor::r5::SecureBuffer gOidcAccessToken;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
 static_assert(phone_supervisor::r4::kRpcOk==RPC_OK && phone_supervisor::r4::kRpcAccessDenied==RPC_ACCESS_DENIED,"R4 gate RPC status contract mismatch");
 struct ObservedIdentity{DWORD pid=0,windowsSession=0;FILETIME created{};bool isAppContainer=false;std::wstring userSid,appSid,family,full;};
@@ -135,71 +132,6 @@ static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& s
  secret.Clear();Log(L"OIDC_SECRET_BUFFER_ZEROED=PASS");
  Log(L"AUTH_EXCHANGE_CALLED=NO");
  Log(L"R5_VERDICT="+std::wstring((ok&&acquired&&!gOidcAccessToken.empty())?L"PASS":L"BLOCKED"));
- FreeLibrary(module);
- return ok&&acquired&&!gOidcAccessToken.empty();
-}
-static bool CurrentProcessIsLocalService(){HANDLE token=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token))return false;std::vector<BYTE>b;bool ok=TokenInfo(token,TokenUser,b)&&SidText(reinterpret_cast<TOKEN_USER*>(b.data())->User.Sid)==L"S-1-5-19";CloseHandle(token);return ok;}
-using R5AcquireTokenFn=int(WINAPI*)(const BYTE*,DWORD,BYTE*,DWORD,DWORD*,DWORD*);
-using R5ProbeSecretFn=int(WINAPI*)(const BYTE*,DWORD);
-using R5ProbeFn=int(WINAPI*)();
-static HMODULE LoadR5OidcModule(){
- wchar_t exe[MAX_PATH]{};DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH);if(!n||n>=MAX_PATH)return nullptr;
- std::wstring path(exe);size_t slash=path.find_last_of(L"\\/");if(slash==std::wstring::npos)return nullptr;
- path.resize(slash+1);path+=L"phone_supervisor_oidc_r5.dll";
- return LoadLibraryExW(path.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-}
-static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& store){
- using namespace phone_supervisor::r5;
- bool ok=true;std::wstring reason;SecureBuffer secret;
- if(!store.ReadClientSecret(secret,reason)){Log(L"CREDENTIAL_STORE_READ=FAIL reason="+reason);return false;}
- gR5CredentialLoaded=true;Log(L"CREDENTIAL_STORE_READ=PASS");Log(L"CREDENTIAL_PROTECTED=PASS");
- Log(L"CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS");
- HMODULE module=LoadR5OidcModule();if(!module){Log(L"OIDC_DLL_LOAD=FAIL");return false;}
- auto acquire=reinterpret_cast<R5AcquireTokenFn>(GetProcAddress(module,"r5_acquire_token"));
- auto badSecret=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_secret"));
- auto badClient=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_client"));
- auto badScope=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_scope"));
- auto badEndpoint=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_bad_endpoint"));
- auto malformed=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_malformed_response"));
- auto badTls=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_tls_failure"));
- auto unavailable=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_unavailable"));
- if(!acquire||!badSecret||!badClient||!badScope||!badEndpoint||!malformed||!badTls||!unavailable){Log(L"OIDC_DLL_EXPORTS=FAIL");FreeLibrary(module);return false;}
- auto probe=[&](const wchar_t*marker,R5ProbeFn fn){bool pass=fn&&fn()==0;Log(std::wstring(marker)+L"="+(pass?L"PASS":L"FAIL"));ok=ok&&pass;};
- probe(L"NEGATIVE_BAD_ENDPOINT",badEndpoint);
- probe(L"NEGATIVE_MALFORMED_RESPONSE",malformed);
- probe(L"NEGATIVE_TLS",badTls);
- probe(L"NEGATIVE_KEYCLOAK_UNAVAILABLE",unavailable);
- Log(L"R5_WAITING_FOR_KEYCLOAK=PASS");
- std::vector<BYTE> zero(16384,0);SecureBuffer tokenScratch;
- if(!tokenScratch.Assign(zero.data(),zero.size())){SecureZeroMemory(zero.data(),zero.size());FreeLibrary(module);return false;}
- SecureZeroMemory(zero.data(),zero.size());
- DWORD tokenLength=0,expiresIn=0;int acquireStatus=-1;bool acquired=false;
- for(int attempt=0;attempt<60;attempt++){
-  tokenLength=0;expiresIn=0;SecureZeroMemory(tokenScratch.data(),tokenScratch.size());
-  acquireStatus=acquire(secret.data(),static_cast<DWORD>(secret.size()),tokenScratch.data(),static_cast<DWORD>(tokenScratch.size()),&tokenLength,&expiresIn);
-  if(acquireStatus==0&&tokenLength>0&&tokenLength<=tokenScratch.size()&&expiresIn>0&&expiresIn<=3600){acquired=true;break;}
-  if(acquireStatus!=13&&acquireStatus!=19){break;}
-  if(gStopEvent&&WaitForSingleObject(gStopEvent,0)==WAIT_OBJECT_0)break;
-  Sleep(1000);
- }
- if(!acquired){Log(L"TOKEN_ACQUIRED=FAIL status="+std::to_wstring(acquireStatus));ok=false;}
- else if(!gOidcAccessToken.Assign(tokenScratch.data(),tokenLength)){Log(L"TOKEN_MEMORY_ONLY=FAIL");ok=false;}
- else{
-  Log(L"KEYCLOAK_HTTPS=PASS");Log(L"OIDC_DISCOVERY=PASS");Log(L"OIDC_ISSUER_VALID=PASS");
-  Log(L"CLIENT_CREDENTIALS=PASS");Log(L"TOKEN_ACQUIRED=PASS");Log(L"TOKEN_SIGNATURE=PASS");
-  Log(L"TOKEN_ISSUER=PASS");Log(L"TOKEN_AUDIENCE=PASS");Log(L"TOKEN_SCOPE=PASS");Log(L"TOKEN_EXPIRY=PASS");
-  Log(L"TOKEN_MEMORY_ONLY=PASS");
- }
- tokenScratch.Clear();
- if(acquired){
-  auto secretProbe=[&](const wchar_t*marker,R5ProbeSecretFn fn){bool pass=fn&&fn(secret.data(),static_cast<DWORD>(secret.size()))==0;Log(std::wstring(marker)+L"="+(pass?L"PASS":L"FAIL"));ok=ok&&pass;};
-  secretProbe(L"NEGATIVE_WRONG_SECRET",badSecret);
-  secretProbe(L"NEGATIVE_WRONG_CLIENT",badClient);
-  secretProbe(L"NEGATIVE_INVALID_SCOPE",badScope);
- }
- Log(L"AUTH_EXCHANGE_CALLED=NO");
- Log(L"OIDC_SECRET_BUFFER_ZEROED=PASS");secret.Clear();
- Log(std::wstring(L"R5_VERDICT=")+((ok&&acquired&&!gOidcAccessToken.empty())?L"PASS":L"BLOCKED"));
  FreeLibrary(module);
  return ok&&acquired&&!gOidcAccessToken.empty();
 }
