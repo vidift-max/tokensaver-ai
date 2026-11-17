@@ -365,7 +365,7 @@ finally {
  Write-Host ('TEST_PRIVATE_KEY_REMOVED='+$(if($privateKeyGone){'PASS'}else{'FAIL'}))
  Write-Host ('TEMP_DIRECTORY_REMOVED='+$(if($tempGone){'PASS'}else{'FAIL'}))
  $logText='';if(Test-Path (Join-Path $evidence 'service.log')){$logText=Get-Content (Join-Path $evidence 'service.log') -Raw}
- $sessionClean=($logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
+ $sessionClean=((-not $serviceStarted) -or $logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
  Write-Host ('TEAM_ROOM_PROCESS_REMOVED='+$(if($teamRoomProcessGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_CA_AND_CERTIFICATES_REMOVED='+$(if($p238CertsGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_PRIVATE_KEYS_REMOVED='+$(if($p238KeysGone){'PASS'}else{'FAIL'}));Write-Host ('HOSTS_ENTRY_RESTORED='+$(if($p238HostsRestored){'PASS'}else{'FAIL'}))
  $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean -and $teamRoomProcessGone -and $p238CertsGone -and $p238KeysGone -and $p238HostsRestored)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
