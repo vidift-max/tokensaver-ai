@@ -43,11 +43,17 @@ function Stop-P238TeamRoom {
 function Start-P238TeamRoom($leaf,$redirect){
  if(-not(Stop-P238TeamRoom)){throw 'Previous Team Room TLS listener did not stop'}
  Remove-Item (Join-Path $script:evidence 'team-room.stdout.log'),(Join-Path $script:evidence 'team-room.stderr.log') -Force -ErrorAction SilentlyContinue
- $env:TEAM_ROOM_TLS_PROBE_ONLY='1';$env:TEAM_ROOM_TLS_BIND='127.0.0.1:8443';$env:TEAM_ROOM_BIND='127.0.0.1:8081'
+ $fullMode=($env:P238_TEAM_ROOM_FULL_MODE -eq '1')
+ if($fullMode){
+  Remove-Item Env:TEAM_ROOM_TLS_PROBE_ONLY,Env:TEAM_ROOM_TLS_BIND,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_TEST_REDIRECT_HTTP -ErrorAction SilentlyContinue
+  $env:TEAM_ROOM_HTTPS_BIND='127.0.0.1:8443'
+ }else{
+  $env:TEAM_ROOM_TLS_PROBE_ONLY='1';$env:TEAM_ROOM_TLS_BIND='127.0.0.1:8443';$env:TEAM_ROOM_BIND='127.0.0.1:8081'
+  if($redirect){$env:TEAM_ROOM_TEST_REDIRECT_HTTP='1'}else{Remove-Item Env:TEAM_ROOM_TEST_REDIRECT_HTTP -ErrorAction SilentlyContinue}
+ }
  $env:TEAM_ROOM_TLS_CERT_PATH=$leaf.CertPath;$env:TEAM_ROOM_TLS_KEY_PATH=$leaf.KeyPath
- if($redirect){$env:TEAM_ROOM_TEST_REDIRECT_HTTP='1'}else{Remove-Item Env:TEAM_ROOM_TEST_REDIRECT_HTTP -ErrorAction SilentlyContinue}
  $script:teamRoomProcess=Start-Process -FilePath $script:teamRoomExe -WorkingDirectory $script:root -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $script:evidence 'team-room.stdout.log') -RedirectStandardError (Join-Path $script:evidence 'team-room.stderr.log')
- Remove-Item Env:TEAM_ROOM_TLS_PROBE_ONLY,Env:TEAM_ROOM_TLS_BIND,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:TEAM_ROOM_TEST_REDIRECT_HTTP -ErrorAction SilentlyContinue
+ Remove-Item Env:TEAM_ROOM_TLS_PROBE_ONLY,Env:TEAM_ROOM_TLS_BIND,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_HTTPS_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:TEAM_ROOM_TEST_REDIRECT_HTTP -ErrorAction SilentlyContinue
  $deadline=(Get-Date).AddSeconds(20);$connected=$false
  do{
   if(-not (Get-Process -Id $script:teamRoomProcess.Id -ErrorAction SilentlyContinue)){throw 'Team Room TLS process exited before listener became ready'}
@@ -56,7 +62,26 @@ function Start-P238TeamRoom($leaf,$redirect){
   if(-not $connected){Start-Sleep -Milliseconds 250}
  }while(-not $connected -and (Get-Date) -lt $deadline)
  if(-not $connected){throw 'Team Room TLS listener did not bind 127.0.0.1:8443'}
- Write-Host ('TEAM_ROOM_TLS_LISTENER=READY pid='+$script:teamRoomProcess.Id+' hostname=team-room.p238.test endpoint=https://team-room.p238.test:8443/health/live')
+ if($fullMode){
+  $deadline=(Get-Date).AddSeconds(20);$teamLog=''
+  do{
+   Start-Sleep -Milliseconds 250
+   $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw -ErrorAction SilentlyContinue
+  }while(($teamLog -notmatch 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY' -or $teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED') -and (Get-Date) -lt $deadline)
+  Check ($teamLog -match 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY') 'TEAM_ROOM_REAL_HTTPS_LISTENER'
+  Check ($teamLog -match 'TEAM_ROOM_POSTGRES_CONNECTED.*database=team_room_p238b') 'TEAM_ROOM_POSTGRES_DATABASE_IDENTITY'
+  $ready=Invoke-WebRequest -Uri 'https://team-room.p238.test:8443/health/ready' -UseBasicParsing -TimeoutSec 5
+  Check ($ready.StatusCode -eq 200) 'TEAM_ROOM_REAL_HTTPS_DATABASE_READINESS'
+  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
+  $dbActivity=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='team_room_p238b' AND usename='postgres' AND application_name='team-room-p238b'"
+  if($LASTEXITCODE -ne 0){throw 'Could not inspect Team Room PostgreSQL activity'}
+  Check ([int]$dbActivity -gt 0) 'TEAM_ROOM_POSTGRES_ACTIVE_CONNECTION'
+  Write-Host ('TEAM_ROOM_REAL_HTTPS_PROCESS_ID='+$script:teamRoomProcess.Id)
+  Write-Host ('TEAM_ROOM_POSTGRES_ACTIVE_CONNECTIONS='+$dbActivity)
+  Write-Host 'TEAM_ROOM_HTTP_FALLBACK=NOT_STARTED'
+ }else{
+  Write-Host ('TEAM_ROOM_TLS_LISTENER=READY pid='+$script:teamRoomProcess.Id+' hostname=team-room.p238.test endpoint=https://team-room.p238.test:8443/health/live')
+ }
 }
 function Restart-P238Supervisor($endpoint){
  $before=Get-CimInstance Win32_Service -Filter "Name='$script:service'" -ErrorAction Stop
@@ -111,6 +136,10 @@ function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
  if($expected -eq 'PASS'){
   Check ($body -match 'TEAM_ROOM_SCENARIO=PASS' -and $body -match 'CLOSE_SESSION=PASS') ($label+'_SUPERVISOR_HTTPS_PASS')
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') ($label+'_TEAM_ROOM_RESPONSE')
+  if($env:P238_TEAM_ROOM_FULL_MODE -eq '1'){
+   $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw
+   Check ($teamLog -match ('TEAM_ROOM_HEALTH_REQUEST process_id='+$script:teamRoomProcess.Id)) 'SUPERVISOR_REQUEST_REACHED_REAL_TEAM_ROOM_PROCESS'
+  }
  }else{
   Check ($body -match 'TEAM_ROOM_SCENARIO=FAIL') ($label+'_APPCONTAINER_TLS_REJECT')
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=REJECT') ($label+'_SUPERVISOR_TLS_REJECT')
@@ -288,10 +317,21 @@ public static class P238AActivator {
  Restart-P238Supervisor 'https://team-room.p238.test:9443/health/live'
  Invoke-P238AppContainerScenario 'G-unexpected-port' 'REJECT' 'ENDPOINT_PORT_NOT_ALLOWLISTED'
  Restart-P238Supervisor $p238Endpoint
- Start-P238TeamRoom $goodLeaf $true
- Invoke-P238AppContainerScenario 'H-http-redirect' 'REJECT' 'TEAM_ROOM_HEALTH_HTTP_STATUS_307'
- Start-P238TeamRoom $goodLeaf $false
- Restart-P238Supervisor $p238Endpoint
+ if($env:P238_TEAM_ROOM_FULL_MODE -eq '1'){
+  foreach($port in @(8081,8082)){
+   $tcpCheck=[Net.Sockets.TcpClient]::new();$httpOpen=$false
+   try{$tcpCheck.Connect('127.0.0.1',$port);$httpOpen=$true}catch{}finally{$tcpCheck.Dispose()}
+   Check (-not $httpOpen) ('TEAM_ROOM_HTTP_FALLBACK_PORT_'+$port+'_CLOSED')
+  }
+  Write-Host 'TEAM_ROOM_HTTP_FALLBACK=REJECTED'
+  Restart-P238Supervisor $p238Endpoint
+  Invoke-P238AppContainerScenario 'H-real-team-room-no-http-fallback' 'PASS' $null
+ }else{
+  Start-P238TeamRoom $goodLeaf $true
+  Invoke-P238AppContainerScenario 'H-http-redirect' 'REJECT' 'TEAM_ROOM_HEALTH_HTTP_STATUS_307'
+  Start-P238TeamRoom $goodLeaf $false
+  Restart-P238Supervisor $p238Endpoint
+ }
  $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
  $commonText=Get-Content $common -Raw
  Check ($LASTEXITCODE -eq 0 -and $commonText -match 'COMMON_PROCESS_REJECT=PASS' -and $commonText -match 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS') 'COMMON_PROCESS_REJECT'

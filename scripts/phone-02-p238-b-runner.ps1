@@ -64,7 +64,10 @@ try {
     Assert-Check $pgReady 'POSTGRESQL_NATIVE_SERVICE_READY'
     & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE team_room_p238b'
     if($LASTEXITCODE -ne 0){throw 'PostgreSQL disposable Team Room database creation failed'}
+    & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE keycloak_p238b'
+    if($LASTEXITCODE -ne 0){throw 'PostgreSQL disposable Keycloak database creation failed'}
     Write-Host 'POSTGRESQL_DATABASE=team_room_p238b'
+    Write-Host 'POSTGRESQL_DATABASE=keycloak_p238b'
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
     # Official pinned Keycloak ZIP. This round starts the service only; no OIDC
@@ -81,32 +84,39 @@ try {
     $env:KC_BOOTSTRAP_ADMIN_USERNAME='p238b-ephemeral-admin'
     $env:KC_BOOTSTRAP_ADMIN_PASSWORD=$kcPassword
     $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='true'
-    $keycloakProcess=Start-Process -FilePath $kcBat -ArgumentList 'start-dev --http-enabled=true --hostname-strict=false' -WorkingDirectory $keycloakHome -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $evidence 'keycloak.stdout.log') -RedirectStandardError (Join-Path $evidence 'keycloak.stderr.log')
-    Remove-Item Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED -ErrorAction SilentlyContinue
+    $env:KC_DB='postgres'
+    $env:KC_DB_URL='jdbc:postgresql://127.0.0.1:5432/keycloak_p238b?ApplicationName=keycloak-p238b'
+    $env:KC_DB_USERNAME='postgres'
+    $env:KC_DB_PASSWORD=$pgPassword
+    $keycloakProcess=Start-Process -FilePath $kcBat -ArgumentList 'start-dev --db=postgres --http-enabled=true --hostname-strict=false' -WorkingDirectory $keycloakHome -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $evidence 'keycloak.stdout.log') -RedirectStandardError (Join-Path $evidence 'keycloak.stderr.log')
+    Remove-Item Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD -ErrorAction SilentlyContinue
     Wait-Http 'http://127.0.0.1:9000/health/ready' 180 'KEYCLOAK_HEALTH'
     Wait-Http 'http://127.0.0.1:8080/realms/master/.well-known/openid-configuration' 30 'KEYCLOAK_DISCOVERY'
+    $kcConnections = & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='keycloak_p238b' AND usename='postgres' AND application_name='keycloak-p238b'"
+    if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL activity'}
+    $kcTableCount = & $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -Atc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"
+    if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL schema'}
+    Assert-Check ([int]$kcConnections -gt 0) 'KEYCLOAK_POSTGRES_ACTIVE_CONNECTION'
+    Assert-Check ([int]$kcTableCount -gt 0) 'KEYCLOAK_POSTGRES_SCHEMA_PRESENT'
+    Write-Host 'KEYCLOAK_EFFECTIVE_DATASTORE=postgresql'
+    Write-Host ('KEYCLOAK_POSTGRES_ACTIVE_CONNECTIONS='+$kcConnections)
+    Write-Host ('KEYCLOAK_POSTGRES_TABLE_COUNT='+$kcTableCount)
     Write-Host ('KEYCLOAK_PROCESS_ID='+$keycloakProcess.Id)
 
-    # Full PostgreSQL-backed Team Room in normal mode on 8082. OIDC remains
-    # disabled. P2.38-A's approved script independently exercises the exact
-    # Supervisor WinHTTP TLS/AppContainer/MSIX harness against its TLS probe.
-    $teamRoomManifest=Join-Path $env:GITHUB_WORKSPACE 'services\ai-team-room\Cargo.toml'
-    & cargo build --release --manifest-path $teamRoomManifest --bin ai-team-room-service
-    if($LASTEXITCODE -ne 0){throw 'Full Team Room Windows build failed'}
-    $cargoMetadata=(& cargo metadata --manifest-path $teamRoomManifest --format-version 1 --no-deps | ConvertFrom-Json)
-    $teamRoomExe=Join-Path $cargoMetadata.target_directory 'release\ai-team-room-service.exe'
-    Assert-Check (Test-Path $teamRoomExe) 'TEAM_ROOM_BINARY_PRESENT'
-    $env:DATABASE_URL="postgres://postgres:$pgPassword@127.0.0.1:5432/team_room_p238b"
-    $env:TEAM_ROOM_BIND='127.0.0.1:8082';$env:RUST_LOG='info'
-    $teamRoomProcess=Start-Process -FilePath $teamRoomExe -WorkingDirectory $env:GITHUB_WORKSPACE -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $evidence 'team-room-full.stdout.log') -RedirectStandardError (Join-Path $evidence 'team-room-full.stderr.log')
-    Remove-Item Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:RUST_LOG -ErrorAction SilentlyContinue
-    Wait-Http 'http://127.0.0.1:8082/health/ready' 90 'TEAM_ROOM_POSTGRES_READY'
-    Write-Host ('TEAM_ROOM_FULL_PROCESS_ID='+$teamRoomProcess.Id)
-
+    # Run the existing MSIX/AppContainer + Supervisor harness in full Team Room
+    # mode. The harness starts the actual PostgreSQL-backed application with
+    # its production router on HTTPS; it does not start the P2.38-A probe mode.
     $p238aScript=Join-Path $env:GITHUB_WORKSPACE 'scripts\phone-02-p238-a-tls-e2e.ps1'
     Assert-Check (Test-Path $p238aScript) 'P238A_TLS_HARNESS_PRESENT'
+    $env:DATABASE_URL="postgres://postgres:$pgPassword@127.0.0.1:5432/team_room_p238b?application_name=team-room-p238b"
+    $env:PGPASSWORD=$pgPassword
+    $env:P238_TEAM_ROOM_FULL_MODE='1'
+    $env:RUST_LOG='info'
     & $p238aScript
-    if($LASTEXITCODE -ne 0){throw ('P2.38-A harness returned exit code '+$LASTEXITCODE)}
+    $harnessExit=$LASTEXITCODE
+    Remove-Item Env:DATABASE_URL,Env:PGPASSWORD,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG -ErrorAction SilentlyContinue
+    if($harnessExit -ne 0){throw ('P2.38-A full Team Room harness returned exit code '+$harnessExit)}
+    Write-Host 'P238B_TEAM_ROOM_REAL_HTTPS_SUPERVISOR_APPCONTAINER=COMPLETED'
     Write-Host 'P238A_APPCONTAINER_SUPERVISOR_TLS_HARNESS=COMPLETED'
 }
 catch {
@@ -114,8 +124,8 @@ catch {
     Write-Host ('P238B_RUNNER_FAILURE='+$_.Exception.Message)
 }
 finally {
-    Remove-Item Env:PGPASSWORD,Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:RUST_LOG,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED -ErrorAction SilentlyContinue
-    Stop-TrackedProcess $teamRoomProcess 'TEAM_ROOM_FULL_PROCESS_STOP'
+    Remove-Item Env:PGPASSWORD,Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_HTTPS_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD -ErrorAction SilentlyContinue
+    if($teamRoomProcess){Stop-TrackedProcess $teamRoomProcess 'TEAM_ROOM_FULL_PROCESS_STOP'}else{$cleanup.Add('TEAM_ROOM_FULL_PROCESS_STOP=MANAGED_BY_P238A_HARNESS')}
     if($keycloakProcess) {
         $kcDir=Join-Path $root 'keycloak-26.3.5'
         $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})

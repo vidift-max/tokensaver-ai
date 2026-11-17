@@ -112,6 +112,8 @@ fn allow_exchange(peer: Option<SocketAddr>) -> bool {
 }
 
 async fn live() -> axum::response::Response {
+    let transport = if env::var_os("TEAM_ROOM_HTTPS_BIND").is_some() { "https" } else { "http" };
+    tracing::info!(process_id = std::process::id(), transport, "TEAM_ROOM_HEALTH_REQUEST");
     // Explicit test-only redirect switch exercises WinHTTP's no-redirect policy.
     if env::var("TEAM_ROOM_TLS_PROBE_ONLY").as_deref() == Ok("1")
         && env::var("TEAM_ROOM_TEST_REDIRECT_HTTP").as_deref() == Ok("1")
@@ -132,7 +134,9 @@ async fn live() -> axum::response::Response {
 }
 
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
-    if readiness(&state.pool).await {
+    let database_ready = readiness(&state.pool).await;
+    tracing::info!(process_id = std::process::id(), database_ready, "TEAM_ROOM_READINESS_REQUEST");
+    if database_ready {
         (
             StatusCode::OK,
             Json(HealthResponse {
@@ -897,6 +901,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = connect_pool(&database_url).await?;
     migrate(&pool).await?;
+    let (database_name, database_backend_pid): (String, i32) =
+        sqlx::query_as("SELECT current_database(), pg_backend_pid()")
+            .fetch_one(&pool)
+            .await?;
+    tracing::info!(
+        database = %database_name,
+        backend_pid = database_backend_pid,
+        "TEAM_ROOM_POSTGRES_CONNECTED"
+    );
     let oidc = match OidcConfig::from_env() {
         Ok(config) => {
             tracing::info!("OIDC workload trust configuration loaded");
@@ -910,6 +923,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState { pool, oidc };
 
     let app = build_router(state);
+
+    // P2.38-B real application HTTPS mode: the full router and PostgreSQL-backed
+    // AppState are served by this process. No HTTP listener is created in this mode.
+    if let Ok(tls_bind_value) = env::var("TEAM_ROOM_HTTPS_BIND") {
+        let tls_bind: SocketAddr = tls_bind_value.parse()?;
+        if !tls_bind.ip().is_loopback() || tls_bind.port() != 8443 {
+            return Err("real Team Room HTTPS is restricted to loopback port 8443".into());
+        }
+        let cert = env::var("TEAM_ROOM_TLS_CERT_PATH")
+            .map_err(|_| "TEAM_ROOM_TLS_CERT_PATH is required for real Team Room HTTPS")?;
+        let key = env::var("TEAM_ROOM_TLS_KEY_PATH")
+            .map_err(|_| "TEAM_ROOM_TLS_KEY_PATH is required for real Team Room HTTPS")?;
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .map_err(|_| std::io::Error::other("failed to install explicit aws-lc-rs CryptoProvider"))?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+        tracing::info!(
+            %tls_bind,
+            process_id = std::process::id(),
+            database = %database_name,
+            "TEAM_ROOM_REAL_HTTPS_LISTENER_READY"
+        );
+        axum_server::bind_rustls(tls_bind, tls)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
+        return Ok(());
+    }
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "AI Team Room service listening");
