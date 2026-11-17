@@ -60,3 +60,31 @@ jobs:
           name: phone02-p238a-tls-compile-policy
           path: p238a-evidence
           if-no-files-found: warn
+
+  windows-appcontainer-supervisor-teamroom-tls:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact isolated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install stable Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Execute real AppContainer to Supervisor to HTTPS tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host ('P238A_COMMIT=' + $env:GITHUB_SHA)
+          Write-Host ('P238A_RUN_ID=' + $env:GITHUB_RUN_ID)
+          Write-Host ('P238A_JOB=windows-appcontainer-supervisor-teamroom-tls')
+          & .\scripts\phone-02-p238-a-tls-e2e.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'P2.38-A Windows TLS E2E script failed' }
+      - name: Upload sanitized P2.38-A Windows TLS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-p238a-real-https-tls-e2e
+          path: ${{ runner.temp }}/phone02-p238a-evidence
+          if-no-files-found: warn
