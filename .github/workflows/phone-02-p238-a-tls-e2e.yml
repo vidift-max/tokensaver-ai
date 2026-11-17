@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: phone02-p238a-tls-e2e-${{ github.sha }}
   cancel-in-progress: false
@@ -30,15 +31,29 @@ jobs:
           Write-Host ('P238A_JOB=windows-appcontainer-supervisor-teamroom-tls')
           & .\scripts\phone-02-p238-a-tls-e2e.ps1
           if ($LASTEXITCODE -ne 0) { throw 'P2.38-A Windows TLS E2E script failed' }
+
+      - name: Record numeric GitHub run and job IDs
+        if: always()
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs?per_page=100"
+          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+          $current = $response.jobs | Where-Object { $_.name -eq $env:GITHUB_JOB } | Select-Object -First 1
+          $jobId = if ($current) { [string]$current.id } else { 'UNAVAILABLE' }
           $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
-          @(
-            "commit=$env:GITHUB_SHA"
-            "run_id=$env:GITHUB_RUN_ID"
-            "job=windows-appcontainer-supervisor-teamroom-tls"
-            "hostname=team-room.p238.test"
-            "endpoint=https://team-room.p238.test:8443/health/live"
-            "classification=$(Get-Content (Join-Path $evidence 'classification.txt') -Raw)"
-          ) | Set-Content (Join-Path $evidence 'run-metadata.txt') -Encoding ASCII
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $metadata = Join-Path $evidence 'run-metadata.txt'
+          $lines = if (Test-Path $metadata) { @(Get-Content $metadata) } else { @() }
+          $lines = @($lines | Where-Object { $_ -notmatch '^job_id=' })
+          $lines += "job_id=$jobId"
+          Set-Content $metadata $lines -Encoding ASCII
       - name: Upload sanitized P2.38-A Windows TLS evidence
         if: always()
         uses: actions/upload-artifact@v4
