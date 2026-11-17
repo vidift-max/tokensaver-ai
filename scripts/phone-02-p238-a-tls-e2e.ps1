@@ -59,20 +59,38 @@ function Start-P238TeamRoom($leaf,$redirect){
  Write-Host ('TEAM_ROOM_TLS_LISTENER=READY pid='+$script:teamRoomProcess.Id+' hostname=team-room.p238.test endpoint=https://team-room.p238.test:8443/health/live')
 }
 function Restart-P238Supervisor($endpoint){
+ $before=Get-CimInstance Win32_Service -Filter "Name='$script:service'" -ErrorAction Stop
+ $oldPid=[int]$before.ProcessId
  & sc.exe stop $script:service 2>&1|Out-Null
  $deadline=(Get-Date).AddSeconds(20);$state=''
  do{Start-Sleep -Milliseconds 250;$q=Get-CimInstance Win32_Service -Filter "Name='$script:service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
- if($state -ne 'Stopped'){throw 'Supervisor did not stop for endpoint test'}
+ if($state -ne 'Stopped'){throw ('Supervisor did not stop for endpoint test; state='+$state+' pid='+$oldPid)}
+ # SCM may publish STOPPED just before ServiceMain closes its final log handle
+ # and exits. Wait for the old process itself before rotating the log/restarting.
+ $deadline=(Get-Date).AddSeconds(10)
+ while($oldPid -gt 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline){Start-Sleep -Milliseconds 100}
+ if($oldPid -gt 0 -and (Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue)){throw ('Supervisor reported STOPPED but old process is still alive; pid='+$oldPid)}
+ Write-Host ('SUPERVISOR_PREVIOUS_PID_EXITED=PASS pid='+$oldPid)
  $lines=@(Get-Content $script:config|Where-Object {$_ -notmatch '^TEAM_ROOM_HTTPS_ENDPOINT='})
  $lines += "TEAM_ROOM_HTTPS_ENDPOINT=$endpoint"
  Set-Content $script:config $lines -Encoding ASCII
  Remove-Item ($script:config+'.log') -Force -ErrorAction SilentlyContinue
  & sc.exe start $script:service|Out-Null
- if($LASTEXITCODE -ne 0){throw 'Supervisor failed to restart'}
- $deadline=(Get-Date).AddSeconds(20)
- while((-not(Test-Path ($script:config+'.log')) -or (Get-Content ($script:config+'.log') -Raw) -notmatch 'RPC_ENDPOINT=READY') -and (Get-Date) -lt $deadline){Start-Sleep -Milliseconds 250}
- if(-not(Test-Path ($script:config+'.log')) -or (Get-Content ($script:config+'.log') -Raw) -notmatch 'RPC_ENDPOINT=READY'){throw 'Supervisor RPC endpoint did not become ready after restart'}
- $script:servicePid=[int](Get-CimInstance Win32_Service -Filter "Name='$script:service'").ProcessId
+ if($LASTEXITCODE -ne 0){throw ('Supervisor failed to restart; sc_exit='+$LASTEXITCODE)}
+ $deadline=(Get-Date).AddSeconds(20);$ready=$false;$q=$null
+ do{
+  Start-Sleep -Milliseconds 250
+  $q=Get-CimInstance Win32_Service -Filter "Name='$script:service'" -ErrorAction SilentlyContinue
+  $logReady=(Test-Path ($script:config+'.log')) -and ((Get-Content ($script:config+'.log') -Raw -ErrorAction SilentlyContinue) -match 'RPC_ENDPOINT=READY')
+  $ready=($q.State -eq 'Running' -and [int]$q.ProcessId -gt 0 -and [int]$q.ProcessId -ne $oldPid -and $logReady)
+  if($q.State -eq 'Stopped'){break}
+ }while(-not $ready -and (Get-Date) -lt $deadline)
+ if(-not $ready){
+  $exit=if($q){' state='+$q.State+' pid='+$q.ProcessId+' win32_exit='+$q.ExitCode+' service_exit='+$q.ServiceSpecificExitCode}else{' service_query=UNAVAILABLE'}
+  $log=if(Test-Path ($script:config+'.log')){Get-Content ($script:config+'.log') -Raw -ErrorAction SilentlyContinue}else{'LOG_MISSING'}
+  throw ('Supervisor RPC endpoint did not become ready after restart;'+$exit+' log='+$log)
+ }
+ $script:servicePid=[int]$q.ProcessId
 }
 function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
  $fallback=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
