@@ -99,7 +99,7 @@ jobs:
           )
           $policyPass = $true
           foreach ($m in $required) { if (-not $policy.Contains($m)) { $policyPass = $false } }
-          $scriptPass = ($r4 -match 'FAIL_CLOSED=PASS' -and $r4 -match 'FALSE_SUCCESS_REMOVED=PASS' -and $r4 -match 'HEALTH_NOT_AUTH=PASS' -and $r4 -match 'SECRET_ISOLATION=PASS' -and $r4 -match 'CLEANUP=PASS' -and $r4 -match 'ACCESS_TOKEN_REQUESTED=NO' -and $r4 -match 'AUTH_EXCHANGE_CALLED=NO' -and $r4 -match 'R4_VERDICT=PASS')
+          $scriptPass = ($r4 -match 'FAIL_CLOSED=PASS' -and $r4 -match 'FALSE_SUCCESS_REMOVED=PASS' -and $r4 -match 'HEALTH_NOT_AUTH=PASS' -and $r4 -match 'SECRET_ISOLATION=PASS' -and $r4 -match 'CLEANUP=PASS' -and $r4 -match 'ACCESS_TOKEN_REQUESTED=NO' -and $r4 -match 'AUTH_EXCHANGE_CALLED=NO' -and $r4 -match 'SUPERVISOR_SECRET_MATERIAL_ABSENT=PASS' -and $r4 -match 'R3_TEST_STORE_NOT_LEFT_BEHIND=PASS' -and $r4 -match 'FAKE_MODE_DISTINCT=PASS' -and $r4 -match 'R4_VERDICT=PASS' -and $r4 -match 'VERDICT=PASS')
           $artifactScan = $secretScan
           $verdict = if ($policyPass -and $scriptPass -and $artifactScan) { 'PASS' } else { 'BLOCKED' }
           @(
@@ -112,8 +112,12 @@ jobs:
             'ACCESS_TOKEN_REQUESTED=NO'
             'AUTH_EXCHANGE_CALLED=NO'
             'R4_POLICY_TESTS=' + $(if($policyPass){'PASS'}else{'FAIL'})
+            'FAKE_MODE_DISTINCT=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'SUPERVISOR_SECRET_MATERIAL_ABSENT=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'R3_TEST_STORE_NOT_LEFT_BEHIND=' + $(if($scriptPass){'PASS'}else{'FAIL'})
             'ARTIFACT_SCAN=' + $(if($artifactScan){'PASS'}else{'FAIL'})
             'R4_VERDICT=' + $verdict
+            'VERDICT=' + $verdict
             'run_id=' + $env:GITHUB_RUN_ID
             'sha=' + $env:GITHUB_SHA
             'branch=' + $env:GITHUB_REF
