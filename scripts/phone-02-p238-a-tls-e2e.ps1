@@ -267,7 +267,7 @@ try {
  & sc.exe sidtype $service unrestricted|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM Service SID setup failed'}
  $sidOut=(& sc.exe showsid $service 2>&1|Out-String);$serviceSid=[regex]::Match($sidOut,'S-1-5-80-(?:\d+-){4}\d+').Value
  if(-not $serviceSid){throw 'Service SID not returned by SCM'}
- @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","RPC_CLIENT_USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","TEAM_ROOM_FAKE_MODE=0","TEAM_ROOM_HTTPS_ENDPOINT=$p238Endpoint")|Set-Content $config -Encoding ASCII
+ @("PACKAGE_FAMILY=$($app.PackageFamilyName)","PACKAGE_FULL=$($app.PackageFullName)","APPCONTAINER_SID=$appSid","RPC_CLIENT_APPCONTAINER_SID=$appSid","SERVICE_SID=$serviceSid","USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","RPC_CLIENT_USER_SID=$([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)","TEAM_ROOM_FAKE_MODE=0","TEAM_ROOM_TEST_AI_PHONE_ID=TEST-AI-PHONE-02","TEAM_ROOM_TEST_ENDPOINT_ID=TEST-ENDPOINT-02","TEAM_ROOM_TEST_RECIPIENT_ID=FAKE-RECIPIENT-PHONE","TEAM_ROOM_HTTPS_ENDPOINT=$p238Endpoint")|Set-Content $config -Encoding ASCII
   $configText=Get-Content $config -Raw
   Check ($configText -notmatch '(?i)(CLIENT_SECRET|ACCESS_TOKEN|TEAM_ROOM_SESSION|ENDPOINT_CREDENTIAL|OPERATOR_KEY|PASSWORD)') 'SUPERVISOR_SECRET_MATERIAL_ABSENT'
   Check (-not (Test-Path 'C:\ProgramData\Phone02CredentialStoreR3')) 'R3_TEST_STORE_NOT_LEFT_BEHIND'
