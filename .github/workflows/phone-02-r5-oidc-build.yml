@@ -1,4 +1,4 @@
-name: Phone-02 R5 OIDC Build
+name: Phone-02 R5 OIDC Credential Store and Client Credentials E2E
 
 on:
   push:
@@ -10,20 +10,23 @@ on:
       - 'services/phone-supervisor/SupervisorCredentialProvisioningR5.*'
       - 'services/phone-supervisor/RealSupervisorTeamRoomHttpsAdapter.*'
       - 'services/phone-supervisor/phone_supervisor_rpc.idl'
+      - 'services/phone-supervisor/phone_supervisor_client.cpp'
+      - 'scripts/phone-02-r5-oidc-e2e.ps1'
       - '.github/workflows/phone-02-r5-oidc-build.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: phone02-r5-oidc-build-${{ github.sha }}
-  cancel-in-progress: false
+  group: phone02-r5-oidc-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -70,23 +73,101 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'R5_SUPERVISOR_COMPILE_FAILED' }
           Copy-Item $exe "$env:RUNNER_TEMP/phone_supervisor.exe"
           Get-FileHash "$env:RUNNER_TEMP/phone_supervisor.exe" -Algorithm SHA256 | Format-List | Out-File "$env:RUNNER_TEMP/r5-supervisor-sha256.txt"
+          $clientExe = Join-Path $build 'phone_supervisor_client.exe'
+          $clientSources = @((Join-Path $src 'phone_supervisor_client.cpp'),$rpcC)
+          & cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE "/I$build" "/I$src" $clientSources "/Fe:$clientExe" /link advapi32.lib rpcrt4.lib bcrypt.lib ole32.lib
+          if ($LASTEXITCODE -ne 0) { throw 'R5_CLIENT_COMPILE_FAILED' }
+          Copy-Item $clientExe "$env:RUNNER_TEMP/phone_supervisor_client.exe"
+          Get-FileHash "$env:RUNNER_TEMP/phone_supervisor_client.exe" -Algorithm SHA256 | Format-List | Out-File "$env:RUNNER_TEMP/r5-client-sha256.txt"
       - name: Scan build logs and binaries for secret material
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @("$env:RUNNER_TEMP/r5-oidc-exports.txt","$env:RUNNER_TEMP/r5-oidc-dll-sha256.txt","$env:RUNNER_TEMP/r5-supervisor-sha256.txt")
+          $files = @("$env:RUNNER_TEMP/r5-oidc-exports.txt","$env:RUNNER_TEMP/r5-oidc-dll-sha256.txt","$env:RUNNER_TEMP/r5-supervisor-sha256.txt","$env:RUNNER_TEMP/r5-client-sha256.txt")
           $text = ($files | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content $_ -Raw }) -join "`n"
           if ($text -match '(?i)eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}|client_secret\\s*=\\s*[^<\\s]{12,}|access_token\\s*=\\s*[^<\\s]{12,}') { throw 'R5_BUILD_SECRET_SCAN_FAILED' }
           'R5_BUILD_SECRET_SCAN=PASS' | Out-File "$env:RUNNER_TEMP/r5-build-verdict.txt"
           'R5_RUST_TESTS=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
           'R5_OIDC_DLL=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
           'R5_SUPERVISOR_COMPILE=PASS' | Add-Content "$env:RUNNER_TEMP/r5-build-verdict.txt"
+      - name: Validate R5 PowerShell harness syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $null = [scriptblock]::Create((Get-Content 'scripts/phone-02-r5-oidc-e2e.ps1' -Raw))
+          'R5_POWERSHELL_SYNTAX=PASS' | Out-File "$env:RUNNER_TEMP/r5-powershell-syntax.txt"
+      - name: Verify prior real AppContainer evidence
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json' }
+          $run = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44188631595"
+          $artifacts = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/44188631595/artifacts"
+          $artifact = $artifacts.artifacts | Where-Object { $_.id -eq 14374149971 }
+          if ($run.conclusion -ne 'success' -or -not $artifact -or $artifact.expired -or $artifact.digest -ne 'sha256:69e317dd3b7d280ecef5fef2eed8f2d8308c11af211a0ed017a74d5912c639ea') { throw 'R4_REAL_APPCONTAINER_EVIDENCE_INVALID' }
+          'R4_APP_CONTAINER_EVIDENCE=PASS' | Out-File "$env:RUNNER_TEMP/r4-appcontainer-evidence.txt"
+      - name: Run real R5 HTTPS Keycloak client_credentials and DPAPI-NG integration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'scripts/phone-02-r5-oidc-e2e.ps1' -SupervisorExe "$env:RUNNER_TEMP/phone_supervisor.exe" -OidcDll "$env:RUNNER_TEMP/phone_supervisor_oidc_r5.dll" -ClientExe "$env:RUNNER_TEMP/phone_supervisor_client.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'R5_RUNTIME_E2E_FAILED' }
+      - name: Scan sanitized evidence and set final R5 verdict
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'phone02-r5-evidence'
+          $summaryPath = Join-Path $evidence 'r5-summary.txt'
+          if (-not (Test-Path $summaryPath)) { throw 'R5_SUMMARY_MISSING' }
+          $summary = Get-Content $summaryPath -Raw
+          $serviceLog = Join-Path $evidence 'supervisor-r5.log'
+          $clientLog = Join-Path $evidence 'supervisor-client-common.log'
+          if ($summary -notmatch 'R5_RUNTIME_VERDICT=PASS' -or $summary -notmatch 'SECRET_SCAN=PASS' -or $summary -notmatch 'CLEANUP=PASS') { throw 'R5_RUNTIME_OR_SECRET_OR_CLEANUP_MARKER_MISSING' }
+          if (-not (Test-Path $serviceLog) -or -not (Test-Path $clientLog)) { throw 'R5_SANITIZED_LOGS_MISSING' }
+          $svc = Get-Content $serviceLog -Raw
+          $cli = Get-Content $clientLog -Raw
+          foreach ($marker in @('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_PROTECTED=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS')) {
+            if (-not $svc.Contains($marker)) { throw "R5_SERVICE_MARKER_MISSING_$marker" }
+          }
+          foreach ($marker in @('COMMON_PROCESS_REJECT=PASS','COMMON_PROCESS_TEAM_ROOM_REJECT=PASS')) {
+            if (-not $cli.Contains($marker)) { throw "R5_CLIENT_MARKER_MISSING_$marker" }
+          }
+          if ($summary -notmatch 'RPC_TOKEN_EXPOSURE=PASS' -or $summary -notmatch 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -or $summary -notmatch 'TOKEN_LOG_EXPOSURE=PASS') { throw 'R5_ISOLATION_MARKERS_MISSING' }
+          $files = Get-ChildItem $evidence -File
+          $allText = ($files | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+          if ($allText -match '(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|client_secret\s*=\s*[^<\s]{12,}|access_token\s*=\s*[^<\s]{12,}') { throw 'R5_ARTIFACT_SECRET_SCAN_FAILED' }
+          $lines = Get-Content $summaryPath | Where-Object { $_ -notmatch '^ARTIFACT_SCAN=' -and $_ -notmatch '^R5_VERDICT=' }
+          $lines += 'ARTIFACT_SCAN=PASS'
+          $lines += 'R5_VERDICT=PASS'
+          $lines | Set-Content $summaryPath -Encoding utf8
+          'R5_ARTIFACT_SCAN=PASS' | Out-File "$env:RUNNER_TEMP/r5-artifact-scan.txt"
+          'R5_VERDICT=PASS' | Out-File "$env:RUNNER_TEMP/r5-final-verdict.txt"
       - uses: actions/upload-artifact@v4
+        id: upload-r5
+        if: always()
         with:
-          name: phone02-r5-oidc-build-${{ github.run_id }}
+          name: phone02-r5-oidc-e2e-${{ github.run_id }}
           path: |
+            ${{ runner.temp }}/phone02-r5-evidence/**
             ${{ runner.temp }}/r5-oidc-exports.txt
             ${{ runner.temp }}/r5-oidc-dll-sha256.txt
             ${{ runner.temp }}/r5-supervisor-sha256.txt
+            ${{ runner.temp }}/r5-client-sha256.txt
             ${{ runner.temp }}/r5-build-verdict.txt
-          if-no-files-found: error
+            ${{ runner.temp }}/r5-powershell-syntax.txt
+            ${{ runner.temp }}/r4-appcontainer-evidence.txt
+            ${{ runner.temp }}/r5-artifact-scan.txt
+            ${{ runner.temp }}/r5-final-verdict.txt
+          if-no-files-found: warn
+      - name: Record R5 artifact ID and digest
+        if: always()
+        shell: pwsh
+        env:
+          ARTIFACT_ID: ${{ steps.upload-r5.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-r5.outputs.artifact-digest }}
+        run: |
+          Write-Host "R5_ARTIFACT_ID=$env:ARTIFACT_ID"
+          Write-Host "R5_ARTIFACT_DIGEST=$env:ARTIFACT_DIGEST"
