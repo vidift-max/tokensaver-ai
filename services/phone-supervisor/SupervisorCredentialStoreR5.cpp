@@ -25,9 +25,10 @@ bool IsValidClientSecret(const BYTE* p,size_t n) {
     for(size_t i=0;i<n;i++)if(p[i]<0x21 || p[i]>0x7e)return false;
     return true;
 }
-bool Protect(const BYTE* plain,size_t plainSize,std::vector<BYTE>& blob,std::wstring& reason) {
+bool Protect(const std::wstring& serviceSid,const BYTE* plain,size_t plainSize,std::vector<BYTE>& blob,std::wstring& reason) {
     NCRYPT_DESCRIPTOR_HANDLE descriptor=nullptr;PBYTE output=nullptr;ULONG outputSize=0;
-    SECURITY_STATUS status=NCryptCreateProtectionDescriptor(L"LOCAL=user",0,&descriptor);
+    const std::wstring protectionDescriptor=L"SID="+serviceSid;
+    SECURITY_STATUS status=NCryptCreateProtectionDescriptor(protectionDescriptor.c_str(),0,&descriptor);
     if(status==ERROR_SUCCESS)status=NCryptProtectSecret(descriptor,0,plain,static_cast<ULONG>(plainSize),nullptr,nullptr,&output,&outputSize);
     if(descriptor)NCryptCloseProtectionDescriptor(descriptor);
     if(status!=ERROR_SUCCESS || !output || outputSize==0 || outputSize>kMaxBlobBytes) {
@@ -140,7 +141,7 @@ bool SupervisorCredentialStore::Initialize(std::wstring& reason) {
 bool SupervisorCredentialStore::WriteClientSecret(const SecureBuffer& secret,std::wstring& reason) {
     if(!IsValidClientSecret(secret.data(),secret.size())){reason=L"CLIENT_SECRET_FORMAT_INVALID";return false;}
     if(!Initialize(reason))return false;
-    std::vector<BYTE> blob;if(!Protect(secret.data(),secret.size(),blob,reason))return false;
+    std::vector<BYTE> blob;if(!Protect(serviceSid_,secret.data(),secret.size(),blob,reason))return false;
     const std::wstring temp=filePath_+L".tmp";
     HANDLE file=CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_HIDDEN|FILE_FLAG_WRITE_THROUGH,nullptr);
     if(file==INVALID_HANDLE_VALUE){SecureZeroMemory(blob.data(),blob.size());reason=L"STORE_TEMP_CREATE_FAILED";return false;}
