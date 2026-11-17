@@ -491,8 +491,8 @@ finally {
   'FAKE-SESSION-TOKEN-NOT-FOR-EXPORT',
   'FAKE-ENDPOINT-CREDENTIAL-NOT-FOR-EXPORT',
   'P2.37-TEST-ONLY-ASSERTION',
-  '(?i)(client_secret|access_token|refresh_token|endpoint_credential|operator_key|password)\\s*[:=]\\s*[A-Za-z0-9_./+=-]{8,}',
-  'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}'
+  '(?i)(client_secret|access_token|refresh_token|endpoint_credential|operator_key|password)\s*[:=]\s*[A-Za-z0-9_./+=-]{8,}',
+  'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
  )
  foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue){
   $raw=[IO.File]::ReadAllText($file.FullName)
