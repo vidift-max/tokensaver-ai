@@ -298,7 +298,7 @@ finally {
   try{$k=[System.Security.Cryptography.CngKey]::Open($key.Name,$key.Provider,[System.Security.Cryptography.CngKeyOpenOptions]::MachineKey);$k.Delete();$k.Dispose()}catch{}
   try{$k2=[System.Security.Cryptography.CngKey]::Open($key.Name,$key.Provider,[System.Security.Cryptography.CngKeyOpenOptions]::MachineKey);$k2.Dispose();$p238KeysGone=$false}catch{}
  }
- $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$privateKeyGone=($null -eq $testPrivateKeyUniqueName -or $null -eq $testPrivateKeyProvider);$tempGone=$false
+ $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$privateKeyGone=($null -eq $cert);$tempGone=$false
  if($created){
   & sc.exe stop $service 2>&1|Out-Host
   $deadline=(Get-Date).AddSeconds(20);$state=''
