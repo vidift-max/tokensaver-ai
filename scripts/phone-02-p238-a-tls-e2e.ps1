@@ -456,7 +456,7 @@ finally {
  $fallbackLogPath=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
  Remove-Item $fallbackLogPath -Force -ErrorAction SilentlyContinue
  $fallbackLogGone=(-not(Test-Path $fallbackLogPath))
- if($app){$clientDataPath=Join-Path $env:LOCALAPPDATA ('Packages\\'+$app.PackageFamilyName);if(Test-Path $clientDataPath){Remove-Item $clientDataPath -Recurse -Force -ErrorAction SilentlyContinue};$clientDataGone=(-not(Test-Path $clientDataPath))}
+ if($app){$clientDataPath=Join-Path (Join-Path $env:LOCALAPPDATA 'Packages') $app.PackageFamilyName;if(Test-Path $clientDataPath){Remove-Item $clientDataPath -Recurse -Force -ErrorAction SilentlyContinue};$clientDataGone=(-not(Test-Path $clientDataPath))}
  if($cert){
   foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
    Remove-Item ($store+'\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue
