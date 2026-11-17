@@ -20,6 +20,10 @@ on:
       - '!services/phone-supervisor/TeamRoomScenarioGateR4.h'
       - '!services/phone-supervisor/phone_supervisor_r4_tests.cpp'
       - '!scripts/phone-02-p238-a-tls-e2e.ps1'
+      # Round 5 has a dedicated OIDC build and runtime workflow.
+      - '!services/phone-supervisor/oidc-r5/**'
+      - '!services/phone-supervisor/SupervisorCredentialStoreR5.*'
+      - '!services/phone-supervisor/SupervisorCredentialProvisioningR5.*'
   workflow_dispatch:
     inputs:
       target_branch:
