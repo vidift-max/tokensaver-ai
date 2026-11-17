@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <algorithm>
 #include <ncrypt.h>
 #include <ncrypt_protect.h>
 #include <filesystem>
@@ -118,6 +119,9 @@ int main() {
     if(!validRoundTrip.empty())SecureZeroMemory(validRoundTrip.data(),validRoundTrip.size());
     if(!invalidPlain.empty())SecureZeroMemory(invalidPlain.data(),invalidPlain.size());
     if(!validPlain.empty())SecureZeroMemory(validPlain.data(),validPlain.size());
+    if(!invalidBlob.empty())SecureZeroMemory(invalidBlob.data(),invalidBlob.size());
+    if(!validBlob.empty())SecureZeroMemory(validBlob.data(),validBlob.size());
+    if(!corruptBlob.empty())SecureZeroMemory(corruptBlob.data(),corruptBlob.size());
     std::filesystem::remove_all(temp,ec);
     ok &= Check(!std::filesystem::exists(temp),"R4_CLEANUP");
     ok &= Check(ok,"R4_FAIL_CLOSED_POLICY");
