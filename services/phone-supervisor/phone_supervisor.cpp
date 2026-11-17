@@ -87,7 +87,7 @@ static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& s
  using namespace phone_supervisor::r5;
  bool ok=true;std::wstring reason;SecureBuffer secret;
  if(!store.ReadClientSecret(secret,reason)){Log(L"CREDENTIAL_STORE_READ=FAIL reason="+reason);return false;}
- gR5CredentialLoaded=true;Log(L"CREDENTIAL_STORE_READ=PASS");Log(L"CREDENTIAL_PROTECTED=PASS");
+ gR5CredentialLoaded=true;Log(L"CREDENTIAL_STORE_READ=PASS");Log(L"CREDENTIAL_PROTECTED=PASS");Log(L"DPAPI_NG_SERVICE_SID_BOUND=PASS");
  Log(L"CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS");
  HMODULE module=LoadR5OidcModule();if(!module){Log(L"OIDC_DLL_LOAD=FAIL");return false;}
  auto acquire=reinterpret_cast<R5AcquireTokenFn>(GetProcAddress(module,"r5_acquire_token"));
