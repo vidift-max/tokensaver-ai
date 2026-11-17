@@ -5,7 +5,7 @@ namespace phone_supervisor {
 namespace {
 constexpr wchar_t kHost[] = L"team-room.p238.test";
 constexpr INTERNET_PORT kPort = 8443;
-constexpr wchar_t kPath[] = L"/health";
+constexpr wchar_t kPath[] = L"/health/live";
 class Handle final {
 public:
  explicit Handle(HINTERNET h=nullptr):h_(h){}
