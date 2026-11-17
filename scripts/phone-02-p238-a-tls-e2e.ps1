@@ -85,16 +85,17 @@ function Start-P238TeamRoom($leaf,$redirect){
   $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
   # Independent observer connection: records the actual PostgreSQL endpoint and
   # identity used by this diagnostic query, without exposing any credential.
-  $dbObserver=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT current_database(), COALESCE(inet_server_addr()::text,''), inet_server_port(), pg_backend_pid(), current_user"
+  $dbObserver=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT current_database(), COALESCE(inet_server_addr()::text,''), COALESCE(host(inet_server_addr()),''), inet_server_port(), pg_backend_pid(), current_user"
   $observerExit=$LASTEXITCODE
   if($observerExit -ne 0){throw 'Could not inspect Team Room PostgreSQL observer connection'}
   $observerFields=@("$dbObserver".Trim() -split '\|')
   Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_DATABASE='+$observerFields[0])
   Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_ADDR='+$observerFields[1])
-  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_PORT='+$observerFields[2])
-  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_BACKEND_PID='+$observerFields[3])
-  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_USER='+$observerFields[4])
-  Check ($observerFields.Count -eq 5 -and $observerFields[0] -eq 'postgres' -and $observerFields[1] -eq '127.0.0.1' -and $observerFields[2] -eq '5432' -and $observerFields[4] -eq 'postgres') 'TEAM_ROOM_POSTGRES_OBSERVER_ENDPOINT'
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_HOST='+$observerFields[2])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_PORT='+$observerFields[3])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_BACKEND_PID='+$observerFields[4])
+  Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_USER='+$observerFields[5])
+  Check ($observerFields.Count -eq 6 -and $observerFields[0] -eq 'postgres' -and $observerFields[1] -eq '127.0.0.1/32' -and $observerFields[2] -eq '127.0.0.1' -and $observerFields[3] -eq '5432' -and [int]$observerFields[4] -gt 0 -and $observerFields[5] -eq 'postgres') 'TEAM_ROOM_POSTGRES_OBSERVER_ENDPOINT'
   # Match the backend PID obtained by the Team Room's own pool against
   # pg_stat_activity. This independently proves the same live connection,
   # its database, role, application_name and client address.
