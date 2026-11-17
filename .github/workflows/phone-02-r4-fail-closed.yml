@@ -18,7 +18,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: phone02-p238b-r4-fail-closed-${{ github.ref }}
+  group: phone02-p238b-r4-fail-closed-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -52,9 +52,21 @@ jobs:
           $src = Join-Path (Join-Path (Join-Path $env:GITHUB_WORKSPACE 'services') 'phone-supervisor') 'phone_supervisor_r4_tests.cpp'
           cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE $src /Fe:$testExe ncrypt.lib
           if ($LASTEXITCODE -ne 0) { throw 'R4 policy test compilation failed' }
-          & $testExe *> (Join-Path $root 'r4-policy-tests.log')
-          if ($LASTEXITCODE -ne 0) { throw 'R4 fail-closed policy tests failed' }
-          Get-Content (Join-Path $root 'r4-policy-tests.log')
+          $testLog = Join-Path $root 'r4-policy-tests.log'
+          $testErr = Join-Path $root 'r4-policy-tests.err'
+          Remove-Item $testLog,$testErr -Force -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath $testExe -PassThru -NoNewWindow -RedirectStandardOutput $testLog -RedirectStandardError $testErr
+          if (-not $proc.WaitForExit(90000)) {
+            $proc.Kill(); $proc.WaitForExit()
+            Get-Content $testLog -ErrorAction SilentlyContinue
+            throw 'R4_POLICY_TEST_TIMEOUT_AFTER_90_SECONDS'
+          }
+          if ($proc.ExitCode -ne 0) {
+            Get-Content $testLog -ErrorAction SilentlyContinue
+            Get-Content $testErr -ErrorAction SilentlyContinue
+            throw 'R4 fail-closed policy tests failed'
+          }
+          Get-Content $testLog
           if ((Get-Content (Join-Path $root 'r4-policy-tests.log') -Raw) -notmatch 'R4_FAIL_CLOSED_POLICY=PASS') {
             throw 'R4 policy test completion marker missing'
           }
