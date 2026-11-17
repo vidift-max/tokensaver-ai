@@ -15,6 +15,8 @@ $scopeName='team_room:connect'
 $audience='team-room-api'
 $issuer="https://keycloak.p238.test:8443/realms/$realmName"
 $base='https://keycloak.p238.test:8443'
+$pgDatabase="keycloak_p238b_r5_$env:GITHUB_RUN_ID"
+$pgStartedByUs=$false
 $pgPassword=[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $adminPassword=[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $adminUser='r5-bootstrap-admin'
@@ -65,7 +67,7 @@ function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[stri
  $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='false';$env:KC_HTTPS_PORT='8443'
  $env:KC_HTTPS_CERTIFICATE_FILE=$cert;$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key
  $env:KC_HOSTNAME='https://keycloak.p238.test:8443';$env:KC_HOSTNAME_STRICT='true'
- $env:KC_DB='postgres';$env:KC_DB_URL='jdbc:postgresql://127.0.0.1:5432/keycloak_p238b?ApplicationName=keycloak-r5'
+ $env:KC_DB='postgres';$env:KC_DB_URL="jdbc:postgresql://127.0.0.1:5432/$pgDatabase?ApplicationName=keycloak-r5"
  $env:KC_DB_USERNAME='postgres';$env:KC_DB_PASSWORD=$pgPassword
  if($bootstrapAdmin){$env:KC_BOOTSTRAP_ADMIN_USERNAME=$adminUser;$env:KC_BOOTSTRAP_ADMIN_PASSWORD=$adminPassword}
  $kcArgs='start-dev --db=postgres --http-enabled=false --hostname-strict=true'
@@ -77,7 +79,6 @@ function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[stri
  Remove-Item Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_PORT,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD -ErrorAction SilentlyContinue
  $deadline=(Get-Date).AddSeconds(240);$ready=$false
  do{
-  if($p.HasExited){throw 'KEYCLOAK_EXITED_BEFORE_HTTPS_READY'}
   try{$d=Invoke-RestMethod -Uri "$issuer/.well-known/openid-configuration" -TimeoutSec 4;if($d.issuer -ceq $issuer){$ready=$true}}catch{}
   if(-not $ready){Start-Sleep -Seconds 2}
  }while(-not $ready -and (Get-Date)-lt $deadline)
@@ -107,14 +108,14 @@ try{
   $pgService=Get-Service|Where-Object {$_.Name -match '^postgresql.*16'}|Select-Object -First 1
  }
  if(-not $pgService){throw 'POSTGRESQL_SERVICE_MISSING'}
- if($pgService.Status -ne 'Running'){Start-Service -Name $pgService.Name}
+ if($pgService.Status -ne 'Running'){Start-Service -Name $pgService.Name;$pgStartedByUs=$true}
  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
  if(-not(Test-Path $psql)){throw 'POSTGRESQL_PSQL_MISSING'}
  $pgDeadline=(Get-Date).AddSeconds(60);$pgReady=$false
  do{$env:PGPASSWORD=$pgPassword;& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc 'SELECT 1' 2>$null;$pgReady=($LASTEXITCODE -eq 0);if(!$pgReady){Start-Sleep -Seconds 2}}while(!$pgReady -and (Get-Date)-lt $pgDeadline)
  Mark 'POSTGRESQL_NATIVE_SERVICE_READY' $pgReady
  $env:PGPASSWORD=$pgPassword
- & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE keycloak_p238b' 2>&1|Out-Null
+ & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $pgDatabase" 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'KEYCLOAK_DATABASE_CREATE_FAILED'}
  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
@@ -195,7 +196,7 @@ try{
  $realmText=[IO.File]::ReadAllText($importFile)
  Mark 'CLIENT_SECRET_NOT_IN_REALM_IMPORT_FILE' (-not $realmText.Contains($oidcClientSecret))
  $env:PGPASSWORD=$pgPassword
- $sqlRealm=& $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM realm WHERE name='$realmName'" 2>$null
+ $sqlRealm=& $psql -h 127.0.0.1 -p 5432 -U postgres -d $pgDatabase -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM realm WHERE name='$realmName'" 2>$null
  $sqlClient=& $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM client WHERE client_id='$clientId' AND enabled=true AND public_client=false AND service_accounts_enabled=true" 2>$null
  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
  Mark 'KEYCLOAK_POSTGRES_REALM_PERSISTED' ([int]$sqlRealm -eq 1 -and [int]$sqlClient -eq 1)
@@ -325,11 +326,11 @@ finally{
  if($pgService){
   try{
    $env:PGPASSWORD=$pgPassword
-   & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS keycloak_p238b WITH (FORCE)'|Out-Null
+   & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $pgDatabase WITH (FORCE)"|Out-Null
    if($LASTEXITCODE -ne 0){throw 'DROP_DATABASE_FAILED'}
    $cleanup.Add('POSTGRESQL_DATABASE_DROP=PASS')
   }catch{$cleanup.Add('POSTGRESQL_DATABASE_DROP=FAIL')}
-  try{Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;Start-Sleep -Seconds 2;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')}catch{$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}
+  if($pgInstalled -or $pgStartedByUs){try{Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;Start-Sleep -Seconds 2;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')}catch{$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}}else{$cleanup.Add('POSTGRESQL_SERVICE_RESTORED=PASS')}
  }
  if($pgInstalled){
   try{& choco uninstall postgresql16 -y --no-progress --limit-output|Out-Null;if($LASTEXITCODE -ne 0){throw 'UNINSTALL_FAILED'};$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')}catch{$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL')}
