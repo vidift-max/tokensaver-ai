@@ -1,0 +1,145 @@
+name: Phone-02 P2.38-B Round 4 fail-closed Supervisor
+
+on:
+  push:
+    branches:
+      - mission/phone-02-p238-b-oidc
+    paths:
+      - .github/workflows/phone-02-r4-fail-closed.yml
+      - services/phone-supervisor/phone_supervisor.cpp
+      - services/phone-supervisor/phone_supervisor_client.cpp
+      - services/phone-supervisor/TeamRoomScenarioGateR4.h
+      - services/phone-supervisor/phone_supervisor_r4_tests.cpp
+      - scripts/phone-02-p238-a-tls-e2e.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: phone02-p238b-r4-fail-closed-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-appcontainer-r4:
+    name: Windows MSIX AppContainer Supervisor R4 fail-closed
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact isolated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install stable Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile and run R4 fail-closed policy tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $vswhere = Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $testExe = Join-Path $env:RUNNER_TEMP 'phone-supervisor-r4-tests.exe'
+          $src = Join-Path $env:GITHUB_WORKSPACE 'services\phone-supervisor\phone_supervisor_r4_tests.cpp'
+          $cmd = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /std:c++20 "' + $src + '" /Fe:"' + $testExe + '"'
+          & cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw 'R4 policy test compilation failed' }
+          & $testExe *> (Join-Path $root 'r4-policy-tests.log')
+          if ($LASTEXITCODE -ne 0) { throw 'R4 fail-closed policy tests failed' }
+          Get-Content (Join-Path $root 'r4-policy-tests.log')
+          if ((Get-Content (Join-Path $root 'r4-policy-tests.log') -Raw) -notmatch 'R4_FAIL_CLOSED_POLICY=PASS') {
+            throw 'R4 policy test completion marker missing'
+          }
+          'R4_POLICY_TESTS=PASS' | Add-Content (Join-Path $root 'r4-policy-tests.log')
+
+      - name: Run real MSIX AppContainer to Local RPC to Supervisor HTTPS fail-closed E2E
+        shell: pwsh
+        env:
+          P238_R4_FAIL_CLOSED: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host ('ROUND=4/12')
+          Write-Host ('R4_COMMIT=' + $env:GITHUB_SHA)
+          & .\scripts\phone-02-p238-a-tls-e2e.ps1
+
+      - name: Verify R4 markers, secret isolation, cleanup and provenance
+        if: always()
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $policy = if (Test-Path (Join-Path $evidence 'r4-policy-tests.log')) { Get-Content (Join-Path $evidence 'r4-policy-tests.log') -Raw } else { '' }
+          $r4 = if (Test-Path (Join-Path $evidence 'r4-summary.txt')) { Get-Content (Join-Path $evidence 'r4-summary.txt') -Raw } else { '' }
+          $allText = (Get-ChildItem $evidence -File | ForEach-Object { Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue }) -join [Environment]::NewLine
+          $secretPattern = '(?i)(client_secret|access_token|refresh_token|endpoint_credential|operator_key|password)\s*[:=]\s*[A-Za-z0-9_./+=-]{8,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|FAKE-SESSION-TOKEN-NOT-FOR-EXPORT|FAKE-ENDPOINT-CREDENTIAL-NOT-FOR-EXPORT|P2.37-TEST-ONLY-ASSERTION'
+          $secretScan = ($allText -notmatch $secretPattern)
+          $required = @(
+            'R4_SECRET_STORE_ABSENT=PASS',
+            'R4_SECRET_ENTRY_MISSING=PASS',
+            'R4_SECRET_CIPHERTEXT_CORRUPT=PASS',
+            'R4_SECRET_PLAINTEXT_INVALID=PASS',
+            'R4_VALID_SECRET_WITHOUT_REAL_SESSION=PASS',
+            'R4_HEALTH_SUCCESS_NOT_AUTH=PASS',
+            'R4_FAKE_MODE_NOT_AUTH=PASS',
+            'R4_UNAUTHORIZED_LOCAL_CALLER=PASS',
+            'R4_HEALTH_RESULT_CANNOT_CHANGE_AUTHORIZATION=PASS',
+            'ACCESS_TOKEN_REQUESTED=NO',
+            'AUTH_EXCHANGE_CALLED=NO'
+          )
+          $policyPass = $true
+          foreach ($m in $required) { if (-not $policy.Contains($m)) { $policyPass = $false } }
+          $scriptPass = ($r4 -match 'FAIL_CLOSED=PASS' -and $r4 -match 'FALSE_SUCCESS_REMOVED=PASS' -and $r4 -match 'HEALTH_NOT_AUTH=PASS' -and $r4 -match 'SECRET_ISOLATION=PASS' -and $r4 -match 'CLEANUP=PASS' -and $r4 -match 'ACCESS_TOKEN_REQUESTED=NO' -and $r4 -match 'AUTH_EXCHANGE_CALLED=NO' -and $r4 -match 'R4_VERDICT=PASS')
+          $artifactScan = $secretScan
+          $verdict = if ($policyPass -and $scriptPass -and $artifactScan) { 'PASS' } else { 'BLOCKED' }
+          @(
+            'ROUND=4/12'
+            'FAIL_CLOSED=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'FALSE_SUCCESS_REMOVED=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'HEALTH_NOT_AUTH=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'SECRET_ISOLATION=' + $(if($secretScan){'PASS'}else{'FAIL'})
+            'CLEANUP=' + $(if($scriptPass){'PASS'}else{'FAIL'})
+            'ACCESS_TOKEN_REQUESTED=NO'
+            'AUTH_EXCHANGE_CALLED=NO'
+            'R4_POLICY_TESTS=' + $(if($policyPass){'PASS'}else{'FAIL'})
+            'ARTIFACT_SCAN=' + $(if($artifactScan){'PASS'}else{'FAIL'})
+            'R4_VERDICT=' + $verdict
+            'run_id=' + $env:GITHUB_RUN_ID
+            'sha=' + $env:GITHUB_SHA
+            'branch=' + $env:GITHUB_REF
+          ) | Set-Content (Join-Path $evidence 'r4-final-summary.txt') -Encoding ASCII
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $jobsUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs?per_page=100"
+          try {
+            $jobs = Invoke-RestMethod -Method Get -Uri $jobsUri -Headers $headers
+            $job = $jobs.jobs | Where-Object { $_.name -eq 'Windows MSIX AppContainer Supervisor R4 fail-closed' } | Select-Object -First 1
+            if ($job) { "job_id=$($job.id)" | Add-Content (Join-Path $evidence 'r4-final-summary.txt') }
+          } catch { 'job_id=UNAVAILABLE' | Add-Content (Join-Path $evidence 'r4-final-summary.txt') }
+          if ($verdict -ne 'PASS') { throw 'R4 acceptance markers or artifact scan failed' }
+
+      - name: Upload sanitized R4 evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-p238b-r4-fail-closed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phone02-p238a-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Record R4 artifact locator and digest
+        if: always()
+        shell: pwsh
+        run: |
+          "R4_ARTIFACT_ID=${{ steps.upload.outputs.artifact-id }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "R4_ARTIFACT_URL=${{ steps.upload.outputs.artifact-url }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "R4_ARTIFACT_SHA256=${{ steps.upload.outputs.artifact-digest }}" | Add-Content $env:GITHUB_STEP_SUMMARY
