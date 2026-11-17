@@ -361,6 +361,9 @@ public static class P238AActivator {
  Copy-Item $clientLog.FullName (Join-Path $evidence 'A-valid-appcontainer.log') -Force
  Copy-Item $svcLog (Join-Path $evidence 'A-valid-supervisor.log') -Force
  $teamRoomBridgePassed=$true
+ Restart-P238Supervisor $p238Endpoint '1'
+ Invoke-P238AppContainerScenario 'A2-fake-mode-non-authoritative' 'FAKE_FAIL_CLOSED' $null
+ Restart-P238Supervisor $p238Endpoint '0'
  Start-P238TeamRoom $invalidLeaf $false $false;Restart-P238Supervisor $p238Endpoint
  Invoke-P238AppContainerScenario 'B-invalid-server-certificate' 'REJECT' 'TEAM_ROOM_HTTPS_TLS=REJECT reason=HTTPS_(SEND|RECEIVE)_TLS_OR_TRANSPORT'
  Start-P238TeamRoom $wrongHostLeaf $false $false;Restart-P238Supervisor $p238Endpoint
