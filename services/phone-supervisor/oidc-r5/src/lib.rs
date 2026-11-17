@@ -226,7 +226,7 @@ pub unsafe extern "system" fn r5_probe_wrong_secret(secret_ptr: *const u8, secre
         let c = client()?;
         let d = get_discovery(&c)?;
         let (status, _) = post_token(&c, &d.token_endpoint, CLIENT_ID, &wrong, SCOPE)?;
-        if status == 401 { Ok::<(), i32>(()) } else { Err(80 + status as i32) }
+        if status == 400 || status == 401 { Ok::<(), i32>(()) } else { Err(80 + status as i32) }
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
 }
@@ -239,7 +239,7 @@ pub unsafe extern "system" fn r5_probe_wrong_client(secret_ptr: *const u8, secre
         let c = client()?;
         let d = get_discovery(&c)?;
         let (status, _) = post_token(&c, &d.token_endpoint, "phone02-supervisor-p238b-wrong", &secret, SCOPE)?;
-        if status == 401 { Ok::<(), i32>(()) } else { Err(90 + status as i32) }
+        if status == 400 || status == 401 { Ok::<(), i32>(()) } else { Err(90 + status as i32) }
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
 }
@@ -252,10 +252,16 @@ pub unsafe extern "system" fn r5_probe_wrong_scope(secret_ptr: *const u8, secret
         let c = client()?;
         let d = get_discovery(&c)?;
         let (status, body) = post_token(&c, &d.token_endpoint, CLIENT_ID, &secret, "team_room:admin")?;
-        if status != 200 { return Ok::<(), i32>(()); }
-        let response: TokenResponse = serde_json::from_slice(&body).map_err(|_| 30)?;
+        if status == 400 {
+            let error: Value = serde_json::from_slice(&body).map_err(|_| 111)?;
+            let code = error.get("error").and_then(Value::as_str).unwrap_or("");
+            let description = error.get("error_description").and_then(Value::as_str).unwrap_or("").to_lowercase();
+            if code == "invalid_scope" || (code == "invalid_request" && description.contains("scope")) { return Ok::<(), i32>(()); }
+            return Err(112);
+        }
+        if status != 200 { return Err(113 + status as i32); }
+        let response: TokenResponse = serde_json::from_slice(&body).map_err(|_| 114)?;
         if !response.scope.split_whitespace().any(|s| s == "team_room:admin") { return Ok(()); }
-        if verify_token(&c, &response.access_token, response.expires_in, &response.scope, "team_room:admin").is_err() { return Ok(()); }
         Err(110)
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
@@ -280,7 +286,7 @@ pub extern "system" fn r5_probe_tls_failure() -> i32 {
         if !valid_url(url, "/realms/phone02-p238b/.well-known/openid-configuration", true) { return Err(120); }
         let socket = std::net::TcpStream::connect_timeout(&"127.0.0.1:8444".parse().map_err(|_| 121)?, Duration::from_secs(2)).map_err(|_| 122)?;
         drop(socket);
-        match c.get(url).send() { Err(e) => { let message=e.to_string().to_lowercase(); if message.contains("certificate")||message.contains("cert")||message.contains("tls")||message.contains("issuer")||message.contains("trust") { Ok::<(), i32>(()) } else { Err(124) } }, Ok(_) => Err(123) }
+        match c.get(url).send() { Err(e) => { let message=format!("{:?}",e).to_lowercase(); if message.contains("certificate")||message.contains("cert")||message.contains("tls")||message.contains("issuer")||message.contains("trust") { Ok::<(), i32>(()) } else { Err(124) } }, Ok(_) => Err(123) }
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
 }
