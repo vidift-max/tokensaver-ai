@@ -18,6 +18,7 @@ extern "C" SECURITY_STATUS WINAPI NCryptUnprotectSecret(NCRYPT_DESCRIPTOR_HANDLE
 namespace phone_supervisor::r5 {
 namespace {
 constexpr size_t kMaxSecretBytes = 256;
+constexpr size_t kMaxSecureBufferBytes = 16384;
 constexpr size_t kMaxBlobBytes = 4096;
 bool IsValidClientSecret(const BYTE* p,size_t n) {
     if(!p || n<32 || n>kMaxSecretBytes)return false;
@@ -77,7 +78,7 @@ SecureBuffer& SecureBuffer::operator=(SecureBuffer&& other) noexcept {
     if(this!=&other){Clear();bytes_=std::move(other.bytes_);locked_=other.locked_;other.locked_=false;}return *this;
 }
 bool SecureBuffer::Assign(const BYTE* data,size_t size) {
-    Clear();if(!data || size==0 || size>kMaxSecretBytes)return false;
+    Clear();if(!data || size==0 || size>kMaxSecureBufferBytes)return false;
     try{bytes_.assign(data,data+size);}catch(...){return false;}
     locked_=VirtualLock(bytes_.data(),bytes_.size())!=FALSE;
     return true;
