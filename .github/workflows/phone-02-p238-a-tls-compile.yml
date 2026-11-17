@@ -1,0 +1,59 @@
+name: Phone-02 P2.38-A Supervisor HTTPS TLS compile and policy
+on:
+  push:
+    branches:
+      - mission/phone-02-controlled-integration
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-compile-policy:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact event commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate RPC stubs, compile and run endpoint policy tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $x86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+          $vswhere = Join-Path $x86 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $sdk = Get-ChildItem (Join-Path $x86 'Windows Kits\10\bin') -Directory | Where-Object Name -Match '^10\.' | Sort-Object Name -Descending | Select-Object -First 1
+          $midl = Join-Path $sdk.FullName 'x64\midl.exe'
+          foreach ($p in @($vcvars,$midl)) { if (-not (Test-Path $p)) { throw "Missing tool: $p" } }
+          $build = Join-Path $env:RUNNER_TEMP 'p238a-build'
+          New-Item -ItemType Directory -Force $build | Out-Null
+          $src = Join-Path $env:GITHUB_WORKSPACE 'services\phone-supervisor'
+          $midlCmd = '"' + $vcvars + '" && "' + $midl + '" /nologo /env x64 /h "' + (Join-Path $build 'phone_supervisor_rpc.h') + '" /iid "' + (Join-Path $build 'phone_supervisor_rpc_i.c') + '" /out "' + $build + '" "' + (Join-Path $src 'phone_supervisor_rpc.idl') + '"'
+          & cmd.exe /d /s /c $midlCmd
+          if ($LASTEXITCODE -ne 0) { throw 'MIDL failed' }
+          $svc = Join-Path $build 'supervisor.exe'
+          $svcCmd = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"' + $build + '" "' + (Join-Path $src 'phone_supervisor.cpp') + '" "' + (Join-Path $src 'RealSupervisorTeamRoomHttpsAdapter.cpp') + '" "' + (Join-Path $build 'phone_supervisor_rpc_s.c') + '" /Fe:"' + $svc + '" advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib'
+          & cmd.exe /d /s /c $svcCmd
+          if ($LASTEXITCODE -ne 0) { throw 'Supervisor/WinHTTP compile failed' }
+          $cli = Join-Path $build 'client.exe'
+          $cliCmd = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"' + $build + '" "' + (Join-Path $src 'phone_supervisor_client.cpp') + '" "' + (Join-Path $build 'phone_supervisor_rpc_c.c') + '" /Fe:"' + $cli + '" rpcrt4.lib ole32.lib'
+          & cmd.exe /d /s /c $cliCmd
+          if ($LASTEXITCODE -ne 0) { throw 'RPC client compile failed' }
+          $tests = Join-Path $build 'tls-policy-tests.exe'
+          $testCmd = '"' + $vcvars + '" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"' + $src + '" "' + (Join-Path $src 'phone_supervisor_tls_policy_tests.cpp') + '" "' + (Join-Path $src 'RealSupervisorTeamRoomHttpsAdapter.cpp') + '" /Fe:"' + $tests + '" winhttp.lib'
+          & cmd.exe /d /s /c $testCmd
+          if ($LASTEXITCODE -ne 0) { throw 'TLS policy tests compile failed' }
+          & $tests
+          if ($LASTEXITCODE -ne 0) { throw 'TLS endpoint policy tests failed' }
+          Get-FileHash $svc,$cli,$tests -Algorithm SHA256 | Format-Table -AutoSize
+          New-Item -ItemType Directory -Force 'p238a-evidence' | Out-Null
+          Copy-Item $tests 'p238a-evidence\tls-policy-tests.exe'
+          'IMPLEMENTED_POLICY_TESTS_EXECUTED_TLS_HANDSHAKE_NOT_PROVEN' | Set-Content 'p238a-evidence\classification.txt'
+      - name: Upload P2.38-A compile and policy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-p238a-tls-compile-policy
+          path: p238a-evidence
+          if-no-files-found: warn

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include "phone_supervisor_rpc.h"
 #include "SupervisorTeamRoomAdapter.h"
+#include "RealSupervisorTeamRoomHttpsAdapter.h"
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Bcrypt.lib")
 #pragma comment(lib,"Advapi32.lib")
@@ -27,7 +28,7 @@ static const ULONGLONG SESSION_IDLE_MS=60000;
 static SERVICE_STATUS_HANDLE gStatusHandle=nullptr;
 static SERVICE_STATUS gStatus{};
 static HANDLE gStopEvent=nullptr;
-static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gRpcAllowedUserSid,gServiceSid,gExpectedUserSid,gTeamRoomFakeMode,gTeamRoomTestPhoneId,gTeamRoomTestEndpointId,gTeamRoomTestRecipientId;
+static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gRpcAllowedUserSid,gServiceSid,gExpectedUserSid,gTeamRoomFakeMode,gTeamRoomTestPhoneId,gTeamRoomTestEndpointId,gTeamRoomTestRecipientId,gTeamRoomHttpsEndpoint;
 static std::mutex gMutex;static std::mutex gLogMutex;static HANDLE gLogHandle=INVALID_HANDLE_VALUE;
 static bool gStopping=false;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
@@ -197,7 +198,16 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
  if(!adapter.credentialsConfined()){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS");
  if(!adapter.detach(attachment)||adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_DETACH=PASS");
  if(!adapter.revoke(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_REVOKE=PASS");
- Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");*status=RPC_OK;
+ Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");
+ if(!gTeamRoomHttpsEndpoint.empty()){
+  phone_supervisor::RealSupervisorTeamRoomHttpsAdapter realAdapter;DWORD httpStatus=0;std::wstring tlsReason;
+  if(!realAdapter.ProbeHealth(gTeamRoomHttpsEndpoint,httpStatus,tlsReason)){
+   Log(L"TEAM_ROOM_HTTPS_TLS=REJECT reason="+tlsReason+L" http_status="+std::to_wstring(httpStatus));
+   *status=RPC_INTERNAL_ERROR;return;
+  }
+  Log(L"TEAM_ROOM_HTTPS_TLS=PASS endpoint_policy=ALLOWLIST certificate_chain=VALID hostname=VALID http_status="+std::to_wstring(httpStatus));
+ }
+ *status=RPC_OK;
 }
 
 static void SetState(DWORD state,DWORD error=NO_ERROR,DWORD hint=0){gStatus.dwServiceType=SERVICE_WIN32_OWN_PROCESS;gStatus.dwCurrentState=state;gStatus.dwWin32ExitCode=error;gStatus.dwWaitHint=hint;gStatus.dwControlsAccepted=state==SERVICE_RUNNING?SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN:0;if(gStatusHandle)SetServiceStatus(gStatusHandle,&gStatus);}
@@ -213,7 +223,7 @@ static RPC_STATUS RPC_ENTRY SupervisorSecurityCallback(RPC_IF_HANDLE,void* conte
 static void WINAPI ServiceMain(DWORD,LPWSTR*){
  gStatusHandle=RegisterServiceCtrlHandlerW(L"TokenSaverPhone02Supervisor",Handler);if(!gStatusHandle)return;SetUnhandledExceptionFilter(SupervisorUnhandledException);SetState(SERVICE_START_PENDING,NO_ERROR,15000);int argc=0;LPWSTR*argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv||argc<3){if(argv)LocalFree(argv);SetState(SERVICE_STOPPED,ERROR_INVALID_PARAMETER);return;}gConfigPath=argv[2];LocalFree(argv);gLogPath=gConfigPath+L".log";gLogHandle=CreateFileW(gLogPath.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(gLogHandle!=INVALID_HANDLE_VALUE){LARGE_INTEGER logSize{};if(GetFileSizeEx(gLogHandle,&logSize)&&logSize.QuadPart==0){const BYTE bom[2]={0xFF,0xFE};DWORD bomWritten=0;WriteFile(gLogHandle,bom,sizeof(bom),&bomWritten,nullptr);FlushFileBuffers(gLogHandle);}}
- gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gRpcAllowedAppSid=ReadValue(L"RPC_CLIENT_APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");gRpcAllowedUserSid=ReadValue(L"RPC_CLIENT_USER_SID");gTeamRoomFakeMode=ReadValue(L"TEAM_ROOM_FAKE_MODE");gTeamRoomTestPhoneId=ReadValue(L"TEAM_ROOM_TEST_AI_PHONE_ID");gTeamRoomTestEndpointId=ReadValue(L"TEAM_ROOM_TEST_ENDPOINT_ID");gTeamRoomTestRecipientId=ReadValue(L"TEAM_ROOM_TEST_RECIPIENT_ID");
+ gExpectedFamily=ReadValue(L"PACKAGE_FAMILY");gExpectedFull=ReadValue(L"PACKAGE_FULL");gExpectedAppSid=ReadValue(L"APPCONTAINER_SID");gRpcAllowedAppSid=ReadValue(L"RPC_CLIENT_APPCONTAINER_SID");gServiceSid=ReadValue(L"SERVICE_SID");gExpectedUserSid=ReadValue(L"USER_SID");gRpcAllowedUserSid=ReadValue(L"RPC_CLIENT_USER_SID");gTeamRoomFakeMode=ReadValue(L"TEAM_ROOM_FAKE_MODE");gTeamRoomTestPhoneId=ReadValue(L"TEAM_ROOM_TEST_AI_PHONE_ID");gTeamRoomTestEndpointId=ReadValue(L"TEAM_ROOM_TEST_ENDPOINT_ID");gTeamRoomTestRecipientId=ReadValue(L"TEAM_ROOM_TEST_RECIPIENT_ID");gTeamRoomHttpsEndpoint=ReadValue(L"TEAM_ROOM_HTTPS_ENDPOINT");
  if(gExpectedFamily.empty()||gExpectedFull.empty()||gExpectedAppSid.empty()||gRpcAllowedAppSid.empty()||gRpcAllowedUserSid.empty()||gServiceSid.empty()||gExpectedUserSid.empty()){Log(L"SERVICE_CONFIG=INVALID");SetState(SERVICE_STOPPED,ERROR_INVALID_DATA);return;}
  if(!ServiceSidInToken()){Log(L"SERVICE_SID_IN_TOKEN=FAIL");SetState(SERVICE_STOPPED,ERROR_ACCESS_DENIED);return;}
  Log(L"SERVICE_IDENTITY=PASS SERVICE_NAME=TokenSaverPhone02Supervisor SERVICE_SID_IN_TOKEN=TRUE ACCOUNT=LocalService");
