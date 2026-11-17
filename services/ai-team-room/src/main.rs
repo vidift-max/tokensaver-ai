@@ -13,6 +13,7 @@ use ai_team_room_service::{
 use axum::{
     extract::{ConnectInfo, Path, State},
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
