@@ -100,13 +100,11 @@ try{
  Mark 'BUILD_OUTPUTS_PRESENT' ((Test-Path $SupervisorExe) -and (Test-Path $OidcDll) -and (Test-Path $ClientExe))
  Mark 'R5_STORE_PATH_FRESH' (-not(Test-Path $storeRoot))
  $openssl=(Get-Command openssl -ErrorAction Stop).Source
+ $chocoArgs=@('install','postgresql16','--version=16.15.0','--params',("/Password:$pgPassword /Port:5432 /NoPath"),'--yes','--no-progress','--limit-output')
+ & choco @chocoArgs
+ if($LASTEXITCODE -ne 0){throw 'POSTGRESQL_INSTALL_FAILED'}
+ $pgInstalled=$true
  $pgService=Get-Service|Where-Object {$_.Name -match '^postgresql.*16'}|Select-Object -First 1
- if(-not $pgService){
-  & choco install postgresql16 --version=16.15.0 --params ("/Password:$pgPassword /Port:5432 /NoPath") --yes --no-progress --limit-output
-  if($LASTEXITCODE -ne 0){throw 'POSTGRESQL_INSTALL_FAILED'}
-  $pgInstalled=$true
-  $pgService=Get-Service|Where-Object {$_.Name -match '^postgresql.*16'}|Select-Object -First 1
- }
  if(-not $pgService){throw 'POSTGRESQL_SERVICE_MISSING'}
  if($pgService.Status -ne 'Running'){Start-Service -Name $pgService.Name;$pgStartedByUs=$true}
  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
