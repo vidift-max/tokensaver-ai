@@ -11,6 +11,18 @@ enum class SupervisorSecretState {
     Valid
 };
 
+inline SupervisorSecretState ClassifySecretState(
+    bool storePresent,
+    bool entryPresent,
+    bool ciphertextDecryptable,
+    bool plaintextValid) noexcept {
+    if (!storePresent) return SupervisorSecretState::StoreAbsent;
+    if (!entryPresent) return SupervisorSecretState::EntryMissing;
+    if (!ciphertextDecryptable) return SupervisorSecretState::CiphertextCorrupt;
+    if (!plaintextValid) return SupervisorSecretState::PlaintextInvalid;
+    return SupervisorSecretState::Valid;
+}
+
 struct Decision {
     long rpcStatus;
     bool accessTokenRequested;
