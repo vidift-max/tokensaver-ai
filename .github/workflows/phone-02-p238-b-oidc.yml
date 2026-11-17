@@ -5,11 +5,15 @@ on:
     branches:
       - mission/phone-02-p238-b-oidc
     paths:
-      - .github/workflows/phone-02-p238-b-oidc.yml
+      # Deliberately omit this workflow file: editing its trigger must not
+      # bootstrap the legacy PostgreSQL/Keycloak/MSIX environment.
       - scripts/phone-02-p238-b-runner.ps1
       - scripts/phone-02-p238-a-tls-e2e.ps1
       - services/ai-team-room/**
       - services/phone-supervisor/**
+      # Round 3 owns an isolated LocalService/DPAPI-NG harness. Never route
+      # those changes through the legacy full-stack bootstrap.
+      - '!services/phone-supervisor/credential-store-r3/**'
   workflow_dispatch:
     inputs:
       target_branch:
