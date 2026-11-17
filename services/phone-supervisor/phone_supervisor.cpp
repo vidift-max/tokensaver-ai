@@ -166,7 +166,15 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
   if(GetTickCount64()>it->second.expiresAt){gSessions.erase(it);*status=RPC_SESSION_EXPIRED;return;}
   if(!it->second.authorized||!SameIdentity(it->second.identity,observed)){*status=RPC_ACCESS_DENIED;return;}
  }
- if(gTeamRoomFakeMode!=L"1"){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_FAKE_MODE=DISABLED");return;}
+ if(!gTeamRoomHttpsEndpoint.empty()){
+  phone_supervisor::RealSupervisorTeamRoomHttpsAdapter realAdapter;DWORD httpStatus=0;std::wstring tlsReason;
+  if(!realAdapter.ProbeHealth(gTeamRoomHttpsEndpoint,httpStatus,tlsReason)){
+   Log(L"TEAM_ROOM_HTTPS_TLS=REJECT reason="+tlsReason+L" http_status="+std::to_wstring(httpStatus));
+   *status=RPC_INTERNAL_ERROR;return;
+  }
+  Log(L"TEAM_ROOM_HTTPS_TLS=PASS endpoint_policy=ALLOWLIST certificate_chain=VALID hostname=VALID http_status="+std::to_wstring(httpStatus));
+ }
+ if(gTeamRoomFakeMode!=L"1"){*status=RPC_OK;Log(L"TEAM_ROOM_FAKE_MODE=DISABLED");return;}
  const std::string phoneId=Ascii(gTeamRoomTestPhoneId),endpointId=Ascii(gTeamRoomTestEndpointId),recipientId=Ascii(gTeamRoomTestRecipientId);
  if(phoneId!="TEST-AI-PHONE-02"||endpointId!="TEST-ENDPOINT-02"||recipientId!="FAKE-RECIPIENT-PHONE"||
     observed.family.empty()||observed.full.empty()||observed.appSid.empty()){*status=RPC_ACCESS_DENIED;Log(L"TEAM_ROOM_PROVISIONED_BINDING=REJECT");return;}
@@ -198,16 +206,7 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
  if(!adapter.credentialsConfined()){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS");
  if(!adapter.detach(attachment)||adapter.heartbeat(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_DETACH=PASS");
  if(!adapter.revoke(attachment)){*status=RPC_INTERNAL_ERROR;return;}Log(L"TEAM_ROOM_REVOKE=PASS");
- Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");
- if(!gTeamRoomHttpsEndpoint.empty()){
-  phone_supervisor::RealSupervisorTeamRoomHttpsAdapter realAdapter;DWORD httpStatus=0;std::wstring tlsReason;
-  if(!realAdapter.ProbeHealth(gTeamRoomHttpsEndpoint,httpStatus,tlsReason)){
-   Log(L"TEAM_ROOM_HTTPS_TLS=REJECT reason="+tlsReason+L" http_status="+std::to_wstring(httpStatus));
-   *status=RPC_INTERNAL_ERROR;return;
-  }
-  Log(L"TEAM_ROOM_HTTPS_TLS=PASS endpoint_policy=ALLOWLIST certificate_chain=VALID hostname=VALID http_status="+std::to_wstring(httpStatus));
- }
- *status=RPC_OK;
+ Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");*status=RPC_OK;
 }
 
 static void SetState(DWORD state,DWORD error=NO_ERROR,DWORD hint=0){gStatus.dwServiceType=SERVICE_WIN32_OWN_PROCESS;gStatus.dwCurrentState=state;gStatus.dwWin32ExitCode=error;gStatus.dwWaitHint=hint;gStatus.dwControlsAccepted=state==SERVICE_RUNNING?SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN:0;if(gStatusHandle)SetServiceStatus(gStatusHandle,&gStatus);}

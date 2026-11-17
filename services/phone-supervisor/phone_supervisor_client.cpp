@@ -36,8 +36,12 @@ int wmain(int argc,wchar_t**argv){
  if(callStatus!=RPC_S_OK){Log(L"CLIENT_BEGIN_RPC_EXCEPTION="+std::to_wstring(callStatus));RpcBindingFree(&binding);return 16;}
  if(argc>1&&wcscmp(argv[1],L"--common")==0){
   Log(status==RPC_ACCESS_DENIED?L"COMMON_PROCESS_REJECT=PASS":L"COMMON_PROCESS_REJECT=FAIL");
+  long remoteStatus=99;
+  RPC_STATUS remoteCall=SafeTeamRoomScenario(binding,corr,(wchar_t*)L"COMMON-PROCESS-NO-SESSION",&remoteStatus);
+  bool remoteDenied=(remoteCall==RPC_S_OK&&remoteStatus==RPC_ACCESS_DENIED);
+  Log(remoteDenied?L"COMMON_PROCESS_TEAM_ROOM_REJECT=PASS":L"COMMON_PROCESS_TEAM_ROOM_REJECT=FAIL");
   if(session)midl_user_free(session);if(nonce)midl_user_free(nonce);RpcBindingFree(&binding);
-  return status==RPC_ACCESS_DENIED?0:11;
+  return (status==RPC_ACCESS_DENIED&&remoteDenied)?0:11;
  }
  if(status!=RPC_OK||!session||!nonce){Log(L"LEGITIMATE_APPCONTAINER=FAIL");RpcBindingFree(&binding);return 12;}
  Log(L"LEGITIMATE_APPCONTAINER=PASS");

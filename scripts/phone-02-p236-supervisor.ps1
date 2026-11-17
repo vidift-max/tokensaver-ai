@@ -132,7 +132,8 @@ public static class P236Activator {
  foreach($marker in @('TEAM_ROOM_AUTH_FAILURE=PASS','TEAM_ROOM_AUTHENTICATE=PASS','TEAM_ROOM_IDENTITY_MISMATCH=PASS','TEAM_ROOM_SESSION_EXECUTION_NAMESPACE=PASS','TEAM_ROOM_ATTACH=PASS','TEAM_ROOM_HEARTBEAT=PASS','TEAM_ROOM_RECONNECT=PASS','TEAM_ROOM_PAIR_DENY=PASS','TEAM_ROOM_SEND=PASS','TEAM_ROOM_SENDER_IDENTITY=PASS','TEAM_ROOM_RECEIVE=PASS','TEAM_ROOM_ACK=PASS','TEAM_ROOM_CREDENTIALS_SUPERVISOR_ONLY=PASS','TEAM_ROOM_DETACH=PASS','TEAM_ROOM_REVOKE=PASS','TEAM_ROOM_FAKE_SCENARIO=PASS')){Check ($teamRoomLog -match [regex]::Escape($marker)) $marker}
  $teamRoomBridgePassed=$true
  $common=Join-Path $evidence 'common-process.log';& $cliExe --common *> $common
- Check ($LASTEXITCODE -eq 0 -and (Get-Content $common -Raw) -match 'COMMON_PROCESS_REJECT=PASS') 'COMMON_PROCESS_REJECT'
+ $commonText=Get-Content $common -Raw
+ Check ($LASTEXITCODE -eq 0 -and $commonText -match 'COMMON_PROCESS_REJECT=PASS' -and $commonText -match 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS') 'COMMON_PROCESS_REJECT'
  $svcLog=Join-Path $root 'supervisor.conf.log';$commonServiceLog=Get-Content $svcLog -Raw
  Check ($commonServiceLog -match 'token_is_appcontainer=0' -and $commonServiceLog -match 'reason=TOKEN_IS_NOT_APPCONTAINER' -and $commonServiceLog -match 'user_sid=S-1-5-21-') 'COMMON_PROCESS_WINDOWS_IDENTITY'
  Copy-Item $svcLog (Join-Path $evidence 'service-allow-and-common-reject.log') -Force
