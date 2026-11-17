@@ -350,6 +350,11 @@ finally{
    $cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=PASS')
    $cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=PASS')
   }catch{$cleanup.Add('POSTGRESQL_PACKAGE_UNINSTALL=FAIL');$cleanup.Add('POSTGRESQL_PACKAGE_ABSENT=FAIL')}
+  try{
+   $pgData=Join-Path $env:ProgramFiles 'PostgreSQL\\16\\data'
+   if(Test-Path $pgData){Remove-Item $pgData -Recurse -Force}
+   $cleanup.Add('POSTGRESQL_DATA_DIRECTORY_REMOVED='+$(if(-not(Test-Path $pgData)){'PASS'}else{'FAIL'}))
+  }catch{$cleanup.Add('POSTGRESQL_DATA_DIRECTORY_REMOVED=FAIL')}
  }
  try{if($rootThumbprint){Remove-Item "Cert:\LocalMachine\Root\$rootThumbprint" -Force -ErrorAction Stop};$cleanup.Add('TEST_CA_REMOVED=PASS')}catch{$cleanup.Add('TEST_CA_REMOVED=FAIL')}
  try{if($hostsOriginal -ne $null){[IO.File]::WriteAllText($hostsPath,$hostsOriginal);$restored=[IO.File]::ReadAllText($hostsPath);if($restored -cne $hostsOriginal){throw 'HOSTS_RESTORE_MISMATCH'}};$cleanup.Add('HOSTS_FILE_RESTORED=PASS')}catch{$cleanup.Add('HOSTS_FILE_RESTORED=FAIL')}
