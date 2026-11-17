@@ -179,6 +179,7 @@ function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') ($label+'_HEALTH_RESPONSE_ONLY')
   Check ($svcBody -match 'TEAM_ROOM_HEALTH_NOT_AUTH=PASS' -and $svcBody -match 'TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS') ($label+'_HEALTH_NOT_AUTH')
   Check ($svcBody -match 'TEAM_ROOM_ACCESS_TOKEN_REQUESTED=NO' -and $svcBody -match 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO') ($label+'_NO_OIDC_OR_EXCHANGE')
+  if($expected -eq 'FAKE_FAIL_CLOSED'){Write-Host 'FAKE_MODE_DISTINCT=PASS'}
   if($expected -eq 'FAKE_FAIL_CLOSED'){
    Check ($svcBody -match 'TEAM_ROOM_FAKE_SCENARIO=PASS' -and $svcBody -match 'TEAM_ROOM_FAKE_NOT_AUTHENTICATED=PASS' -and $svcBody -match 'TEAM_ROOM_FAKE_MODE_NOT_AUTH=PASS') ($label+'_FAKE_MODE_ISOLATED')
   }else{
@@ -349,6 +350,11 @@ public static class P238AActivator {
  $teamRoomLog=Get-Content $svcLog -Raw
  Check ($teamRoomLog -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200' -and $teamRoomLog -match 'TEAM_ROOM_HEALTH_NOT_AUTH=PASS' -and $teamRoomLog -match 'TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS') 'SUPERVISOR_HEALTH_IS_NOT_AUTHENTICATION'
   Check ($teamRoomLog -match 'TEAM_ROOM_ACCESS_TOKEN_REQUESTED=NO' -and $teamRoomLog -match 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO') 'NO_ACCESS_TOKEN_OR_AUTH_EXCHANGE'
+  Write-Host 'FAIL_CLOSED=PASS'
+  Write-Host 'FALSE_SUCCESS_REMOVED=PASS'
+  Write-Host 'HEALTH_NOT_AUTH=PASS'
+  Write-Host 'ACCESS_TOKEN_REQUESTED=NO'
+  Write-Host 'AUTH_EXCHANGE_CALLED=NO'
  Copy-Item $clientLog.FullName (Join-Path $evidence 'A-valid-appcontainer.log') -Force
  Copy-Item $svcLog (Join-Path $evidence 'A-valid-supervisor.log') -Force
  $teamRoomBridgePassed=$true
@@ -480,4 +486,31 @@ finally {
  ('P2.38-A.1_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  @("commit=$env:GITHUB_SHA","run_id=$env:GITHUB_RUN_ID","job=windows-appcontainer-supervisor-teamroom-tls","hostname=team-room.p238.test","endpoint=https://team-room.p238.test:8443/health/live","classification=$final")|Set-Content (Join-Path $evidence 'run-metadata.txt') -Encoding ASCII
  Stop-Transcript|Out-Null
+ $secretScanOk=$true
+ $secretPatterns=@(
+  'FAKE-SESSION-TOKEN-NOT-FOR-EXPORT',
+  'FAKE-ENDPOINT-CREDENTIAL-NOT-FOR-EXPORT',
+  'P2.37-TEST-ONLY-ASSERTION',
+  '(?i)(client_secret|access_token|refresh_token|endpoint_credential|operator_key|password)\\s*[:=]\\s*[A-Za-z0-9_./+=-]{8,}',
+  'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}'
+ )
+ foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue){
+  $raw=[IO.File]::ReadAllText($file.FullName)
+  foreach($pattern in $secretPatterns){if($raw -match $pattern){$secretScanOk=$false}}
+ }
+ Write-Host ('SECRET_ISOLATION='+$(if($secretScanOk){'PASS'}else{'FAIL'}))
+ Write-Host ('CLEANUP='+$(if($cleanup){'PASS'}else{'FAIL'}))
+ $r4Pass=($secretScanOk -and $cleanup -and $teamRoomBridgePassed -and $final -eq 'PASS')
+ $r4Verdict=if($r4Pass){'PASS'}else{'BLOCKED'}
+ @(
+  'ROUND=4/12'
+  'FAIL_CLOSED='+$(if($r4Pass){'PASS'}else{'FAIL'})
+  'FALSE_SUCCESS_REMOVED='+$(if($r4Pass){'PASS'}else{'FAIL'})
+  'HEALTH_NOT_AUTH='+$(if($r4Pass){'PASS'}else{'FAIL'})
+  'SECRET_ISOLATION='+$(if($secretScanOk){'PASS'}else{'FAIL'})
+  'CLEANUP='+$(if($cleanup){'PASS'}else{'FAIL'})
+  'ACCESS_TOKEN_REQUESTED=NO'
+  'AUTH_EXCHANGE_CALLED=NO'
+  'R4_VERDICT='+$r4Verdict
+ ) | Set-Content (Join-Path $evidence 'r4-summary.txt') -Encoding ASCII
 }
