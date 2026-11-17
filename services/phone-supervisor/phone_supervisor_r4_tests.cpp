@@ -1,13 +1,24 @@
 #include <windows.h>
 #include <algorithm>
 #include <ncrypt.h>
-#include <ncrypt_protect.h>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 #pragma comment(lib,"ncrypt.lib")
+typedef PVOID NCRYPT_DESCRIPTOR_HANDLE;
+extern "C" SECURITY_STATUS WINAPI NCryptCreateProtectionDescriptor(
+    LPCWSTR pwszDescriptorString,DWORD dwFlags,NCRYPT_DESCRIPTOR_HANDLE* phDescriptor);
+extern "C" SECURITY_STATUS WINAPI NCryptCloseProtectionDescriptor(
+    NCRYPT_DESCRIPTOR_HANDLE hDescriptor);
+extern "C" SECURITY_STATUS WINAPI NCryptProtectSecret(
+    NCRYPT_DESCRIPTOR_HANDLE hDescriptor,DWORD dwFlags,PBYTE pbData,ULONG cbData,
+    PVOID pMemPara,HWND hWnd,PBYTE* ppbProtectedBlob,ULONG* pcbProtectedBlob);
+extern "C" SECURITY_STATUS WINAPI NCryptUnprotectSecret(
+    NCRYPT_DESCRIPTOR_HANDLE* phDescriptor,DWORD dwFlags,PBYTE pbProtectedBlob,ULONG cbProtectedBlob,
+    PVOID pMemPara,HWND hWnd,PBYTE* ppbData,ULONG* pcbData);
 #include "TeamRoomScenarioGateR4.h"
 using phone_supervisor::r4::Decision;
 using phone_supervisor::r4::Evaluate;
