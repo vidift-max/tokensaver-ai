@@ -3,6 +3,7 @@ use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
 use serde::Deserialize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 use zeroize::Zeroizing;
@@ -75,7 +76,8 @@ fn read_body(mut response: Response) -> Result<Zeroizing<Vec<u8>>, i32> {
     let declared = response.content_length().unwrap_or(0);
     if declared as usize > MAX_RESPONSE { return Err(31); }
     let mut body = Zeroizing::new(Vec::new());
-    response.take((MAX_RESPONSE + 1) as u64).copy_to(&mut body).map_err(|_| 32)?;
+    let mut limited = response.take((MAX_RESPONSE + 1) as u64);
+    limited.read_to_end(&mut *body).map_err(|_| 32)?;
     if body.len() > MAX_RESPONSE { return Err(31); }
     Ok(body)
 }
@@ -110,7 +112,8 @@ fn post_token(c: &Client, endpoint: &str, client_id: &str, secret: &str, scope: 
         .send().map_err(|_| 19)?;
     let status = response.status().as_u16();
     let mut bytes = Zeroizing::new(Vec::new());
-    response.take((MAX_RESPONSE + 1) as u64).copy_to(&mut bytes).map_err(|_| 21)?;
+    let mut limited = response.take((MAX_RESPONSE + 1) as u64);
+    limited.read_to_end(&mut *bytes).map_err(|_| 21)?;
     if bytes.len() > MAX_RESPONSE { return Err(22); }
     Ok((status, bytes))
 }
