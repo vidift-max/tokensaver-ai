@@ -52,7 +52,7 @@ try {
     $pgService=Get-Service | Where-Object {$_.Name -match '^postgresql.*16'} | Select-Object -First 1
     if(-not $pgService){throw 'PostgreSQL 16 Windows service not found after install'}
     if($pgService.Status -ne 'Running'){Start-Service -Name $pgService.Name}
-    $psql = Join-Path $env:ProgramFiles 'PostgreSQL\\16\\bin\\psql.exe'
+    $psql = Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
     Assert-Check (Test-Path $psql) 'POSTGRESQL_CLIENT_PRESENT'
     $deadline=(Get-Date).AddSeconds(60);$pgReady=$false
     do {
@@ -93,7 +93,8 @@ try {
     $teamRoomManifest=Join-Path $env:GITHUB_WORKSPACE 'services\ai-team-room\Cargo.toml'
     & cargo build --release --manifest-path $teamRoomManifest --bin ai-team-room-service
     if($LASTEXITCODE -ne 0){throw 'Full Team Room Windows build failed'}
-    $teamRoomExe=Join-Path $env:GITHUB_WORKSPACE 'services\ai-team-room\target\release\ai-team-room-service.exe'
+    $cargoMetadata=(& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)
+    $teamRoomExe=Join-Path $cargoMetadata.target_directory 'release\ai-team-room-service.exe'
     Assert-Check (Test-Path $teamRoomExe) 'TEAM_ROOM_BINARY_PRESENT'
     $env:DATABASE_URL="postgres://postgres:$pgPassword@127.0.0.1:5432/team_room_p238b"
     $env:TEAM_ROOM_BIND='127.0.0.1:8082';$env:RUST_LOG='info'
