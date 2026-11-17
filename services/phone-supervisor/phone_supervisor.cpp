@@ -376,17 +376,18 @@ void TeamRoomScenario(handle_t binding,wchar_t*correlation,wchar_t*sessionId,lon
   Log(L"TEAM_ROOM_FAKE_SCENARIO=PASS");
   Log(L"TEAM_ROOM_FAKE_NOT_AUTHENTICATED=PASS");
  }
- // R4 deliberately has no OIDC token acquisition or /auth/exchange integration.
- // Therefore no real Team Room session can be asserted in this round.
+ // A client_credentials token alone is not a Team Room session.
+ // R5 deliberately does not call /auth/exchange.
  const bool realTeamRoomSessionAuthenticated=false;
+ const auto secretState=gR5CredentialLoaded?phone_supervisor::r4::SupervisorSecretState::Valid:phone_supervisor::r4::SupervisorSecretState::StoreAbsent;
  const auto decision=phone_supervisor::r4::Evaluate(
   true,
-  phone_supervisor::r4::SupervisorSecretState::StoreAbsent,
+  secretState,
   healthProbeSucceeded,
   fakeMode,
   fakeScenarioSucceeded,
   realTeamRoomSessionAuthenticated);
- Log(L"TEAM_ROOM_SECRET_STATE=STORE_ABSENT");
+ Log(gR5CredentialLoaded?L"TEAM_ROOM_SECRET_STATE=VALID":L"TEAM_ROOM_SECRET_STATE=STORE_ABSENT");
  Log(L"TEAM_ROOM_REAL_AUTH_SESSION=ABSENT");
  Log(L"TEAM_ROOM_FALSE_SUCCESS_REMOVED=PASS");
  if(decision.rpcStatus==RPC_OK){
