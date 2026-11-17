@@ -867,6 +867,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "TEAM_ROOM_TLS_CERT_PATH is required in TLS probe mode")?;
         let key = env::var("TEAM_ROOM_TLS_KEY_PATH")
             .map_err(|_| "TEAM_ROOM_TLS_KEY_PATH is required in TLS probe mode")?;
+        // Select the TLS crypto provider explicitly: the service graph enables both
+        // aws-lc-rs and ring through transitive TLS dependencies on Windows.
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .map_err(|_| std::io::Error::other("failed to install explicit aws-lc-rs CryptoProvider"))?;
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
         let app = Router::new().route("/health/live", get(live));
         let http_listener = tokio::net::TcpListener::bind(http_bind).await?;
