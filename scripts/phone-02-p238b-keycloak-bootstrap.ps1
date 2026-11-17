@@ -39,7 +39,7 @@ try {
  $sc=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM client WHERE client_id='$clientId' AND service_accounts_enabled=true";Mark 'KEYCLOAK_SERVICE_ACCOUNT' ([int]$sc -eq 1)
  Mark 'KEYCLOAK_CLIENT_CREDENTIALS_ENABLED' ([int]$sc -eq 1 -and [int]$cc -eq 1)
  $scope=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM client_scope WHERE name='$scopeName' AND protocol='openid-connect'";Mark 'KEYCLOAK_SCOPE' ([int]$scope -eq 1)
- $assigned=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM client_default_client_scope d JOIN client c ON c.id=d.client_id JOIN client_scope s ON s.id=d.scope_id WHERE c.client_id='$clientId' AND s.name='$scopeName'";Mark 'KEYCLOAK_SCOPE_ASSIGNED' ([int]$assigned -eq 1)
+ $assigned=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM client_scope_client d JOIN client c ON c.id=d.client_id JOIN client_scope s ON s.id=d.scope_id WHERE c.client_id='$clientId' AND s.name='$scopeName' AND d.default_scope=true";Mark 'KEYCLOAK_SCOPE_ASSIGNED' ([int]$assigned -eq 1)
  $aud=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM protocol_mapper m JOIN client_scope s ON s.id=m.client_scope_id JOIN protocol_mapper_config c ON c.protocol_mapper_id=m.id WHERE s.name='$scopeName' AND m.protocol_mapper_name='oidc-audience-mapper' AND c.name='included.client.audience' AND c.value='$audience'";Mark 'KEYCLOAK_AUDIENCE' ([int]$aud -gt 0)
  $active=Sql 'postgres' "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='keycloak_p238b' AND usename='postgres'";Mark 'KEYCLOAK_POSTGRES_ACTIVE_CONNECTION' ([int]$active -gt 0)
  $tables=Sql 'keycloak_p238b' "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'";Mark 'KEYCLOAK_POSTGRES_SCHEMA_PERSISTED' ([int]$tables -gt 10)
@@ -52,6 +52,17 @@ try {
  return $process
 } catch {
  if(Test-Path $importFile){Remove-Item $importFile -Force -ErrorAction SilentlyContinue}
- if($process -and !$process.HasExited){Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue}
+ # kc.bat may have spawned a Java child that outlives the launcher. Stop the
+ # entire isolated Keycloak process tree before the runner hashes evidence logs.
+ $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($KeycloakHome)})
+ foreach($child in $kcChildren){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
+ if($process -and !$process.HasExited){Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue;Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue}
+ $stopDeadline=(Get-Date).AddSeconds(15)
+ do {
+  $remaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($KeycloakHome)})
+  if($remaining.Count -eq 0){break}
+  Start-Sleep -Seconds 1
+ } while((Get-Date) -lt $stopDeadline)
+ if($remaining.Count -gt 0){Write-Host 'KEYCLOAK_FAILURE_PROCESS_CLEANUP=FAIL'}else{Write-Host 'KEYCLOAK_FAILURE_PROCESS_CLEANUP=PASS'}
  throw 'P2.38-B Keycloak bootstrap failed; inspect sanitized evidence logs'
 } finally {$secret=$null;if($secretBytes){[Array]::Clear($secretBytes,0,$secretBytes.Length)};Remove-Item Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue}

@@ -102,15 +102,13 @@ catch {
 finally {
     Remove-Item Env:PGPASSWORD,Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_HTTPS_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue
     $cleanup.Add('PHONE02_SUPERVISOR_MSIX_HARNESS=NOT_RUN_BY_PHASE1')
-    if($keycloakProcess) {
-        $kcDir=Join-Path $root 'keycloak-26.3.5'
-        $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
-        foreach($child in $kcChildren){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
-        Start-Sleep -Seconds 2
-        $kcRemaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
-        $cleanup.Add('KEYCLOAK_CHILD_PROCESSES_STOP='+$(if($kcRemaining.Count -eq 0){'PASS'}else{'FAIL'}))
-        Stop-TrackedProcess $keycloakProcess 'KEYCLOAK_LAUNCHER_STOP'
-    } else {$cleanup.Add('KEYCLOAK_LAUNCHER_STOP=NOT_STARTED')}
+    $kcDir=Join-Path $root 'keycloak-26.3.5'
+    $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
+    foreach($child in $kcChildren){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
+    if($kcChildren.Count -gt 0){Start-Sleep -Seconds 2}
+    $kcRemaining=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
+    $cleanup.Add('KEYCLOAK_CHILD_PROCESSES_STOP='+$(if($kcRemaining.Count -eq 0){'PASS'}else{'FAIL'}))
+    if($keycloakProcess){Stop-TrackedProcess $keycloakProcess 'KEYCLOAK_LAUNCHER_STOP'}else{$cleanup.Add('KEYCLOAK_LAUNCHER_STOP=BOOTSTRAP_DID_NOT_RETURN')}
     if($pgService) {
         try {
             $env:PGPASSWORD=$pgPassword
