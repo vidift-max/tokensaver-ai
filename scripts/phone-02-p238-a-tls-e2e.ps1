@@ -40,7 +40,7 @@ function Stop-P238TeamRoom {
  }
  return $true
 }
-function Start-P238TeamRoom($leaf,$redirect){
+function Start-P238TeamRoom($leaf,$redirect,$verifyHttpsReadiness=$true){
  if(-not(Stop-P238TeamRoom)){throw 'Previous Team Room TLS listener did not stop'}
  Remove-Item (Join-Path $script:evidence 'team-room.stdout.log'),(Join-Path $script:evidence 'team-room.stderr.log') -Force -ErrorAction SilentlyContinue
  $fullMode=($env:P238_TEAM_ROOM_FULL_MODE -eq '1')
@@ -80,8 +80,12 @@ function Start-P238TeamRoom($leaf,$redirect){
   $teamRoomBackendPid=[int]$Matches[2]
   Write-Host ('TEAM_ROOM_POSTGRES_LOG_DATABASE='+$teamRoomLoggedDatabase)
   Write-Host ('TEAM_ROOM_POSTGRES_LOG_BACKEND_PID='+$teamRoomBackendPid)
-  $ready=Invoke-WebRequest -Uri 'https://team-room.p238.test:8443/health/ready' -UseBasicParsing -TimeoutSec 5
-  Check ($ready.StatusCode -eq 200) 'TEAM_ROOM_REAL_HTTPS_DATABASE_READINESS'
+  if($verifyHttpsReadiness){
+   $ready=Invoke-WebRequest -Uri 'https://team-room.p238.test:8443/health/ready' -UseBasicParsing -TimeoutSec 5
+   Check ($ready.StatusCode -eq 200) 'TEAM_ROOM_REAL_HTTPS_DATABASE_READINESS'
+  }else{
+   Write-Host 'TEAM_ROOM_HTTPS_PREFLIGHT=SKIPPED_EXPECTED_NEGATIVE_CERTIFICATE_CASE'
+  }
   $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
   # Independent observer connection: records the actual PostgreSQL endpoint and
   # identity used by this diagnostic query, without exposing any credential.
@@ -340,11 +344,11 @@ public static class P238AActivator {
  Copy-Item $clientLog.FullName (Join-Path $evidence 'A-valid-appcontainer.log') -Force
  Copy-Item $svcLog (Join-Path $evidence 'A-valid-supervisor.log') -Force
  $teamRoomBridgePassed=$true
- Start-P238TeamRoom $invalidLeaf $false;Restart-P238Supervisor $p238Endpoint
+ Start-P238TeamRoom $invalidLeaf $false $false;Restart-P238Supervisor $p238Endpoint
  Invoke-P238AppContainerScenario 'B-invalid-server-certificate' 'REJECT' 'TEAM_ROOM_HTTPS_TLS=REJECT reason=HTTPS_(SEND|RECEIVE)_TLS_OR_TRANSPORT'
- Start-P238TeamRoom $wrongHostLeaf $false;Restart-P238Supervisor $p238Endpoint
+ Start-P238TeamRoom $wrongHostLeaf $false $false;Restart-P238Supervisor $p238Endpoint
  Invoke-P238AppContainerScenario 'C-wrong-certificate-hostname' 'REJECT' 'TEAM_ROOM_HTTPS_TLS=REJECT reason=HTTPS_(SEND|RECEIVE)_TLS_OR_TRANSPORT'
- Start-P238TeamRoom $untrustedLeaf $false;Restart-P238Supervisor $p238Endpoint
+ Start-P238TeamRoom $untrustedLeaf $false $false;Restart-P238Supervisor $p238Endpoint
  Invoke-P238AppContainerScenario 'D-untrusted-ca' 'REJECT' 'TEAM_ROOM_HTTPS_TLS=REJECT reason=HTTPS_(SEND|RECEIVE)_TLS_OR_TRANSPORT'
  Start-P238TeamRoom $goodLeaf $false;Restart-P238Supervisor 'http://team-room.p238.test:8443/health/live'
  Invoke-P238AppContainerScenario 'E-http-endpoint' 'REJECT' 'HTTPS_REQUIRED_HTTP_REJECTED'
