@@ -109,11 +109,11 @@ static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& s
  if(!tokenScratch.Assign(zero.data(),zero.size())){SecureZeroMemory(zero.data(),zero.size());FreeLibrary(module);return false;}
  SecureZeroMemory(zero.data(),zero.size());
  DWORD tokenLength=0,expiresIn=0;int acquireStatus=-1;bool acquired=false;
- for(int attempt=0;attempt<60;attempt++){
+ for(int attempt=0;attempt<240;attempt++){
   tokenLength=0;expiresIn=0;SecureZeroMemory(tokenScratch.data(),tokenScratch.size());
   acquireStatus=acquire(secret.data(),static_cast<DWORD>(secret.size()),tokenScratch.data(),static_cast<DWORD>(tokenScratch.size()),&tokenLength,&expiresIn);
   if(acquireStatus==0&&tokenLength>0&&tokenLength<=tokenScratch.size()&&expiresIn>0&&expiresIn<=3600){acquired=true;break;}
-  if(acquireStatus!=13&&acquireStatus!=19){break;}
+  if(acquireStatus!=13&&acquireStatus!=19&&acquireStatus!=522&&acquireStatus!=523&&acquireStatus!=524){break;}
   if(gStopEvent&&WaitForSingleObject(gStopEvent,0)==WAIT_OBJECT_0)break;
   Sleep(1000);
  }
@@ -198,7 +198,6 @@ static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& s
   secretProbe(L"NEGATIVE_INVALID_SCOPE",badScope);
  }
  Log(L"AUTH_EXCHANGE_CALLED=NO");
- Log(L"RPC_TOKEN_EXPOSURE=PASS");
  Log(L"OIDC_SECRET_BUFFER_ZEROED=PASS");secret.Clear();
  Log(std::wstring(L"R5_VERDICT=")+((ok&&acquired&&!gOidcAccessToken.empty())?L"PASS":L"BLOCKED"));
  FreeLibrary(module);
