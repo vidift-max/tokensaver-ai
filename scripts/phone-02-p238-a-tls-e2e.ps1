@@ -489,6 +489,10 @@ finally {
  ('P2.38-A.1_FINAL='+$final)|Set-Content (Join-Path $evidence 'classification.txt')
  @("commit=$env:GITHUB_SHA","run_id=$env:GITHUB_RUN_ID","job=windows-appcontainer-supervisor-teamroom-tls","hostname=team-room.p238.test","endpoint=https://team-room.p238.test:8443/health/live","classification=$final")|Set-Content (Join-Path $evidence 'run-metadata.txt') -Encoding ASCII
  Stop-Transcript|Out-Null
+ $transcriptText=if(Test-Path (Join-Path $evidence 'transcript.log')){Get-Content (Join-Path $evidence 'transcript.log') -Raw}else{''}
+ $fakeModeDistinct=($transcriptText -match 'FAKE_MODE_DISTINCT=PASS')
+ $secretAbsent=($transcriptText -match 'SUPERVISOR_SECRET_MATERIAL_ABSENT=PASS')
+ $r3StoreClean=($transcriptText -match 'R3_TEST_STORE_NOT_LEFT_BEHIND=PASS')
  $secretScanOk=$true
  $secretPatterns=@(
   'FAKE-SESSION-TOKEN-NOT-FOR-EXPORT',
@@ -503,7 +507,7 @@ finally {
  }
  Write-Host ('SECRET_ISOLATION='+$(if($secretScanOk){'PASS'}else{'FAIL'}))
  Write-Host ('CLEANUP='+$(if($cleanup){'PASS'}else{'FAIL'}))
- $r4Pass=($secretScanOk -and $cleanup -and $teamRoomBridgePassed -and $final -eq 'PASS')
+ $r4Pass=($secretScanOk -and $cleanup -and $teamRoomBridgePassed -and $final -eq 'PASS' -and $fakeModeDistinct -and $secretAbsent -and $r3StoreClean)
  $r4Verdict=if($r4Pass){'PASS'}else{'BLOCKED'}
  @(
   'ROUND=4/12'
@@ -511,9 +515,13 @@ finally {
   'FALSE_SUCCESS_REMOVED='+$(if($r4Pass){'PASS'}else{'FAIL'})
   'HEALTH_NOT_AUTH='+$(if($r4Pass){'PASS'}else{'FAIL'})
   'SECRET_ISOLATION='+$(if($secretScanOk){'PASS'}else{'FAIL'})
+  'SUPERVISOR_SECRET_MATERIAL_ABSENT='+$(if($secretAbsent){'PASS'}else{'FAIL'})
+  'R3_TEST_STORE_NOT_LEFT_BEHIND='+$(if($r3StoreClean){'PASS'}else{'FAIL'})
+  'FAKE_MODE_DISTINCT='+$(if($fakeModeDistinct){'PASS'}else{'FAIL'})
   'CLEANUP='+$(if($cleanup){'PASS'}else{'FAIL'})
   'ACCESS_TOKEN_REQUESTED=NO'
   'AUTH_EXCHANGE_CALLED=NO'
   'R4_VERDICT='+$r4Verdict
+  'VERDICT='+$r4Verdict
  ) | Set-Content (Join-Path $evidence 'r4-summary.txt') -Encoding ASCII
 }
