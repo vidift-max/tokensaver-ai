@@ -99,8 +99,8 @@ int main() {
     ok &= Check(corruptRejected&&corruptState==SupervisorSecretState::CiphertextCorrupt&&
                 denied(corruptState,false,false,false),"R4_SECRET_CIPHERTEXT_CORRUPT");
 
-    auto validState=ClassifySecretState(true,true,true,true);
-    ok &= Check(validState==SupervisorSecretState::Valid&&
+    auto validState=ClassifySecretState(true,protectedOk,decryptedOk,formatOk);
+    ok &= Check(formatOk&&validState==SupervisorSecretState::Valid&&
                 denied(validState,false,false,false),"R4_VALID_SECRET_WITHOUT_REAL_SESSION");
     ok &= Check(denied(SupervisorSecretState::StoreAbsent,true,false,false),
                 "R4_HEALTH_SUCCESS_NOT_AUTH");
