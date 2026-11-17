@@ -6,6 +6,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <cstdio>
 #pragma comment(lib,"ncrypt.lib")
 #pragma comment(lib,"bcrypt.lib")
 static const wchar_t* SERVICE_NAME=L"TokenSaverPhone02Supervisor";
