@@ -93,6 +93,7 @@ jobs:
             'R4_FAKE_MODE_NOT_AUTH=PASS',
             'R4_UNAUTHORIZED_LOCAL_CALLER=PASS',
             'R4_HEALTH_RESULT_CANNOT_CHANGE_AUTHORIZATION=PASS',
+            'R4_CLEANUP=PASS',
             'ACCESS_TOKEN_REQUESTED=NO',
             'AUTH_EXCHANGE_CALLED=NO'
           )
