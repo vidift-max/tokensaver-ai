@@ -1,0 +1,130 @@
+name: Phone-02 P2.38-B Windows Runner Bootstrap (No OIDC)
+
+on:
+  push:
+    branches:
+      - mission/phone-02-p238-b-oidc
+    paths:
+      - .github/workflows/phone-02-p238-b-oidc.yml
+      - scripts/phone-02-p238-b-runner.ps1
+      - scripts/phone-02-p238-a-tls-e2e.ps1
+      - services/ai-team-room/**
+      - services/phone-supervisor/**
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to execute (must match the selected ref)
+        required: true
+        type: choice
+        options:
+          - mission/phone-02-p238-b-oidc
+        default: mission/phone-02-p238-b-oidc
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: phone02-p238b-runner-\${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-runner-bootstrap:
+    name: Windows PostgreSQL + Keycloak + Team Room + Supervisor + MSIX/AppContainer
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact branch event commit
+        uses: actions/checkout@v4
+        with:
+          ref: \${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install stable Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ephemeral Keycloak Java runtime
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify branch and runner contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -ne 'refs/heads/mission/phone-02-p238-b-oidc') {
+            throw "Refused unexpected branch: $env:GITHUB_REF"
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and
+              '\${{ inputs.target_branch }}' -ne 'mission/phone-02-p238-b-oidc') {
+            throw 'workflow_dispatch target_branch mismatch'
+          }
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
+            throw 'Expected windows-2025 x64 runner'
+          }
+          Write-Host "RUNNER_LABEL=windows-2025"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "GITHUB_REF=$env:GITHUB_REF"
+          Write-Host "GITHUB_SHA=$env:GITHUB_SHA"
+          java -version
+          cargo --version
+
+      - name: Provision ephemeral PostgreSQL, Keycloak and full Team Room; run approved Windows MSIX/TLS harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\scripts\phone-02-p238-b-runner.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "P2.38-B runner bootstrap script failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Capture numeric GitHub run and job provenance
+        if: always()
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238b-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs?per_page=100"
+          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+          $current = $response.jobs | Where-Object { $_.name -eq $env:GITHUB_JOB } | Select-Object -First 1
+          $jobId = if ($current) { [string]$current.id } else { 'UNAVAILABLE' }
+          @(
+            "run_id=$env:GITHUB_RUN_ID"
+            "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+            "job_id=$jobId"
+            "job_name=$env:GITHUB_JOB"
+            "branch=$env:GITHUB_REF"
+            "sha=$env:GITHUB_SHA"
+            "event=$env:GITHUB_EVENT_NAME"
+            "runner=$env:RUNNER_NAME"
+          ) | Set-Content (Join-Path $evidence 'github-provenance.txt') -Encoding utf8
+
+      - name: Upload sanitized Windows runner evidence, including FAIL logs
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-p238b-windows-runner-\${{ github.run_id }}-\${{ github.run_attempt }}
+          path: \${{ runner.temp }}/phone02-p238b-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Record artifact locator and digest
+        if: always()
+        shell: pwsh
+        run: |
+          "P238B_ARTIFACT_ID=\${{ steps.upload.outputs.artifact-id }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "P238B_ARTIFACT_URL=\${{ steps.upload.outputs.artifact-url }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "P238B_ARTIFACT_SHA256=\${{ steps.upload.outputs.artifact-digest }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "OIDC_FLOW=NOT_EXECUTED" | Add-Content $env:GITHUB_STEP_SUMMARY
