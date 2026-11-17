@@ -1,8 +1,13 @@
-#include "TeamRoomScenarioGateR4.h"
+#include <windows.h>
+#include <ncrypt.h>
+#include <ncrypt_protect.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
+#pragma comment(lib,"ncrypt.lib")
+#include "TeamRoomScenarioGateR4.h"
 using phone_supervisor::r4::Decision;
 using phone_supervisor::r4::Evaluate;
 using phone_supervisor::r4::ClassifySecretState;
@@ -11,6 +16,32 @@ using phone_supervisor::r4::SupervisorSecretState;
 static bool Check(bool ok,const char* marker) {
     std::cout << marker << "=" << (ok ? "PASS" : "FAIL") << "\n";
     return ok;
+}
+static bool ProtectSynthetic(const std::vector<BYTE>& plain,std::vector<BYTE>& blob) {
+    NCRYPT_DESCRIPTOR_HANDLE descriptor=nullptr;
+    PBYTE out=nullptr;ULONG outSize=0;
+    SECURITY_STATUS s=NCryptCreateProtectionDescriptor(L"LOCAL=user",0,&descriptor);
+    if(s==ERROR_SUCCESS)
+        s=NCryptProtectSecret(descriptor,0,const_cast<PBYTE>(plain.data()),
+                              static_cast<ULONG>(plain.size()),nullptr,nullptr,&out,&outSize);
+    if(descriptor)NCryptCloseProtectionDescriptor(descriptor);
+    if(s!=ERROR_SUCCESS)return false;
+    blob.assign(out,out+outSize);LocalFree(out);return true;
+}
+static bool UnprotectSynthetic(const std::vector<BYTE>& blob,std::vector<BYTE>& plain) {
+    NCRYPT_DESCRIPTOR_HANDLE descriptor=nullptr;
+    PBYTE out=nullptr;ULONG outSize=0;
+    SECURITY_STATUS s=NCryptUnprotectSecret(&descriptor,0,
+        const_cast<PBYTE>(blob.data()),static_cast<ULONG>(blob.size()),
+        nullptr,nullptr,&out,&outSize);
+    if(descriptor)NCryptCloseProtectionDescriptor(descriptor);
+    if(s!=ERROR_SUCCESS)return false;
+    plain.assign(out,out+outSize);LocalFree(out);return true;
+}
+static bool ValidSyntheticFormat(const std::vector<BYTE>& plain) {
+    const std::string prefix="R4-VALID-SUPERVISOR-SECRET-V1:";
+    return plain.size()>prefix.size() &&
+           std::equal(prefix.begin(),prefix.end(),plain.begin());
 }
 int main() {
     bool ok=true;
@@ -34,26 +65,41 @@ int main() {
     ok &= Check(storeCreated && missingState==SupervisorSecretState::EntryMissing &&
                 denied(missingState,false,false,false),"R4_SECRET_ENTRY_MISSING");
 
-    const auto corruptPath=temp/"credential.bin";
-    {
-        std::ofstream f(corruptPath,std::ios::binary|std::ios::trunc);
-        const unsigned char corrupt[3]={0x00,0x7f,0x01};
-        f.write(reinterpret_cast<const char*>(corrupt),sizeof(corrupt));
-    }
-    const auto corruptSize=std::filesystem::file_size(corruptPath,ec);
-    const bool ciphertextDecryptable=(ec==std::error_code{} && corruptSize>=32);
-    auto corruptState=ClassifySecretState(storeCreated,std::filesystem::exists(corruptPath),
-                                          ciphertextDecryptable,false);
-    ok &= Check(corruptSize==3 && corruptState==SupervisorSecretState::CiphertextCorrupt &&
-                denied(corruptState,false,false,false),"R4_SECRET_CIPHERTEXT_CORRUPT");
-
-    // Simulates successful decryption followed by a failed format/policy check.
-    auto invalidState=ClassifySecretState(true,true,true,false);
-    ok &= Check(invalidState==SupervisorSecretState::PlaintextInvalid &&
+    const std::string invalidText="NOT-A-VALID-SUPERVISOR-CREDENTIAL";
+    std::vector<BYTE> invalidPlain(invalidText.begin(),invalidText.end()),invalidBlob,roundTrip;
+    bool invalidProtected=ProtectSynthetic(invalidPlain,invalidBlob);
+    bool invalidDecrypted=invalidProtected&&UnprotectSynthetic(invalidBlob,roundTrip);
+    bool invalidFormat=invalidDecrypted&&ValidSyntheticFormat(roundTrip);
+    auto invalidState=ClassifySecretState(storeCreated,invalidProtected,invalidDecrypted,invalidFormat);
+    ok &= Check(invalidProtected&&invalidDecrypted&&!invalidFormat&&
+                invalidState==SupervisorSecretState::PlaintextInvalid&&
                 denied(invalidState,false,false,false),"R4_SECRET_PLAINTEXT_INVALID");
 
+    const std::string validText="R4-VALID-SUPERVISOR-SECRET-V1:synthetic-test-only";
+    std::vector<BYTE> validPlain(validText.begin(),validText.end()),validBlob,validRoundTrip;
+    bool protectedOk=ProtectSynthetic(validPlain,validBlob);
+    bool decryptedOk=protectedOk&&UnprotectSynthetic(validBlob,validRoundTrip);
+    bool formatOk=decryptedOk&&ValidSyntheticFormat(validRoundTrip)&&validRoundTrip==validPlain;
+    ok &= Check(formatOk,"R4_DPAPI_NG_SYNTHETIC_ROUNDTRIP");
+
+    bool corruptRejected=false;
+    std::vector<BYTE> corruptBlob=validBlob,corruptPlain;
+    if(!corruptBlob.empty()){
+        for(size_t i=0;i<corruptBlob.size()&&!corruptRejected;i+=std::max<size_t>(1,corruptBlob.size()/11)){
+            corruptBlob=validBlob;corruptBlob[i]^=0x5A;
+            corruptRejected=!UnprotectSynthetic(corruptBlob,corruptPlain);
+            if(!corruptPlain.empty()){SecureZeroMemory(corruptPlain.data(),corruptPlain.size());corruptPlain.clear();}
+        }
+    }
+    const auto corruptPath=temp/"credential.bin";
+    {std::ofstream f(corruptPath,std::ios::binary|std::ios::trunc);if(!corruptBlob.empty())f.write(reinterpret_cast<const char*>(corruptBlob.data()),static_cast<std::streamsize>(corruptBlob.size()));}
+    const bool corruptFilePresent=std::filesystem::exists(corruptPath);
+    auto corruptState=ClassifySecretState(storeCreated,corruptFilePresent,!corruptRejected,false);
+    ok &= Check(corruptRejected&&corruptState==SupervisorSecretState::CiphertextCorrupt&&
+                denied(corruptState,false,false,false),"R4_SECRET_CIPHERTEXT_CORRUPT");
+
     auto validState=ClassifySecretState(true,true,true,true);
-    ok &= Check(validState==SupervisorSecretState::Valid &&
+    ok &= Check(validState==SupervisorSecretState::Valid&&
                 denied(validState,false,false,false),"R4_VALID_SECRET_WITHOUT_REAL_SESSION");
     ok &= Check(denied(SupervisorSecretState::StoreAbsent,true,false,false),
                 "R4_HEALTH_SUCCESS_NOT_AUTH");
@@ -68,6 +114,10 @@ int main() {
     ok &= Check(!healthy.accessTokenRequested,"ACCESS_TOKEN_REQUESTED=NO");
     ok &= Check(!healthy.authExchangeCalled,"AUTH_EXCHANGE_CALLED=NO");
 
+    if(!roundTrip.empty())SecureZeroMemory(roundTrip.data(),roundTrip.size());
+    if(!validRoundTrip.empty())SecureZeroMemory(validRoundTrip.data(),validRoundTrip.size());
+    if(!invalidPlain.empty())SecureZeroMemory(invalidPlain.data(),invalidPlain.size());
+    if(!validPlain.empty())SecureZeroMemory(validPlain.data(),validPlain.size());
     std::filesystem::remove_all(temp,ec);
     ok &= Check(!std::filesystem::exists(temp),"R4_CLEANUP");
     ok &= Check(ok,"R4_FAIL_CLOSED_POLICY");
