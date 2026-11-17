@@ -179,7 +179,7 @@ function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
   if($env:P238_TEAM_ROOM_FULL_MODE -eq '1'){
    $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw
    # tracing-subscriber inserts ANSI escapes around structured field names and '='; normalize before correlating the real process PID.
-   $ansiPattern=[string][char]27+'\\[[0-?]*[ -/]*[@-~]'
+   $ansiPattern=[string][char]27+'\[[0-?]*[ -/]*[@-~]'
    $teamLog=[regex]::Replace($teamLog,$ansiPattern,'')
    Check ($teamLog -match ('TEAM_ROOM_HEALTH_REQUEST process_id='+$script:teamRoomProcess.Id)) 'SUPERVISOR_REQUEST_REACHED_REAL_TEAM_ROOM_PROCESS'
   }
