@@ -217,7 +217,7 @@ try {
  & cmd.exe /d /s /c $cmdMidl
  if($LASTEXITCODE -ne 0){throw 'MIDL failed'}
  $svcExe=Join-Path $root 'supervisor.exe';$cliExe=Join-Path $root 'client.exe'
- $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $src 'phone_supervisor.cpp')+'" "'+(Join-Path $src 'RealSupervisorTeamRoomHttpsAdapter.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_s.c')+'" /Fe:"'+$svcExe+'" advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib'
+ $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $src 'phone_supervisor.cpp')+'" "'+(Join-Path $src 'RealSupervisorTeamRoomHttpsAdapter.cpp')+'" "'+(Join-Path $src 'SupervisorCredentialStoreR5.cpp')+'" "'+(Join-Path $src 'SupervisorCredentialProvisioningR5.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_s.c')+'" /Fe:"'+$svcExe+'" advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib ncrypt.lib'
  & cmd.exe /d /s /c $cmd;if($LASTEXITCODE -ne 0){throw 'Supervisor compile failed'}
  $cmd='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $src 'phone_supervisor_client.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_c.c')+'" /Fe:"'+$cliExe+'" rpcrt4.lib ole32.lib'
  & cmd.exe /d /s /c $cmd;if($LASTEXITCODE -ne 0){throw 'RPC client compile failed'}
