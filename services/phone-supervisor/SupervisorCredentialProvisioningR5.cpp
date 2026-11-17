@@ -31,8 +31,9 @@ bool IsAdminOrSystemClient() {
 }
 }
 bool ProvisionClientSecretThroughAdminPipe(
-    SupervisorCredentialStore& store,HANDLE stopEvent,HANDLE readyEvent,std::wstring& result) {
-    std::wstring sddl=L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-19)";
+    SupervisorCredentialStore& store,const std::wstring& serviceSid,HANDLE stopEvent,HANDLE readyEvent,std::wstring& result) {
+    if(serviceSid.rfind(L"S-1-5-80-",0)!=0){result=L"PROVISION_PIPE_SERVICE_SID_INVALID";return false;}
+    std::wstring sddl=L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-19)(A;;GA;;;"+serviceSid+L")";
     PSECURITY_DESCRIPTOR descriptor=nullptr;
     if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&descriptor,nullptr)){
         result=L"PROVISION_PIPE_DACL_BUILD_FAILED";return false;
