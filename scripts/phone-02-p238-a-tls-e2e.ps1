@@ -69,11 +69,11 @@ function Start-P238TeamRoom($leaf,$redirect){
    $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw -ErrorAction SilentlyContinue
    # tracing-subscriber emits ANSI field-formatting escapes; strip them before
    # parsing the structured database identity fields.
-   $ansiPattern=[string][char]27+'\\[[0-?]*[ -/]*[@-~]'
+   $ansiPattern=[string][char]27+'\[[0-?]*[ -/]*[@-~]'
    $teamLog=[regex]::Replace($teamLog,$ansiPattern,'')
   }while(($teamLog -notmatch 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY' -or $teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED') -and (Get-Date) -lt $deadline)
   Check ($teamLog -match 'TEAM_ROOM_REAL_HTTPS_LISTENER_READY') 'TEAM_ROOM_REAL_HTTPS_LISTENER'
-  if($teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED.*?database=([^\\s]+).*?backend_pid=(\\d+)'){
+  if($teamLog -notmatch 'TEAM_ROOM_POSTGRES_CONNECTED.*?database=([^\s]+).*?backend_pid=(\d+)'){
    throw 'Could not parse Team Room PostgreSQL database identity and backend PID from service log'
   }
   $teamRoomLoggedDatabase=$Matches[1]
@@ -82,13 +82,13 @@ function Start-P238TeamRoom($leaf,$redirect){
   Write-Host ('TEAM_ROOM_POSTGRES_LOG_BACKEND_PID='+$teamRoomBackendPid)
   $ready=Invoke-WebRequest -Uri 'https://team-room.p238.test:8443/health/ready' -UseBasicParsing -TimeoutSec 5
   Check ($ready.StatusCode -eq 200) 'TEAM_ROOM_REAL_HTTPS_DATABASE_READINESS'
-  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\\16\\bin\\psql.exe'
+  $psql=Join-Path $env:ProgramFiles 'PostgreSQL\16\bin\psql.exe'
   # Independent observer connection: records the actual PostgreSQL endpoint and
   # identity used by this diagnostic query, without exposing any credential.
   $dbObserver=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT current_database(), COALESCE(inet_server_addr()::text,''), inet_server_port(), pg_backend_pid(), current_user"
   $observerExit=$LASTEXITCODE
   if($observerExit -ne 0){throw 'Could not inspect Team Room PostgreSQL observer connection'}
-  $observerFields=@("$dbObserver".Trim() -split '\\|')
+  $observerFields=@("$dbObserver".Trim() -split '\|')
   Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_DATABASE='+$observerFields[0])
   Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_ADDR='+$observerFields[1])
   Write-Host ('TEAM_ROOM_POSTGRES_OBSERVER_SERVER_PORT='+$observerFields[2])
@@ -101,7 +101,7 @@ function Start-P238TeamRoom($leaf,$redirect){
   $teamDbSession=& $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -At -F '|' -c "SELECT datname, usename, application_name, pid, COALESCE(client_addr::text,'') FROM pg_stat_activity WHERE pid=$teamRoomBackendPid"
   $sessionExit=$LASTEXITCODE
   if($sessionExit -ne 0){throw 'Could not inspect Team Room backend session identity'}
-  $sessionFields=@("$teamDbSession".Trim() -split '\\|')
+  $sessionFields=@("$teamDbSession".Trim() -split '\|')
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_DATABASE='+$sessionFields[0])
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_USER='+$sessionFields[1])
   Write-Host ('TEAM_ROOM_POSTGRES_SESSION_APPLICATION='+$sessionFields[2])
