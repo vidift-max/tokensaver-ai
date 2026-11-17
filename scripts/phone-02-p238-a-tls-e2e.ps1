@@ -178,6 +178,9 @@ function Invoke-P238AppContainerScenario($label,$expected,$expectedReason){
   Check ($svcBody -match 'TEAM_ROOM_HTTPS_TLS=PASS .*certificate_chain=VALID hostname=VALID http_status=200') ($label+'_TEAM_ROOM_RESPONSE')
   if($env:P238_TEAM_ROOM_FULL_MODE -eq '1'){
    $teamLog=Get-Content (Join-Path $script:evidence 'team-room.stdout.log') -Raw
+   # tracing-subscriber inserts ANSI escapes around structured field names and '='; normalize before correlating the real process PID.
+   $ansiPattern=[string][char]27+'\\[[0-?]*[ -/]*[@-~]'
+   $teamLog=[regex]::Replace($teamLog,$ansiPattern,'')
    Check ($teamLog -match ('TEAM_ROOM_HEALTH_REQUEST process_id='+$script:teamRoomProcess.Id)) 'SUPERVISOR_REQUEST_REACHED_REAL_TEAM_ROOM_PROCESS'
   }
  }else{
