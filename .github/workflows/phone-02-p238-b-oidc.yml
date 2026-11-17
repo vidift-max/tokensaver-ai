@@ -25,7 +25,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: phone02-p238b-runner-\${{ github.ref }}
+  group: phone02-p238b-runner-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
       - name: Checkout exact branch event commit
         uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -58,7 +58,7 @@ jobs:
             throw "Refused unexpected branch: $env:GITHUB_REF"
           }
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and
-              '\${{ inputs.target_branch }}' -ne 'mission/phone-02-p238-b-oidc') {
+              '${{ inputs.target_branch }}' -ne 'mission/phone-02-p238-b-oidc') {
             throw 'workflow_dispatch target_branch mismatch'
           }
           if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
@@ -85,7 +85,7 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          GITHUB_TOKEN: \${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238b-evidence'
@@ -115,8 +115,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-p238b-windows-runner-\${{ github.run_id }}-\${{ github.run_attempt }}
-          path: \${{ runner.temp }}/phone02-p238b-evidence
+          name: phone02-p238b-windows-runner-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/phone02-p238b-evidence
           if-no-files-found: warn
           retention-days: 7
 
@@ -124,7 +124,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          "P238B_ARTIFACT_ID=\${{ steps.upload.outputs.artifact-id }}" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "P238B_ARTIFACT_URL=\${{ steps.upload.outputs.artifact-url }}" | Add-Content $env:GITHUB_STEP_SUMMARY
-          "P238B_ARTIFACT_SHA256=\${{ steps.upload.outputs.artifact-digest }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "P238B_ARTIFACT_ID=${{ steps.upload.outputs.artifact-id }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "P238B_ARTIFACT_URL=${{ steps.upload.outputs.artifact-url }}" | Add-Content $env:GITHUB_STEP_SUMMARY
+          "P238B_ARTIFACT_SHA256=${{ steps.upload.outputs.artifact-digest }}" | Add-Content $env:GITHUB_STEP_SUMMARY
           "OIDC_FLOW=NOT_EXECUTED" | Add-Content $env:GITHUB_STEP_SUMMARY
