@@ -4,7 +4,6 @@ $root = Join-Path $env:RUNNER_TEMP 'phone02-p238b-runner'
 $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238b-evidence'
 $transcript = Join-Path $evidence 'runner-transcript.log'
 $pgPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$kcPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $pgInstalled = $false; $pgService = $null; $keycloakProcess = $null; $teamRoomProcess = $null; $failure = $null
 $cleanup = [System.Collections.Generic.List[string]]::new()
 New-Item -ItemType Directory -Force -Path $root,$evidence | Out-Null
@@ -70,8 +69,8 @@ try {
     Write-Host 'POSTGRESQL_DATABASE=keycloak_p238b'
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
-    # Official pinned Keycloak ZIP. This round starts the service only; no OIDC
-    # client, realm, token acquisition, or token exchange is executed.
+        # P2.38-B local realm import occurs before the first Keycloak start.
+    # This phase does not run Phone-02, Supervisor, or MSIX.
     $keycloakZip=Join-Path $root 'keycloak-26.3.5.zip'
     $keycloakHome=Join-Path $root 'keycloak-26.3.5'
     Invoke-WebRequest -Uri 'https://github.com/keycloak/keycloak/releases/download/26.3.5/keycloak-26.3.5.zip' -OutFile $keycloakZip
@@ -81,53 +80,28 @@ try {
     Assert-Check (Test-Path $kcBat) 'KEYCLOAK_DISTRIBUTION_PRESENT'
     Write-Host 'KEYCLOAK_VERSION=26.3.5'
     Write-Host ('KEYCLOAK_ARCHIVE_SHA256='+$keycloakZipHash)
-    $env:KC_BOOTSTRAP_ADMIN_USERNAME='p238b-ephemeral-admin'
-    $env:KC_BOOTSTRAP_ADMIN_PASSWORD=$kcPassword
     $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='true'
     $env:KC_DB='postgres'
     $env:KC_DB_URL='jdbc:postgresql://127.0.0.1:5432/keycloak_p238b?ApplicationName=keycloak-p238b'
-    $env:KC_DB_USERNAME='postgres'
-    $env:KC_DB_PASSWORD=$pgPassword
-    $keycloakProcess=Start-Process -FilePath $kcBat -ArgumentList 'start-dev --db=postgres --http-enabled=true --hostname-strict=false' -WorkingDirectory $keycloakHome -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $evidence 'keycloak.stdout.log') -RedirectStandardError (Join-Path $evidence 'keycloak.stderr.log')
-    Remove-Item Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD -ErrorAction SilentlyContinue
-    Wait-Http 'http://127.0.0.1:9000/health/ready' 180 'KEYCLOAK_HEALTH'
-    Wait-Http 'http://127.0.0.1:8080/realms/master/.well-known/openid-configuration' 30 'KEYCLOAK_DISCOVERY'
-    $env:PGPASSWORD=$pgPassword
-    $kcConnections = & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atc "SELECT COUNT(*) FROM pg_stat_activity WHERE datname='keycloak_p238b' AND usename='postgres'"
-    if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL activity'}
-    $kcTableCount = & $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -Atc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"
-    if($LASTEXITCODE -ne 0){throw 'Could not inspect Keycloak PostgreSQL schema'}
-    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
-    Assert-Check ([int]$kcConnections -gt 0) 'KEYCLOAK_POSTGRES_ACTIVE_CONNECTION'
-    Assert-Check ([int]$kcTableCount -gt 0) 'KEYCLOAK_POSTGRES_SCHEMA_PRESENT'
-    Write-Host 'KEYCLOAK_EFFECTIVE_DATASTORE=postgresql'
-    Write-Host ('KEYCLOAK_POSTGRES_ACTIVE_CONNECTIONS='+$kcConnections)
-    Write-Host ('KEYCLOAK_POSTGRES_TABLE_COUNT='+$kcTableCount)
-    Write-Host ('KEYCLOAK_PROCESS_ID='+$keycloakProcess.Id)
-
-    # Run the existing MSIX/AppContainer + Supervisor harness in full Team Room
-    # mode. The harness starts the actual PostgreSQL-backed application with
-    # its production router on HTTPS; it does not start the P2.38-A probe mode.
-    $p238aScript=Join-Path $env:GITHUB_WORKSPACE 'scripts\phone-02-p238-a-tls-e2e.ps1'
-    Assert-Check (Test-Path $p238aScript) 'P238A_TLS_HARNESS_PRESENT'
-    $env:DATABASE_URL="postgres://postgres:$pgPassword@127.0.0.1:5432/team_room_p238b?application_name=team-room-p238b"
-    $env:PGPASSWORD=$pgPassword
-    $env:P238_TEAM_ROOM_FULL_MODE='1'
-    $env:RUST_LOG='info'
-    & $p238aScript
-    $harnessExit=$LASTEXITCODE
-    Remove-Item Env:DATABASE_URL,Env:PGPASSWORD,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG -ErrorAction SilentlyContinue
-    if($harnessExit -ne 0){throw ('P2.38-A full Team Room harness returned exit code '+$harnessExit)}
-    Write-Host 'P238B_TEAM_ROOM_REAL_HTTPS_SUPERVISOR_APPCONTAINER=COMPLETED'
-    Write-Host 'P238A_APPCONTAINER_SUPERVISOR_TLS_HARNESS=COMPLETED'
+    $env:KC_DB_USERNAME='postgres';$env:KC_DB_PASSWORD=$pgPassword
+    $env:P238B_KEYCLOAK_PG_PASSWORD=$pgPassword;$env:PGPASSWORD=$pgPassword
+    $bootstrapScript=Join-Path $env:GITHUB_WORKSPACE 'scripts\phone-02-p238b-keycloak-bootstrap.ps1'
+    Assert-Check (Test-Path $bootstrapScript) 'KEYCLOAK_P238B_BOOTSTRAP_PRESENT'
+    $keycloakProcess=& $bootstrapScript -KeycloakBat $kcBat -KeycloakHome $keycloakHome -Evidence $evidence -PsqlPath $psql
+    if(-not $keycloakProcess -or -not $keycloakProcess.Id){throw 'Keycloak bootstrap did not return a live process handle'}
+    Remove-Item Env:PGPASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue
+    Write-Host 'OIDC_ACCESS_TOKEN=NOT_REQUESTED'
+    Write-Host 'TEAM_ROOM_AUTH_EXCHANGE=NOT_CALLED'
+    Write-Host 'AI_PHONE_ACTIVATION=NOT_PERFORMED'
+    Write-Host 'P238B_PHASE1_ONLY=PASS'
 }
 catch {
     $failure=$_
     Write-Host ('P238B_RUNNER_FAILURE='+$_.Exception.Message)
 }
 finally {
-    Remove-Item Env:PGPASSWORD,Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_HTTPS_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD -ErrorAction SilentlyContinue
-    if($teamRoomProcess){Stop-TrackedProcess $teamRoomProcess 'TEAM_ROOM_FULL_PROCESS_STOP'}else{$cleanup.Add('TEAM_ROOM_FULL_PROCESS_STOP=MANAGED_BY_P238A_HARNESS')}
+    Remove-Item Env:PGPASSWORD,Env:DATABASE_URL,Env:TEAM_ROOM_BIND,Env:TEAM_ROOM_HTTPS_BIND,Env:TEAM_ROOM_TLS_CERT_PATH,Env:TEAM_ROOM_TLS_KEY_PATH,Env:P238_TEAM_ROOM_FULL_MODE,Env:RUST_LOG,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:P238B_KEYCLOAK_PG_PASSWORD -ErrorAction SilentlyContinue
+    $cleanup.Add('PHONE02_SUPERVISOR_MSIX_HARNESS=NOT_RUN_BY_PHASE1')
     if($keycloakProcess) {
         $kcDir=Join-Path $root 'keycloak-26.3.5'
         $kcChildren=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -and $_.CommandLine.Contains($kcDir)})
@@ -138,6 +112,15 @@ finally {
         Stop-TrackedProcess $keycloakProcess 'KEYCLOAK_LAUNCHER_STOP'
     } else {$cleanup.Add('KEYCLOAK_LAUNCHER_STOP=NOT_STARTED')}
     if($pgService) {
+        try {
+            $env:PGPASSWORD=$pgPassword
+            & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS keycloak_p238b WITH (FORCE)' | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Keycloak database cleanup failed'}
+            & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS team_room_p238b WITH (FORCE)' | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Team Room database cleanup failed'}
+            Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+            $cleanup.Add('POSTGRESQL_DATABASES_DROP=PASS')
+        } catch {$cleanup.Add('POSTGRESQL_DATABASES_DROP=FAIL')}
         try {Stop-Service -Name $pgService.Name -Force -ErrorAction Stop;$cleanup.Add('POSTGRESQL_SERVICE_STOP=PASS')} catch {$cleanup.Add('POSTGRESQL_SERVICE_STOP=FAIL')}
     } else {$cleanup.Add('POSTGRESQL_SERVICE_STOP=NOT_STARTED')}
     if($pgInstalled) {
@@ -147,15 +130,11 @@ finally {
     foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue) {
         try {
             $raw=Get-Content $file.FullName -Raw -ErrorAction Stop
-            $raw=$raw.Replace($pgPassword,'[REDACTED]').Replace($kcPassword,'[REDACTED]')
+            $raw=$raw.Replace($pgPassword,'[REDACTED]')
             $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
             Set-Content -Path $file.FullName -Value $raw -Encoding utf8
         } catch {}
     }
-    $p238aEvidence=Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
-    if(Test-Path $p238aEvidence){Copy-Item (Join-Path $p238aEvidence '*') $evidence -Recurse -Force -ErrorAction SilentlyContinue}
-    $pgLog=Join-Path $env:ProgramFiles 'PostgreSQL\16\data\log'
-    if(Test-Path $pgLog){Get-ChildItem $pgLog -File -ErrorAction SilentlyContinue | Select-Object -Last 5 | Copy-Item -Destination $evidence -Force -ErrorAction SilentlyContinue}
     @(
         'branch='+$env:GITHUB_REF
         'sha='+$env:GITHUB_SHA
@@ -170,7 +149,7 @@ finally {
     foreach($file in Get-ChildItem $evidence -File -ErrorAction SilentlyContinue) {
         try {
             $raw=Get-Content $file.FullName -Raw -ErrorAction Stop
-            $raw=$raw.Replace($pgPassword,'[REDACTED]').Replace($kcPassword,'[REDACTED]')
+            $raw=$raw.Replace($pgPassword,'[REDACTED]')
             $raw=[regex]::Replace($raw,'eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}','[REDACTED_JWT]')
             Set-Content -Path $file.FullName -Value $raw -Encoding utf8
         } catch {}
