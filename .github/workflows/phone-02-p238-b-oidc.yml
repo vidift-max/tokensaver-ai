@@ -14,6 +14,12 @@ on:
       # Round 3 owns an isolated LocalService/DPAPI-NG harness. Never route
       # those changes through the legacy full-stack bootstrap.
       - '!services/phone-supervisor/credential-store-r3/**'
+      # Round 4 has its own Windows AppContainer fail-closed workflow.
+      - '!services/phone-supervisor/phone_supervisor.cpp'
+      - '!services/phone-supervisor/phone_supervisor_client.cpp'
+      - '!services/phone-supervisor/TeamRoomScenarioGateR4.h'
+      - '!services/phone-supervisor/phone_supervisor_r4_tests.cpp'
+      - '!scripts/phone-02-p238-a-tls-e2e.ps1'
   workflow_dispatch:
     inputs:
       target_branch:
