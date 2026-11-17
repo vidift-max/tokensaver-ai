@@ -25,6 +25,9 @@ jobs:
           $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
           $sdk = Get-ChildItem (Join-Path $x86 'Windows Kits\10\bin') -Directory | Where-Object Name -Match '^10\.' | Sort-Object Name -Descending | Select-Object -First 1
           $midl = Join-Path $sdk.FullName 'x64\midl.exe'
+          Write-Host ('VISUAL_STUDIO_PATH=' + $vs)
+          Write-Host ('WINDOWS_SDK_VERSION=' + $sdk.Name)
+          Write-Host 'HTTP_TLS_LIBRARY=Windows inbox WinHTTP API (winhttp.dll / winhttp.lib)'
           foreach ($p in @($vcvars,$midl)) { if (-not (Test-Path $p)) { throw "Missing tool: $p" } }
           $build = Join-Path $env:RUNNER_TEMP 'p238a-build'
           New-Item -ItemType Directory -Force $build | Out-Null
