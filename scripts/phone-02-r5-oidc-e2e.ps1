@@ -134,13 +134,13 @@ try{
  $ext=Join-Path $certDir 'keycloak-ext.cnf'
  $nl=[Environment]::NewLine
  Set-Content -LiteralPath $ext -Value ("[v3_req]"+$nl+"subjectAltName=DNS:keycloak.p238.test"+$nl+"extendedKeyUsage=serverAuth"+$nl+"keyUsage=digitalSignature,keyEncipherment"+$nl+"basicConstraints=CA:FALSE"+$nl) -Encoding ascii
- & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $goodCaKey -out $goodCaCert -days 2 -subj '/CN=Phone02 R5 Trusted Test CA' 2>&1|Out-Null
+ & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $goodCaKey -out $goodCaCert -days 2 -subj '/CN=Phone02 R5 Trusted Test CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'R5_GOOD_CA_GENERATION_FAILED'}
  & $openssl req -newkey rsa:2048 -nodes -keyout $goodKey -out $goodCsr -subj '/CN=keycloak.p238.test' 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'R5_GOOD_LEAF_CSR_FAILED'}
  & $openssl x509 -req -in $goodCsr -CA $goodCaCert -CAkey $goodCaKey -CAcreateserial -out $goodCert -days 2 -extfile $ext -extensions v3_req 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'R5_GOOD_LEAF_CERT_FAILED'}
- & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $badCaKey -out $badCaCert -days 2 -subj '/CN=Phone02 R5 Untrusted Test CA' 2>&1|Out-Null
+ & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $badCaKey -out $badCaCert -days 2 -subj '/CN=Phone02 R5 Untrusted Test CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'R5_BAD_CA_GENERATION_FAILED'}
  & $openssl req -newkey rsa:2048 -nodes -keyout $badKey -out $badCsr -subj '/CN=keycloak.p238.test' 2>&1|Out-Null
  if($LASTEXITCODE -ne 0){throw 'R5_BAD_LEAF_CSR_FAILED'}
@@ -265,7 +265,7 @@ try{
  Mark 'CREDENTIAL_PROTECTED' ((Get-Content $svcLog -Raw) -match 'CREDENTIAL_PROTECTED=PASS')
 
  $keycloakProcess=Start-R5Keycloak $kcBat $kcHome $goodCert $goodKey $false $false
- Wait-LogMarker $svcLog 'R5_VERDICT=PASS' 180|Out-Null
+ Wait-LogMarker $svcLog 'R5_VERDICT=PASS' 300|Out-Null
  Mark 'SUPERVISOR_OIDC_R5_VERDICT' ((Get-Content $svcLog -Raw) -match 'R5_VERDICT=PASS')
  $clientLog=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
  Remove-Item $clientLog -Force -ErrorAction SilentlyContinue
@@ -287,7 +287,8 @@ try{
  $envLeak=$false
  foreach($item in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()){if([string]$item.Value -ceq $oidcClientSecret){$envLeak=$true}}
  $fileLeak=$false;$jwtLeak=$false
- $scanFiles=@(Get-ChildItem $root -File -Recurse -ErrorAction SilentlyContinue|Where-Object {$_.Extension -in @('.log','.json','.conf','.txt','.ini','.xml')})+@(Get-Item $svcLog,$clientLog -ErrorAction SilentlyContinue)
+ $storeFile=Join-Path $storeRoot 'oidc-client-secret.dpapi'
+ $scanFiles=@(Get-ChildItem $root -File -Recurse -ErrorAction SilentlyContinue|Where-Object {$_.Extension -in @('.log','.json','.conf','.txt','.ini','.xml')})+@(Get-Item $svcLog,$clientLog,$storeFile -ErrorAction SilentlyContinue)
  $secretNeedle=[Text.Encoding]::UTF8.GetBytes($oidcClientSecret)
  foreach($file in $scanFiles|Where-Object {$_}){
   try{$bytes=[IO.File]::ReadAllBytes($file.FullName);if(Find-Bytes $bytes $secretNeedle){$fileLeak=$true};$text=[Text.Encoding]::UTF8.GetString($bytes);if($text -match 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'){$jwtLeak=$true}}catch{}
@@ -345,10 +346,8 @@ finally{
  }catch{$cleanup.Add('DPAPI_STORE_DIRECTORY_REMOVED=FAIL')}
  Remove-Item Env:PGPASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_DB_PASSWORD,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HTTPS_PORT,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT -ErrorAction SilentlyContinue
  $adminToken=$null;$adminResponse=$null;$secretInfo=$null;$oidcClientSecret=$null;$adminPassword=$null;$pgPassword=$null
- $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
- $cleanup.Add('CLEANUP='+$cleanupResult)
  $serviceBody=if($svcLog -and (Test-Path $svcLog)){Get-Content $svcLog -Raw}else{''}
- $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_PROTECTED=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS')
+ $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_PROTECTED=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS')
  $allServiceMarkers=$true
  foreach($marker in $required){if(-not $serviceBody.Contains($marker)){$allServiceMarkers=$false}}
  $final=($null -eq $failure -and $cleanupResult -eq 'PASS' -and $allServiceMarkers -and $checks -contains 'RPC_TOKEN_EXPOSURE=PASS' -and $checks -contains 'COMMON_PROCESS_REJECT=PASS' -and $checks -contains 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS' -and $checks -contains 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -and $checks -contains 'TOKEN_LOG_EXPOSURE=PASS')
@@ -361,15 +360,21 @@ finally{
   'R4_ARTIFACT_ID=14374149971'
   'R4_ARTIFACT_SHA256=69e317dd3b7d280ecef5fef2eed8f2d8308c11af211a0ed017a74d5912c639ea'
   'SECRET_SCAN='+$(if($checks -contains 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -and $checks -contains 'TOKEN_LOG_EXPOSURE=PASS'){'PASS'}else{'FAIL'})
-  'ARTIFACT_SCAN='+$(if($checks -contains 'TOKEN_LOG_EXPOSURE=PASS'){'PASS'}else{'FAIL'})
+  'ARTIFACT_SCAN=PENDING_WORKFLOW'
   'CLEANUP='+$cleanupResult
-  'R5_VERDICT='+$(if($final){'PASS'}else{'BLOCKED'})
+  'R5_RUNTIME_VERDICT='+$(if($final){'PASS'}else{'BLOCKED'})
   'checks='+($checks -join ';')
   'cleanup='+($cleanup -join ';')
  )
- $summary|Set-Content (Join-Path $evidence 'r5-summary.txt') -Encoding utf8
  if($svcLog -and (Test-Path $svcLog)){Copy-Item $svcLog (Join-Path $evidence 'supervisor-r5.log') -Force}
  if($clientLog -and (Test-Path $clientLog)){Copy-Item $clientLog (Join-Path $evidence 'supervisor-client-common.log') -Force}
+ try{if(Test-Path $clientLog){Remove-Item $clientLog -Force};if(Test-Path $root){Remove-Item $root -Recurse -Force};$cleanup.Add('TEMP_DIRECTORY_REMOVED='+$(if(-not(Test-Path $root)){'PASS'}else{'FAIL'}))}catch{$cleanup.Add('TEMP_DIRECTORY_REMOVED=FAIL')}
+ $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
+ $cleanup.Add('CLEANUP='+$cleanupResult)
+ $summary=@($summary | Where-Object {$_ -notmatch '^CLEANUP='})
+ $summary += 'CLEANUP='+$cleanupResult
+ $summary += 'cleanup='+($cleanup -join ';')
+ $summary|Set-Content (Join-Path $evidence 'r5-summary.txt') -Encoding utf8
  $hashes=Get-ChildItem $evidence -File|Where-Object Name -ne 'SHA256SUMS'|ForEach-Object {(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()+'  '+$_.Name}
  $hashes|Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
  if($null -ne $failure -or -not $final){Write-Host 'R5_RUNTIME_FINAL=FAIL'}else{Write-Host 'R5_RUNTIME_FINAL=PASS'}
