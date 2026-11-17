@@ -414,7 +414,7 @@ finally {
   try{$k=[System.Security.Cryptography.CngKey]::Open($key.Name,$key.Provider,[System.Security.Cryptography.CngKeyOpenOptions]::MachineKey);$k.Delete();$k.Dispose()}catch{}
   try{$k2=[System.Security.Cryptography.CngKey]::Open($key.Name,$key.Provider,[System.Security.Cryptography.CngKeyOpenOptions]::MachineKey);$k2.Dispose();$p238KeysGone=$false}catch{}
  }
- $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$privateKeyGone=($null -eq $cert);$tempGone=$false
+ $serviceGraceful=$false;$serviceGone=(-not $created);$clientGone=$false;$packageGone=(-not $installed);$certificateGone=$true;$privateKeyGone=($null -eq $cert);$tempGone=$false;$clientDataGone=$true;$fallbackLogGone=$true
  if($created){
   & sc.exe stop $service 2>&1|Out-Host
   $deadline=(Get-Date).AddSeconds(20);$state=''
@@ -453,6 +453,10 @@ finally {
   try{$packageGone=(@(Get-AppxPackage -Name 'TokenSaver.Phone02.SupervisorTest' -ErrorAction Stop).Count -eq 0)}catch{$packageGone=$false}
   Write-Host ('MSIX_UNINSTALL='+$(if($packageGone){'PASS'}else{'FAIL'}))
  }
+ $fallbackLogPath=Join-Path $env:LOCALAPPDATA 'PhoneSupervisor-P236-client.log'
+ Remove-Item $fallbackLogPath -Force -ErrorAction SilentlyContinue
+ $fallbackLogGone=(-not(Test-Path $fallbackLogPath))
+ if($app){$clientDataPath=Join-Path $env:LOCALAPPDATA ('Packages\\'+$app.PackageFamilyName);if(Test-Path $clientDataPath){Remove-Item $clientDataPath -Recurse -Force -ErrorAction SilentlyContinue};$clientDataGone=(-not(Test-Path $clientDataPath))}
  if($cert){
   foreach($store in @('Cert:\CurrentUser\My','Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\My','Cert:\LocalMachine\TrustedPeople')){
    Remove-Item ($store+'\'+$cert.Thumbprint) -Force -ErrorAction SilentlyContinue
@@ -479,10 +483,12 @@ finally {
  Write-Host ('TEST_CERT_REMOVED='+$(if($certificateGone){'PASS'}else{'FAIL'}))
  Write-Host ('TEST_PRIVATE_KEY_REMOVED='+$(if($privateKeyGone){'PASS'}else{'FAIL'}))
  Write-Host ('TEMP_DIRECTORY_REMOVED='+$(if($tempGone){'PASS'}else{'FAIL'}))
+ Write-Host ('APPCONTAINER_PACKAGE_DATA_REMOVED='+$(if($clientDataGone){'PASS'}else{'FAIL'}))
+ Write-Host ('CLIENT_FALLBACK_LOG_REMOVED='+$(if($fallbackLogGone){'PASS'}else{'FAIL'}))
  $logText='';if(Test-Path (Join-Path $evidence 'service.log')){$logText=Get-Content (Join-Path $evidence 'service.log') -Raw}
  $sessionClean=((-not $serviceStarted) -or $logText -match 'SERVICE_CLEANUP_COMPLETE=TRUE SESSIONS=0')
  Write-Host ('TEAM_ROOM_PROCESS_REMOVED='+$(if($teamRoomProcessGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_CA_AND_CERTIFICATES_REMOVED='+$(if($p238CertsGone){'PASS'}else{'FAIL'}));Write-Host ('P238A_PRIVATE_KEYS_REMOVED='+$(if($p238KeysGone){'PASS'}else{'FAIL'}));Write-Host ('HOSTS_ENTRY_RESTORED='+$(if($p238HostsRestored){'PASS'}else{'FAIL'}))
- $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $sessionClean -and $teamRoomProcessGone -and $p238CertsGone -and $p238KeysGone -and $p238HostsRestored)
+ $cleanup=($serviceGone -and $clientGone -and $packageGone -and $certificateGone -and $privateKeyGone -and $tempGone -and $clientDataGone -and $fallbackLogGone -and $sessionClean -and $teamRoomProcessGone -and $p238CertsGone -and $p238KeysGone -and $p238HostsRestored)
  Write-Host ('CLEANUP_COMPLETE='+$(if($cleanup){'PASS'}else{'FAIL'}))
  if($env:P238_R4_FAIL_CLOSED -eq '1'){('P2.38-B_R4_FAIL_CLOSED='+$(if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'PASS'}else{'BLOCKED'}))|Set-Content (Join-Path $evidence 'r4-classification.txt') -Encoding ASCII}else{if($teamRoomBridgePassed -and $cleanup -and $final -eq 'PASS'){'P2.38-A_TLS_E2E=PASS'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}else{'P2.38-A_TLS_E2E=BLOCKED'|Set-Content (Join-Path $evidence 'p2.38-a-classification.txt') -Encoding ASCII}}
  if(-not $cleanup){$final='BLOCKED'}
