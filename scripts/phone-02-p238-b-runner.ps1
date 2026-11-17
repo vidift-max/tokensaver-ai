@@ -3,8 +3,8 @@ $ProgressPreference = 'SilentlyContinue'
 $root = Join-Path $env:RUNNER_TEMP 'phone02-p238b-runner'
 $evidence = Join-Path $env:RUNNER_TEMP 'phone02-p238b-evidence'
 $transcript = Join-Path $evidence 'runner-transcript.log'
-$pgPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$kcPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$pgPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$kcPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 $pgInstalled = $false; $pgService = $null; $keycloakProcess = $null; $teamRoomProcess = $null; $failure = $null
 $cleanup = [System.Collections.Generic.List[string]]::new()
 New-Item -ItemType Directory -Force -Path $root,$evidence | Out-Null
@@ -52,17 +52,20 @@ try {
     $pgService=Get-Service | Where-Object {$_.Name -match '^postgresql.*16'} | Select-Object -First 1
     if(-not $pgService){throw 'PostgreSQL 16 Windows service not found after install'}
     if($pgService.Status -ne 'Running'){Start-Service -Name $pgService.Name}
+    $psql = Join-Path $env:ProgramFiles 'PostgreSQL\\16\\bin\\psql.exe'
+    Assert-Check (Test-Path $psql) 'POSTGRESQL_CLIENT_PRESENT'
     $deadline=(Get-Date).AddSeconds(60);$pgReady=$false
     do {
         $env:PGPASSWORD=$pgPassword
-        & psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc 'SELECT 1' 2>$null
+        & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc 'SELECT 1' 2>$null
         $pgReady=($LASTEXITCODE -eq 0)
         if(-not $pgReady){Start-Sleep -Seconds 2}
     } while(-not $pgReady -and (Get-Date) -lt $deadline)
     Assert-Check $pgReady 'POSTGRESQL_NATIVE_SERVICE_READY'
-    & psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE team_room_p238b'
+    & $psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE team_room_p238b'
     if($LASTEXITCODE -ne 0){throw 'PostgreSQL disposable Team Room database creation failed'}
     Write-Host 'POSTGRESQL_DATABASE=team_room_p238b'
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
     # Official pinned Keycloak ZIP. This round starts the service only; no OIDC
     # client, realm, token acquisition, or token exchange is executed.
