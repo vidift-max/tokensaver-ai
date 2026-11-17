@@ -3,7 +3,7 @@ $root=Join-Path $env:RUNNER_TEMP 'phone02-p238a'
 $evidence=Join-Path $env:RUNNER_TEMP 'phone02-p238a-evidence'
 $build=Join-Path $root 'build';$pkg=Join-Path $root 'package'
 New-Item -ItemType Directory -Force -Path $build,$pkg,$evidence|Out-Null
-$service='TokenSaverPhone02Supervisor';$teamRoomBridgePassed=$false;$teamRoomProcess=$null;$teamRoomProcessGone=$true;$p238Certificates=[System.Collections.Generic.List[System.Security.Cryptography.X509Certificates.X509Certificate2]]::new();$p238PrivateKeys=[System.Collections.Generic.List[object]]::new();$p238RootThumbprints=[System.Collections.Generic.List[string]]::new();$p238HostsPath=Join-Path $env:SystemRoot 'System32\drivers\etc\hosts';$p238HostsOriginal=$null;$p238HostsRestored=$true;$p238CertsGone=$true;$p238KeysGone=$true;$p238Endpoint='https://team-room.p238.test:8443/health/live';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date;$testPrivateKeyUniqueName=$null;$testPrivateKeyProvider=$null
+$service='TokenSaverPhone02Supervisor';$serviceStarted=$false;$teamRoomBridgePassed=$false;$teamRoomProcess=$null;$teamRoomProcessGone=$true;$p238Certificates=[System.Collections.Generic.List[System.Security.Cryptography.X509Certificates.X509Certificate2]]::new();$p238PrivateKeys=[System.Collections.Generic.List[object]]::new();$p238RootThumbprints=[System.Collections.Generic.List[string]]::new();$p238HostsPath=Join-Path $env:SystemRoot 'System32\drivers\etc\hosts';$p238HostsOriginal=$null;$p238HostsRestored=$true;$p238CertsGone=$true;$p238KeysGone=$true;$p238Endpoint='https://team-room.p238.test:8443/health/live';$created=$false;$installed=$false;$cert=$null;$final='BLOCKED';$servicePid=0;$activationPid=0;$testStart=Get-Date;$testPrivateKeyUniqueName=$null;$testPrivateKeyProvider=$null
 Start-Transcript -Path (Join-Path $evidence 'transcript.log') -Force|Out-Null
 function Check($ok,$label){Write-Host ($label+'='+$(if($ok){'PASS'}else{'FAIL'}));if(-not $ok){throw ($label+' failed')}}
 
@@ -14,7 +14,7 @@ function Register-P238Certificate($c){
  if($rsa){$rsa.Dispose()}
 }
 function New-P238Root($subject){
- $c=New-SelfSignedCertificate -Type Custom -Subject $subject -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage KeyCertSign,CrlSign,DigitalSignature -TextExtension @('2.5.29.19={critical}{text}ca=1&pathlength=1') -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(3)
+ $c=New-SelfSignedCertificate -Type Custom -Subject $subject -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage CertSign,CRLSign,DigitalSignature -TextExtension @('2.5.29.19={critical}{text}ca=1&pathlength=1') -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(3)
  Register-P238Certificate $c
  return $c
 }
@@ -196,6 +196,7 @@ try {
  & icacls.exe $root /inheritance:r /grant 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' $serviceAce|Out-Host
  if($LASTEXITCODE -ne 0){throw 'Service working directory ACL failed'}
  & sc.exe start $service|Out-Host;if($LASTEXITCODE -ne 0){throw 'SCM service start failed'}
+ $serviceStarted=$true
  $s=$null;for($i=0;$i -lt 40;$i++){Start-Sleep -Milliseconds 500;$s=Get-CimInstance Win32_Service -Filter "Name='$service'";if($s.State -eq 'Running'){break}}
  Check ($s.State -eq 'Running') 'SERVICE_START'
  $query=(& sc.exe queryex $service 2>&1|Out-String);$scPid=[regex]::Match($query,'(?im)PID\s*:\s*(\d+)').Groups[1].Value
@@ -304,11 +305,12 @@ finally {
   $deadline=(Get-Date).AddSeconds(20);$state=''
   do{Start-Sleep -Milliseconds 500;$q=Get-CimInstance Win32_Service -Filter "Name='$service'" -ErrorAction SilentlyContinue;$state=$q.State}while($state -ne 'Stopped' -and (Get-Date) -lt $deadline)
   $svcLog=Join-Path $root 'supervisor.conf.log'
+  $sl=''
   if(Test-Path $svcLog){
    $sl=Get-Content $svcLog -Raw
    Copy-Item $svcLog (Join-Path $evidence 'service.log') -Force
-   $serviceGraceful=($state -eq 'Stopped' -and $sl -match 'SERVICE_CLEANUP_COMPLETE=TRUE')
   }
+  $serviceGraceful=($state -eq 'Stopped' -and ((-not $serviceStarted) -or $sl -match 'SERVICE_CLEANUP_COMPLETE=TRUE'))
   if(-not $serviceGraceful -and $servicePid -gt 0){
    $sp=Get-CimInstance Win32_Process -Filter "ProcessId=$servicePid" -ErrorAction SilentlyContinue
    if($sp){Stop-Process -Id $servicePid -Force -ErrorAction SilentlyContinue}
