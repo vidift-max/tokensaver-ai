@@ -360,7 +360,7 @@ finally{
  }catch{$cleanup.Add('TEMP_DIRECTORY_REMOVED=FAIL')}
  $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
  $cleanup.Add('CLEANUP='+$cleanupResult)
- $final=($null -eq $failure -and $cleanupResult -eq 'PASS' -and $allServiceMarkers -and $checks -contains 'RPC_TOKEN_EXPOSURE=PASS' -and $checks -contains 'COMMON_PROCESS_REJECT=PASS' -and $checks -contains 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS' -and $checks -contains 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -and $checks -contains 'TOKEN_LOG_EXPOSURE=PASS')
+ $final=($null -eq $failure -and $cleanupResult -eq 'PASS' -and $allServiceMarkers -and $checks -contains 'KEYCLOAK_CLIENT_CONFIDENTIAL=PASS' -and $checks -contains 'KEYCLOAK_SERVICE_ACCOUNT_ENABLED=PASS' -and $checks -contains 'KEYCLOAK_SCOPE_AND_AUDIENCE_CONFIGURED=PASS' -and $checks -contains 'KEYCLOAK_POSTGRES_REALM_PERSISTED=PASS' -and $checks -contains 'OIDC_JWKS_RSA_PRESENT=PASS' -and $checks -contains 'KEYCLOAK_HTTP_DISABLED=PASS' -and $checks -contains 'KEYCLOAK_STOPPED_FOR_NEGATIVE_PROBES=PASS' -and $checks -contains 'BAD_TLS_PROBE_LISTENER_READY=PASS' -and $checks -contains 'SUPERVISOR_OIDC_R5_VERDICT=PASS' -and $checks -contains 'RPC_TOKEN_EXPOSURE=PASS' -and $checks -contains 'COMMON_PROCESS_REJECT=PASS' -and $checks -contains 'COMMON_PROCESS_TEAM_ROOM_REJECT=PASS' -and $checks -contains 'CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS' -and $checks -contains 'TOKEN_LOG_EXPOSURE=PASS')
  $summary=@(
   'branch='+$env:GITHUB_REF
   'sha='+$env:GITHUB_SHA
