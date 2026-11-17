@@ -280,3 +280,28 @@ pub extern "system" fn r5_probe_unavailable() -> i32 {
     }));
     match result { Ok(Ok(())) => 0, Ok(Err(e)) => e, Err(_) => 99 }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exact_https_discovery_and_token_endpoints_are_accepted() {
+        assert!(valid_url(DISCOVERY, "/realms/phone02-p238b/.well-known/openid-configuration", false));
+        assert!(valid_url("https://keycloak.p238.test:8443/realms/phone02-p238b/protocol/openid-connect/token", TOKEN_PATH, false));
+        assert!(valid_url("https://keycloak.p238.test:8443/realms/phone02-p238b/protocol/openid-connect/certs", JWKS_PATH, false));
+    }
+    #[test]
+    fn http_wrong_host_wrong_port_and_wrong_path_are_rejected() {
+        assert!(!valid_url("http://keycloak.p238.test:8443/realms/phone02-p238b/protocol/openid-connect/token", TOKEN_PATH, false));
+        assert!(!valid_url("https://evil.p238.test:8443/realms/phone02-p238b/protocol/openid-connect/token", TOKEN_PATH, false));
+        assert!(!valid_url("https://keycloak.p238.test:9443/realms/phone02-p238b/protocol/openid-connect/token", TOKEN_PATH, false));
+        assert!(!valid_url("https://keycloak.p238.test:8443/other", TOKEN_PATH, false));
+        assert!(!valid_url("https://user@keycloak.p238.test:8443/realms/phone02-p238b/protocol/openid-connect/token", TOKEN_PATH, false));
+    }
+    #[test]
+    fn malformed_token_response_is_rejected() {
+        assert!(serde_json::from_slice::<TokenResponse>(br#"{"access_token": "#).is_err());
+        assert!(serde_json::from_slice::<TokenResponse>(br#"{"access_token":"x","token_type":"Bearer"}"#).is_err());
+    }
+}
