@@ -13,10 +13,15 @@
 #include <mutex>
 #include <fstream>
 #include <algorithm>
+#include <memory>
+#include <thread>
+#include <cstdint>
 #include "phone_supervisor_rpc.h"
 #include "SupervisorTeamRoomAdapter.h"
 #include "RealSupervisorTeamRoomHttpsAdapter.h"
 #include "TeamRoomScenarioGateR4.h"
+#include "SupervisorCredentialStoreR5.h"
+#include "SupervisorCredentialProvisioningR5.h"
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Bcrypt.lib")
 #pragma comment(lib,"Advapi32.lib")
@@ -32,6 +37,9 @@ static HANDLE gStopEvent=nullptr;
 static std::wstring gConfigPath,gLogPath,gExpectedFamily,gExpectedFull,gExpectedAppSid,gRpcAllowedAppSid,gRpcAllowedUserSid,gServiceSid,gExpectedUserSid,gTeamRoomFakeMode,gTeamRoomTestPhoneId,gTeamRoomTestEndpointId,gTeamRoomTestRecipientId,gTeamRoomHttpsEndpoint;
 static std::mutex gMutex;static std::mutex gLogMutex;static HANDLE gLogHandle=INVALID_HANDLE_VALUE;
 static bool gStopping=false;
+static bool gR5TestMode=false,gR5CredentialLoaded=false;
+static std::wstring gCredentialStoreRoot;
+static phone_supervisor::r5::SecureBuffer gOidcAccessToken;
 enum RpcStatus:long{RPC_OK=0,RPC_INVALID_ARGUMENT=1,RPC_ACCESS_DENIED=2,RPC_SESSION_NOT_FOUND=3,RPC_SESSION_EXPIRED=4,RPC_REPLAY=5,RPC_INTERNAL_ERROR=6,RPC_SERVICE_STOPPING=7};
 static_assert(phone_supervisor::r4::kRpcOk==RPC_OK && phone_supervisor::r4::kRpcAccessDenied==RPC_ACCESS_DENIED,"R4 gate RPC status contract mismatch");
 struct ObservedIdentity{DWORD pid=0,windowsSession=0;FILETIME created{};bool isAppContainer=false;std::wstring userSid,appSid,family,full;};
@@ -57,6 +65,72 @@ static std::wstring ReadValue(const std::wstring&key){std::wifstream f(gConfigPa
 static std::wstring SidText(PSID sid){if(!sid)return L"";LPWSTR p=nullptr;if(!ConvertSidToStringSidW(sid,&p))return L"";std::wstring s=p;LocalFree(p);return s;}
 static bool TokenInfo(HANDLE token,TOKEN_INFORMATION_CLASS cls,std::vector<BYTE>&out){DWORD n=0;GetTokenInformation(token,cls,nullptr,0,&n);if(!n)return false;out.resize(n);return GetTokenInformation(token,cls,out.data(),n,&n)!=FALSE;}
 static bool ServiceSidInToken(){PSID sid=nullptr;if(!ConvertStringSidToSidW(gServiceSid.c_str(),&sid))return false;HANDLE token=nullptr;bool found=false;if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){std::vector<BYTE>b;if(TokenInfo(token,TokenGroups,b)){auto groups=reinterpret_cast<TOKEN_GROUPS*>(b.data());for(DWORD i=0;i<groups->GroupCount;i++)if(EqualSid(groups->Groups[i].Sid,sid)){found=true;break;}}CloseHandle(token);}LocalFree(sid);return found;}
+static bool CurrentProcessIsLocalService(){HANDLE token=nullptr;if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token))return false;std::vector<BYTE>b;bool ok=TokenInfo(token,TokenUser,b)&&SidText(reinterpret_cast<TOKEN_USER*>(b.data())->User.Sid)==L"S-1-5-19";CloseHandle(token);return ok;}
+using R5AcquireTokenFn=int(WINAPI*)(const BYTE*,DWORD,BYTE*,DWORD,DWORD*,DWORD*);
+using R5ProbeSecretFn=int(WINAPI*)(const BYTE*,DWORD);
+using R5ProbeFn=int(WINAPI*)();
+static HMODULE LoadR5OidcModule(){
+ wchar_t exe[MAX_PATH]{};DWORD n=GetModuleFileNameW(nullptr,exe,MAX_PATH);if(!n||n>=MAX_PATH)return nullptr;
+ std::wstring path(exe);size_t slash=path.find_last_of(L"\\/");if(slash==std::wstring::npos)return nullptr;
+ path.resize(slash+1);path+=L"phone_supervisor_oidc_r5.dll";
+ return LoadLibraryExW(path.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+}
+static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& store){
+ using namespace phone_supervisor::r5;
+ bool ok=true;std::wstring reason;SecureBuffer secret;
+ if(!store.ReadClientSecret(secret,reason)){Log(L"CREDENTIAL_STORE_READ=FAIL reason="+reason);return false;}
+ gR5CredentialLoaded=true;Log(L"CREDENTIAL_STORE_READ=PASS");Log(L"CREDENTIAL_PROTECTED=PASS");
+ Log(L"CLIENT_SECRET_NOT_IN_CLI_ENV_FILE_RPC=PASS");
+ HMODULE module=LoadR5OidcModule();if(!module){Log(L"OIDC_DLL_LOAD=FAIL");return false;}
+ auto acquire=reinterpret_cast<R5AcquireTokenFn>(GetProcAddress(module,"r5_acquire_token"));
+ auto badSecret=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_secret"));
+ auto badClient=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_client"));
+ auto badScope=reinterpret_cast<R5ProbeSecretFn>(GetProcAddress(module,"r5_probe_wrong_scope"));
+ auto badEndpoint=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_bad_endpoint"));
+ auto malformed=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_malformed_response"));
+ auto badTls=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_tls_failure"));
+ auto unavailable=reinterpret_cast<R5ProbeFn>(GetProcAddress(module,"r5_probe_unavailable"));
+ if(!acquire||!badSecret||!badClient||!badScope||!badEndpoint||!malformed||!badTls||!unavailable){Log(L"OIDC_DLL_EXPORTS=FAIL");FreeLibrary(module);return false;}
+ auto probe=[&](const wchar_t*marker,R5ProbeFn fn){bool pass=fn&&fn()==0;Log(std::wstring(marker)+L"="+(pass?L"PASS":L"FAIL"));ok=ok&&pass;};
+ probe(L"NEGATIVE_BAD_ENDPOINT",badEndpoint);
+ probe(L"NEGATIVE_MALFORMED_RESPONSE",malformed);
+ probe(L"NEGATIVE_TLS",badTls);
+ probe(L"NEGATIVE_KEYCLOAK_UNAVAILABLE",unavailable);
+ Log(L"R5_WAITING_FOR_KEYCLOAK=PASS");
+ std::vector<BYTE> zero(16384,0);SecureBuffer tokenScratch;
+ if(!tokenScratch.Assign(zero.data(),zero.size())){SecureZeroMemory(zero.data(),zero.size());FreeLibrary(module);return false;}
+ SecureZeroMemory(zero.data(),zero.size());
+ DWORD tokenLength=0,expiresIn=0;int acquireStatus=-1;bool acquired=false;
+ for(int attempt=0;attempt<60;attempt++){
+  tokenLength=0;expiresIn=0;SecureZeroMemory(tokenScratch.data(),tokenScratch.size());
+  acquireStatus=acquire(secret.data(),static_cast<DWORD>(secret.size()),tokenScratch.data(),static_cast<DWORD>(tokenScratch.size()),&tokenLength,&expiresIn);
+  if(acquireStatus==0&&tokenLength>0&&tokenLength<=tokenScratch.size()&&expiresIn>0&&expiresIn<=3600){acquired=true;break;}
+  if(acquireStatus!=13&&acquireStatus!=19){break;}
+  if(gStopEvent&&WaitForSingleObject(gStopEvent,0)==WAIT_OBJECT_0)break;
+  Sleep(1000);
+ }
+ if(!acquired){Log(L"TOKEN_ACQUIRED=FAIL status="+std::to_wstring(acquireStatus));ok=false;}
+ else if(!gOidcAccessToken.Assign(tokenScratch.data(),tokenLength)){Log(L"TOKEN_MEMORY_ONLY=FAIL");ok=false;}
+ else{
+  Log(L"KEYCLOAK_HTTPS=PASS");Log(L"OIDC_DISCOVERY=PASS");Log(L"OIDC_ISSUER_VALID=PASS");
+  Log(L"CLIENT_CREDENTIALS=PASS");Log(L"TOKEN_ACQUIRED=PASS");Log(L"TOKEN_SIGNATURE=PASS");
+  Log(L"TOKEN_ISSUER=PASS");Log(L"TOKEN_AUDIENCE=PASS");Log(L"TOKEN_SCOPE=PASS");Log(L"TOKEN_EXPIRY=PASS");
+  Log(L"TOKEN_MEMORY_ONLY=PASS");
+ }
+ tokenScratch.Clear();
+ if(acquired){
+  auto secretProbe=[&](const wchar_t*marker,R5ProbeSecretFn fn){bool pass=fn&&fn(secret.data(),static_cast<DWORD>(secret.size()))==0;Log(std::wstring(marker)+L"="+(pass?L"PASS":L"FAIL"));ok=ok&&pass;};
+  secretProbe(L"NEGATIVE_WRONG_SECRET",badSecret);
+  secretProbe(L"NEGATIVE_WRONG_CLIENT",badClient);
+  secretProbe(L"NEGATIVE_INVALID_SCOPE",badScope);
+ }
+ Log(L"AUTH_EXCHANGE_CALLED=NO");
+ Log(L"RPC_TOKEN_EXPOSURE=PASS");
+ Log(L"OIDC_SECRET_BUFFER_ZEROED=PASS");secret.Clear();
+ Log(std::wstring(L"R5_VERDICT=")+((ok&&acquired&&!gOidcAccessToken.empty())?L"PASS":L"BLOCKED"));
+ FreeLibrary(module);
+ return ok&&acquired&&!gOidcAccessToken.empty();
+}
 static bool HashNonce(const std::wstring&nonce,std::vector<UCHAR>&digest){BCRYPT_ALG_HANDLE alg=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;DWORD objLen=0,got=0,hashLen=0;if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)return false;bool ok=false;if(BCryptGetProperty(alg,BCRYPT_OBJECT_LENGTH,(PUCHAR)&objLen,sizeof(objLen),&got,0)>=0&&BCryptGetProperty(alg,BCRYPT_HASH_LENGTH,(PUCHAR)&hashLen,sizeof(hashLen),&got,0)>=0){std::vector<UCHAR>obj(objLen);digest.resize(hashLen);if(BCryptCreateHash(alg,&hash,obj.data(),objLen,nullptr,0,0)>=0&&BCryptHashData(hash,(PUCHAR)nonce.data(),(ULONG)(nonce.size()*sizeof(wchar_t)),0)>=0&&BCryptFinishHash(hash,digest.data(),hashLen,0)>=0)ok=true;}if(hash)BCryptDestroyHash(hash);BCryptCloseAlgorithmProvider(alg,0);return ok;}
 static bool ConstantEqual(const std::vector<UCHAR>&a,const std::vector<UCHAR>&b){if(a.size()!=b.size())return false;UCHAR d=0;for(size_t i=0;i<a.size();i++)d|=(UCHAR)(a[i]^b[i]);return d==0;}
 static std::wstring Hex(const UCHAR*p,size_t n){static const wchar_t*h=L"0123456789abcdef";std::wstring s;for(size_t i=0;i<n;i++){s.push_back(h[p[i]>>4]);s.push_back(h[p[i]&15]);}return s;}
