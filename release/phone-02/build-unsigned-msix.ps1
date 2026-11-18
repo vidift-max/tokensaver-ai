@@ -46,7 +46,7 @@ $cmdMidl='"'+$vcvars+'" && "'+$midl+'" /nologo /env x64 /h "'+(Join-Path $build 
 & cmd.exe /d /s /c $cmdMidl
 Assert-Check ($LASTEXITCODE -eq 0) 'MIDL_GENERATION'
 $supervisor=Join-Path $stage 'Supervisor.exe';$client=Join-Path $stage 'Phone02Client.exe';$hostClient=Join-Path $stage 'SupervisorHost.exe'
-$cmdSvc='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /MT /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $native 'phone_supervisor.cpp')+'" "'+(Join-Path $native 'RealSupervisorTeamRoomHttpsAdapter.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_s.c')+'" /Fe:"'+$supervisor+'" advapi32.lib rpcrt4.lib bcrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib'
+$cmdSvc='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /MT /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $native 'phone_supervisor.cpp')+'" "'+(Join-Path $native 'RealSupervisorTeamRoomHttpsAdapter.cpp')+'" "'+(Join-Path $native 'SupervisorCredentialStoreR5.cpp')+'" "'+(Join-Path $native 'SupervisorCredentialProvisioningR5.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_s.c')+'" /Fe:"'+$supervisor+'" advapi32.lib rpcrt4.lib bcrypt.lib ncrypt.lib userenv.lib shell32.lib ole32.lib winhttp.lib'
 & cmd.exe /d /s /c $cmdSvc
 Assert-Check ($LASTEXITCODE -eq 0) 'SUPERVISOR_COMPILE'
 $cmdCli='"'+$vcvars+'" && cl /nologo /EHsc /W4 /std:c++20 /MT /DUNICODE /D_UNICODE /I"'+$build+'" "'+(Join-Path $native 'phone_supervisor_client.cpp')+'" "'+(Join-Path $build 'phone_supervisor_rpc_c.c')+'" /Fe:"'+$client+'" rpcrt4.lib ole32.lib'
