@@ -32,7 +32,8 @@ Assert-Check ($null -ne $sdk) 'WINDOWS_SDK_FOUND'
 $midl=Join-Path $sdk.FullName 'x64\midl.exe';$makeappx=Join-Path $sdk.FullName 'x64\MakeAppx.exe'
 Assert-Check ((Test-Path $midl) -and (Test-Path $makeappx)) 'MIDL_MAKEAPPX_PRESENT'
 $native=Join-Path $repo 'services\phone-supervisor';$idl=Join-Path $native 'phone_supervisor_rpc.idl'
-$midlVersion = (& $midl /? 2>&1 | Select-Object -First 1) -join ''
+$midlOutput = (& $midl /? 2>&1 | Out-String)
+$midlVersion = (($midlOutput -split "`r?`n" | Where-Object { $_ -match '(?i)MIDL.*Compiler Version' } | Select-Object -First 1) -join '').Trim()
 $msvcRoot=Join-Path $vs 'VC\Tools\MSVC'
 $msvcToolset=Get-ChildItem $msvcRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
 $clExe=if($msvcToolset){Join-Path $msvcToolset.FullName 'bin\Hostx64\x64\cl.exe'}else{''}
