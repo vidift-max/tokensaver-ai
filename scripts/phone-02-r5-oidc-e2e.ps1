@@ -85,7 +85,7 @@ function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[stri
  $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='false';$env:KC_HTTPS_PORT='8443'
  $env:KC_HTTPS_CERTIFICATE_FILE=$cert;$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key
  $env:KC_HOSTNAME='https://keycloak.p238.test:8443';$env:KC_HOSTNAME_STRICT='true'
- $env:KC_DB='postgres';$env:KC_DB_URL="jdbc:postgresql://127.0.0.1:5432/$pgDatabase?ApplicationName=keycloak-r5"
+ $env:KC_DB='postgres';$env:KC_DB_URL_HOST='127.0.0.1';$env:KC_DB_URL_PORT='5432';$env:KC_DB_URL_DATABASE=$pgDatabase
  $env:KC_DB_USERNAME='postgres';$env:KC_DB_PASSWORD=$pgPassword
  if($bootstrapAdmin){$env:KC_BOOTSTRAP_ADMIN_USERNAME=$adminUser;$env:KC_BOOTSTRAP_ADMIN_PASSWORD=$adminPassword}
  $kcArgs='start-dev --db=postgres --http-enabled=false --hostname-strict=true'
@@ -94,7 +94,7 @@ function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[stri
  $out=Join-Path $root ('keycloak-'+$stamp+'.stdout.log')
  $err=Join-Path $root ('keycloak-'+$stamp+'.stderr.log')
  $p=Start-Process -FilePath $kcBat -ArgumentList $kcArgs -WorkingDirectory $kcHomePath -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
- Remove-Item Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_PORT,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT,Env:KC_DB,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+ Remove-Item Env:KC_HEALTH_ENABLED,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_PORT,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT,Env:KC_DB,Env:KC_DB_URL_HOST,Env:KC_DB_URL_PORT,Env:KC_DB_URL_DATABASE,Env:KC_DB_USERNAME,Env:KC_DB_PASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD -ErrorAction SilentlyContinue
  $deadline=(Get-Date).AddSeconds(240);$ready=$false
  do{
   try{$d=Invoke-RestMethod -Uri "$issuer/.well-known/openid-configuration" -TimeoutSec 4;if($d.issuer -ceq $issuer){$ready=$true}}catch{}
@@ -388,7 +388,7 @@ finally{
   if((Test-Path $tokenSaverParent) -and @(Get-ChildItem $tokenSaverParent -Force).Count -eq 0){Remove-Item $tokenSaverParent -Force}
   $cleanup.Add('DPAPI_STORE_DIRECTORY_REMOVED='+$(if(-not(Test-Path $storeRoot)){'PASS'}else{'FAIL'}))
  }catch{$cleanup.Add('DPAPI_STORE_DIRECTORY_REMOVED=FAIL')}
- Remove-Item Env:PGPASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_DB_PASSWORD,Env:KC_DB_URL,Env:KC_DB_USERNAME,Env:KC_DB,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HTTPS_PORT,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT -ErrorAction SilentlyContinue
+ Remove-Item Env:PGPASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_DB_PASSWORD,Env:KC_DB_URL_HOST,Env:KC_DB_URL_PORT,Env:KC_DB_URL_DATABASE,Env:KC_DB_USERNAME,Env:KC_DB,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HTTPS_PORT,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT -ErrorAction SilentlyContinue
  $adminToken=$null;$adminResponse=$null;$secretInfo=$null;$oidcClientSecret=$null;$adminPassword=$null;$pgPassword=$null
  $serviceBody=if($svcLog -and (Test-Path $svcLog)){Get-Content $svcLog -Raw}else{''}
  $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONED=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_STORE_READ=PASS','CREDENTIAL_PROTECTED=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','OIDC_SECRET_BUFFER_ZEROED=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS','R5_VERDICT=PASS')
