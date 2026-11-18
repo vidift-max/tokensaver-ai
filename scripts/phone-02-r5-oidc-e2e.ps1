@@ -385,7 +385,13 @@ finally{
     $remainingRootProcesses=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object {$_.CommandLine -and $_.CommandLine.Contains($root)})
     foreach($rp in $remainingRootProcesses){Stop-Process -Id $rp.ProcessId -Force -ErrorAction SilentlyContinue}
     Start-Sleep -Seconds 2
-    try{Remove-Item $root -Recurse -Force -ErrorAction Stop}catch{Write-Host ('TEMP_DIRECTORY_REMOVE_ATTEMPT='+$attempt+';ERROR='+$_.Exception.Message)}
+    try{Remove-Item $root -Recurse -Force -ErrorAction Stop}catch{
+     $errText=[string]$_.Exception.Message
+     $errText=$errText -replace '(?i)(password|secret|token|credential)\s*[:=]\s*[^\s,;]+','$1=[REDACTED]'
+     Write-Host ('TEMP_DIRECTORY_REMOVE_ATTEMPT='+$attempt+';ERROR='+$errText)
+     $lockedPath=$_.TargetObject
+     if($lockedPath){Write-Host ('TEMP_DIRECTORY_LOCKED_TARGET='+$lockedPath)}
+    }
    }
   }
   $cleanup.Add('TEMP_DIRECTORY_REMOVED='+$(if(-not(Test-Path $root)){'PASS'}else{'FAIL'}))
