@@ -87,7 +87,7 @@ $assetFiles=Get-ChildItem $assets -File
 $files=@($msix,$supervisor,$client,$hostClient,$manifestPath)+$assetFiles.FullName | ForEach-Object { $f=Get-Item $_;[ordered]@{name=$f.Name;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();bytes=$f.Length} }
 $provenance=[ordered]@{
   release_id=('phone02-'+$actualSha.Substring(0,12)+'-run-'+$env:GITHUB_RUN_ID)
-  repository=$env:GITHUB_REPOSITORY;source_sha=$actualSha;source_branch=(& git branch --show-current).Trim()
+  repository=$env:GITHUB_REPOSITORY;source_sha=$actualSha;source_branch=$(if($env:GITHUB_REF_NAME){$env:GITHUB_REF_NAME}else{'DETACHED_HEAD'})
   package_identity=$identity.Name;publisher=$Publisher;publisher_display_name=$PublisherDisplayName;version=$PackageVersion;architecture='x64';target_device_family='Windows.Desktop';
   workflow=$env:GITHUB_WORKFLOW;workflow_run_id=$env:GITHUB_RUN_ID;workflow_run_attempt=$env:GITHUB_RUN_ATTEMPT;job=$env:GITHUB_JOB
   toolchain=[ordered]@{runner_image='windows-2025 (mutable hosted-image label)';toolchain_pin_status='EXACT_VERSIONS_RECORDED_AT_BUILD; IMAGE_DIGEST_NOT_PINNED';visual_studio_path=$vs;windows_sdk_version=$sdk.Name;midl_path=$midl;midl_version=$midlVersion;compiler='MSVC x64';compiler_version=$compilerVersion;makeappx_path=$makeappx;build_flags='/EHsc /W4 /std:c++20 /MT /DUNICODE /D_UNICODE'}
