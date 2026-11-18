@@ -55,7 +55,12 @@ bool ProvisionClientSecretThroughAdminPipe(
         }
         if(!ImpersonateNamedPipeClient(pipe)){result=L"PROVISION_PIPE_IMPERSONATION_FAILED";DisconnectNamedPipe(pipe);break;}
         bool authorized=IsAdminOrSystemClient();
-        RevertToSelf();
+        BOOL reverted=RevertToSelf();
+        if(!reverted){
+            DWORD revertError=GetLastError();
+            result=L"PROVISION_PIPE_REVERT_FAILED_ERROR_"+std::to_wstring(revertError);
+            DisconnectNamedPipe(pipe);break;
+        }
         if(!authorized){
             result=L"PROVISION_PIPE_CALLER_NOT_ADMIN";DisconnectNamedPipe(pipe);break;
         }
