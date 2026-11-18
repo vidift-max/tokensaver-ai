@@ -96,8 +96,27 @@ $provenance=[ordered]@{
 }
 $provenanceFile=Join-Path $evidence 'provenance.json';$provenance|ConvertTo-Json -Depth 10|Set-Content $provenanceFile -Encoding utf8
 $buildSummary=Join-Path $evidence 'build-summary.txt'
-@('PHASE_BUILD=PASS','PHASE_PACKAGE=PASS','PHASE_HASH=PASS','PACKAGE_VALIDATION=MAKEAPPX_VALIDATE_PASS','PHASE_SIGN=NOT_RUN_UNSIGNED','SOURCE_SHA='+$actualSha,'PACKAGE_IDENTITY='+$identity.Name,'PUBLISHER='+$Publisher,'PUBLISHER_DISPLAY_NAME='+$PublisherDisplayName,'VERSION='+$PackageVersion,'ARCH=x64','TARGET=Windows.Desktop','MSIX_SHA256='+$sha,'PROVENANCE=provenance.json')|Set-Content $buildSummary -Encoding utf8
-$hashRows=@($msix,$supervisor,$client,$hostClient,$manifestPath,$provenanceFile)+$assetFiles.FullName|ForEach-Object{(Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()+'  '+([IO.Path]::GetRelativePath($OutputDirectory,$_.ToString()))}
+$summaryLines=@(
+  'PHASE_BUILD=PASS'
+  'PHASE_PACKAGE=PASS'
+  'PHASE_HASH=PASS'
+  'PACKAGE_VALIDATION=MAKEAPPX_VALIDATE_PASS'
+  'PHASE_SIGN=NOT_RUN_UNSIGNED'
+  "SOURCE_SHA=$actualSha"
+  "PACKAGE_IDENTITY=$($identity.Name)"
+  "PUBLISHER=$Publisher"
+  "PUBLISHER_DISPLAY_NAME=$PublisherDisplayName"
+  "VERSION=$PackageVersion"
+  'ARCH=x64'
+  'TARGET=Windows.Desktop'
+  "MSIX_SHA256=$sha"
+  'PROVENANCE=provenance.json'
+)
+$summaryLines|Set-Content $buildSummary -Encoding utf8
+$hashRows=@($msix,$supervisor,$client,$hostClient,$manifestPath,$provenanceFile)+$assetFiles.FullName|ForEach-Object{
+  $relative=[IO.Path]::GetRelativePath($OutputDirectory,$_.ToString()).Replace('\\','/')
+  (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()+'  '+$relative
+}
 $hashRows|Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
 Write-Host "PACKAGE_STATUS=UNSIGNED"
 Write-Host "PACKAGE_PATH=$msix"
