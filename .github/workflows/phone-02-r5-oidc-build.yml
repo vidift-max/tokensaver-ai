@@ -1,4 +1,4 @@
-name: Phone-02 R5 OIDC Credential Store and Client Credentials E2E
+name: Phone-02 R5 OIDC Credential Store and Client Credentials E2E (retry 2)
 
 on:
   push:
