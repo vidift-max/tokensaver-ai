@@ -181,6 +181,7 @@ jobs:
             ${{ runner.temp }}/r5-client-sha256.txt
             ${{ runner.temp }}/r5-build-verdict.txt
             ${{ runner.temp }}/r5-powershell-syntax.txt
+            ${{ runner.temp }}/r5-static-gates.txt
             ${{ runner.temp }}/r4-appcontainer-evidence.txt
             ${{ runner.temp }}/r5-artifact-scan.txt
             ${{ runner.temp }}/r5-final-verdict.txt
