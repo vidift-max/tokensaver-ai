@@ -86,7 +86,7 @@ $validation=Join-Path $OutputDirectory 'validation'
 Assert-Check ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $validation 'AppxManifest.xml'))) 'MAKEAPPX_VALIDATE'
 $sha=(Get-FileHash $msix -Algorithm SHA256).Hash.ToLower()
 $assetFiles=Get-ChildItem $assets -File
-$files=@($msix,$supervisor,$client,$hostClient,$manifestPath)+$assetFiles.FullName+$rpcStubFiles | ForEach-Object { $f=Get-Item $_;[ordered]@{name=$f.Name;path=[IO.Path]::GetRelativePath($OutputDirectory,$f.FullName).Replace('\\','/');sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();bytes=$f.Length} }
+$files=@($msix,$supervisor,$client,$hostClient,$manifestPath)+$assetFiles.FullName+$rpcStubFiles | ForEach-Object { $f=Get-Item $_;[ordered]@{name=$f.Name;path=[IO.Path]::GetRelativePath($OutputDirectory,$f.FullName).Replace('\','/');sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();bytes=$f.Length} }
 $provenance=[ordered]@{
   release_id=('phone02-'+$actualSha.Substring(0,12)+'-run-'+$env:GITHUB_RUN_ID)
   repository=$env:GITHUB_REPOSITORY;source_sha=$actualSha;source_branch=$(if($env:GITHUB_REF_NAME){$env:GITHUB_REF_NAME}else{'DETACHED_HEAD'})
