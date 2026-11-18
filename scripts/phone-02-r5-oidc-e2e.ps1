@@ -301,6 +301,10 @@ catch{
  $failure=$_
  Write-Host ('R5_RUNTIME_FAILURE_TYPE='+$_.Exception.GetType().FullName)
  Write-Host ('R5_RUNTIME_FAILURE_HRESULT='+('0x{0:X8}' -f $_.Exception.HResult))
+ $safeMessage=[string]$_.Exception.Message
+ $safeMessage=$safeMessage -replace '(?i)(password|secret|token|credential)\s*[:=]\s*[^\s,;]+','$1=[REDACTED]'
+ $safeMessage=$safeMessage -replace '(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}','[JWT-REDACTED]'
+ Write-Host ('R5_RUNTIME_FAILURE_MESSAGE='+$safeMessage)
 }
 finally{
  if($serviceCreated){
@@ -376,7 +380,14 @@ finally{
  if($clientLog -and (Test-Path $clientLog)){Copy-Item $clientLog (Join-Path $evidence 'supervisor-client-common.log') -Force}
  try{
   if(Test-Path $clientLog){Remove-Item $clientLog -Force}
-  if(Test-Path $root){Remove-Item $root -Recurse -Force}
+  if(Test-Path $root){
+   for($attempt=1;$attempt -le 3 -and (Test-Path $root);$attempt++){
+    $remainingRootProcesses=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object {$_.CommandLine -and $_.CommandLine.Contains($root)})
+    foreach($rp in $remainingRootProcesses){Stop-Process -Id $rp.ProcessId -Force -ErrorAction SilentlyContinue}
+    Start-Sleep -Seconds 2
+    try{Remove-Item $root -Recurse -Force -ErrorAction Stop}catch{Write-Host ('TEMP_DIRECTORY_REMOVE_ATTEMPT='+$attempt+';ERROR='+$_.Exception.Message)}
+   }
+  }
   $cleanup.Add('TEMP_DIRECTORY_REMOVED='+$(if(-not(Test-Path $root)){'PASS'}else{'FAIL'}))
  }catch{$cleanup.Add('TEMP_DIRECTORY_REMOVED=FAIL')}
  $cleanupResult=if($cleanup -match '=FAIL'){'FAIL'}else{'PASS'}
