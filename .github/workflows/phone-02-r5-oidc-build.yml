@@ -108,6 +108,22 @@ jobs:
           $artifact = $artifacts.artifacts | Where-Object { $_.id -eq 14376783563 }
           if ($run.conclusion -ne 'success' -or -not $artifact -or $artifact.expired -or $artifact.digest -ne 'sha256:f6d98fd7c7370f1dcb41010c7db9d549c07f13743dd43e08589d4d93762e730b') { throw 'R4_REAL_APPCONTAINER_EVIDENCE_INVALID' }
           @('R4_APP_CONTAINER_EVIDENCE=PASS','R4_RUN_ID=44192932167','R4_ARTIFACT_ID=14376783563','R4_ARTIFACT_SHA256=f6d98fd7c7370f1dcb41010c7db9d549c07f13743dd43e08589d4d93762e730b') | Out-File "$env:RUNNER_TEMP/r4-appcontainer-evidence.txt"
+      - name: Static identity and R5 security gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $provision = Get-Content 'services/phone-supervisor/SupervisorCredentialProvisioningR5.cpp' -Raw
+          $supervisor = Get-Content 'services/phone-supervisor/phone_supervisor.cpp' -Raw
+          $harness = Get-Content 'scripts/phone-02-r5-oidc-e2e.ps1' -Raw
+          $workflow = Get-Content '.github/workflows/phone-02-r5-oidc-build.yml' -Raw
+          if ($provision -notmatch 'BOOL reverted\s*=\s*RevertToSelf\(\)' -or $provision -notmatch 'PROVISION_PIPE_REVERT_FAILED_ERROR_' -or $provision -notmatch 'DisconnectNamedPipe\(pipe\);\s*break;') { throw 'F1_REVERTTOSELF_FAIL_CLOSED_STATIC_FAIL' }
+          if ($supervisor -notmatch 'SUPERVISOR_OIDC_TOKEN_EXCHANGE=PASS' -or $supervisor -notmatch 'RPC_AUTH_EXCHANGE_CALLED=NO') { throw 'F2_OIDC_RPC_MARKERS_STATIC_FAIL' }
+          if ($harness -notmatch 'KEYCLOAK_HTTP_LISTENER_OWNER_UNKNOWN' -or $harness -notmatch 'KEYCLOAK_HTTP_DISABLED=PASS' -or $harness -notmatch 'httpListenerOwnerUnknown') { throw 'F3_UNKNOWN_HTTP_LISTENER_FAIL_CLOSED_STATIC_FAIL' }
+          foreach ($pattern in @('RPC_C_AUTHN_WINNT','RPC_C_AUTHN_LEVEL_PKT_PRIVACY','TokenIsAppContainer','TokenAppContainerSid','APPCONTAINER_SID_PIN_MISMATCH','PACKAGE_FULL_PIN_MISMATCH','SameIdentity\(','nonceUsed','ConstantEqual\(','RPC_CLIENT_APPCONTAINER_SID','RPC_CLIENT_USER_SID')) {
+            if ($supervisor -notmatch $pattern) { throw "IDENTITY_BINDING_STATIC_MISSING_$pattern" }
+          }
+          if ($workflow -notmatch 'if: false # Disabled until identity-binding and security gates are explicitly approved\.' -or $workflow -notmatch 'if: false # Runtime integration is disabled; do not manufacture an R5 verdict\.') { throw 'R5_RUNTIME_GUARD_MISSING' }
+          @('F1_REVERTTOSELF=PASS','F2_OIDC_RPC_MARKERS=PASS','F3_HTTP_OWNER_FAIL_CLOSED=PASS','IDENTITY_BINDING_STATIC=PASS','R5_RUNTIME_GUARD=PASS') | Out-File "$env:RUNNER_TEMP/r5-static-gates.txt"
       - name: Run real R5 HTTPS Keycloak client_credentials and DPAPI-NG integration
         if: false # Disabled until identity-binding and security gates are explicitly approved.
         shell: pwsh
