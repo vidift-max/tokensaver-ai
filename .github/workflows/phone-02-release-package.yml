@@ -1,0 +1,128 @@
+name: AI-PHONE-02 Release Package (unsigned build / gated signing)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publisher:
+        description: Approved exact Publisher string (leave blank until approved)
+        required: false
+        type: string
+      security_approval:
+        description: Security gate request; signing job also requires protected GitHub environment approval
+        required: false
+        default: false
+        type: boolean
+      publisher_display_name:
+        description: Approved display name (leave pending until confirmed)
+        required: false
+        type: string
+      package_version:
+        description: Four-part MSIX version
+        required: false
+        default: 0.1.0.0
+        type: string
+  push:
+    branches:
+      - mission/phone-02-p238-b-oidc
+    paths:
+      - 'release/phone-02/**'
+      - 'services/phone-supervisor/**'
+      - '.github/workflows/phone-02-release-package.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone02-release-package-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build native components and unsigned MSIX
+        shell: pwsh
+        env:
+          PACKAGE_PUBLISHER: ${{ inputs.publisher }}
+          PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $publisher = $env:PACKAGE_PUBLISHER
+          if (-not $publisher) { $publisher = 'CN=TokenSaver Publisher PENDING APPROVAL' }
+          $displayName = $env:PACKAGE_PUBLISHER_DISPLAY_NAME
+          if (-not $displayName) { $displayName = 'Publisher pending approval' }
+          $version = $env:PACKAGE_VERSION
+          if (-not $version) { $version = '0.1.0.0' }
+          $out = Join-Path $env:RUNNER_TEMP 'phone02-release-package'
+          & .\release\phone-02\build-unsigned-msix.ps1 -ExpectedSourceSha $env:GITHUB_SHA -Publisher $publisher -PublisherDisplayName $displayName -PackageVersion $version -OutputDirectory $out
+          if ($LASTEXITCODE -ne 0) { throw 'Unsigned package script failed' }
+      - name: Upload unsigned MSIX and provenance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-release-package
+          if-no-files-found: warn
+          retention-days: 30
+
+  sign-approved:
+    needs: build-unsigned
+    if: ${{ inputs.publisher != '' && !contains(inputs.publisher, 'PENDING APPROVAL') && inputs.security_approval == true && inputs.publisher_display_name != '' && !contains(inputs.publisher_display_name, 'PENDING APPROVAL') }}
+    environment: phone02-release-security
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout signing scripts from exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download unsigned package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phone02-release-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/unsigned-package
+      - name: Report signing prerequisites pending
+        if: ${{ secrets.MSIX_CERTIFICATE_BASE64 == '' || secrets.MSIX_CERTIFICATE_PASSWORD == '' || secrets.MSIX_APPROVED_THUMBPRINT == '' || secrets.MSIX_SECURITY_RELEASE_APPROVED != 'APPROVED' }}
+        shell: pwsh
+        run: Write-Host 'SIGNING READY — CERTIFICATE/SIGNER PENDING; no signing attempted. Security environment protection configuration must be independently verified.'
+      - name: Sign only with approved certificate and verify
+        if: ${{ secrets.MSIX_CERTIFICATE_BASE64 != '' && secrets.MSIX_CERTIFICATE_PASSWORD != '' && secrets.MSIX_APPROVED_THUMBPRINT != '' && secrets.MSIX_SECURITY_RELEASE_APPROVED == 'APPROVED' }}
+        id: signing
+        shell: pwsh
+        env:
+          MSIX_CERTIFICATE_BASE64: ${{ secrets.MSIX_CERTIFICATE_BASE64 }}
+          MSIX_CERTIFICATE_PASSWORD: ${{ secrets.MSIX_CERTIFICATE_PASSWORD }}
+          MSIX_APPROVED_THUMBPRINT: ${{ secrets.MSIX_APPROVED_THUMBPRINT }}
+          MSIX_SECURITY_RELEASE_APPROVED: ${{ secrets.MSIX_SECURITY_RELEASE_APPROVED }}
+          PACKAGE_PUBLISHER: ${{ inputs.publisher }}
+          PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'unsigned-package'
+          $pfx = Join-Path $env:RUNNER_TEMP 'release-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:MSIX_CERTIFICATE_BASE64))
+            $msix = Get-ChildItem $root -Filter '*.msix' -File -Recurse | Select-Object -First 1
+            $manifest = Get-ChildItem $root -Filter 'AppxManifest.xml' -File -Recurse | Select-Object -First 1
+            $provenance = Get-ChildItem $root -Filter 'provenance.json' -File -Recurse | Select-Object -First 1
+            $hashManifest = Get-ChildItem $root -Filter 'SHA256SUMS' -File -Recurse | Select-Object -First 1
+            if (-not $msix -or -not $manifest -or -not $provenance -or -not $hashManifest) { throw 'Unsigned package, manifest or provenance missing' }
+            & .\release\phone-02\sign-msix.ps1 -MsixPath $msix.FullName -ExpectedPublisher $env:PACKAGE_PUBLISHER -ExpectedPublisherDisplayName $env:PACKAGE_PUBLISHER_DISPLAY_NAME -SecurityApprovalSecret $env:MSIX_SECURITY_RELEASE_APPROVED -CertificatePath $pfx -CertificatePassword $env:MSIX_CERTIFICATE_PASSWORD -ManifestPath $manifest.FullName -ApprovedThumbprint $env:MSIX_APPROVED_THUMBPRINT -ProvenancePath $provenance.FullName -HashManifestPath $hashManifest.FullName
+            if ($LASTEXITCODE -ne 0) { throw 'Signing verification failed' }
+          } finally {
+            if (Test-Path $pfx) { Remove-Item $pfx -Force }
+          }
+      - name: Upload signed package artifact
+        if: steps.signing.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-signed-${{ github.sha }}
+          path: ${{ runner.temp }}/unsigned-package
+          if-no-files-found: error
+          retention-days: 30

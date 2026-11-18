@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+        xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+        xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+        xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+        xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+        IgnorableNamespaces="uap uap10 desktop rescap">
+  <Identity Name="TokenSaver.Phone02.Supervisor" Publisher="__PUBLISHER__" Version="__VERSION__" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>TokenSaver Phone-02 Supervisor</DisplayName>
+    <PublisherDisplayName>__PUBLISHER_DISPLAY_NAME__</PublisherDisplayName>
+    <Logo>Assets/StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources><Resource Language="en-us" /></Resources>
+  <Applications>
+    <Application Id="Client" Executable="Phone02Client.exe" uap10:TrustLevel="appContainer" uap10:RuntimeBehavior="packagedClassicApp">
+      <uap:VisualElements DisplayName="TokenSaver Phone-02" Description="Phone-02 identity observation client" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png" />
+    </Application>
+    <Application Id="SupervisorHost" Executable="SupervisorHost.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="TokenSaver Phone-02 Supervisor Host" Description="Full-trust RPC host for Phone-02" BackgroundColor="transparent" Square150x150Logo="Assets/Square150x150Logo.png" Square44x44Logo="Assets/Square44x44Logo.png" />
+      <Extensions><desktop:Extension Category="windows.fullTrustProcess" Executable="Supervisor.exe"><desktop:FullTrustProcess /></desktop:Extension></Extensions>
+    </Application>
+  </Applications>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+</Package>
