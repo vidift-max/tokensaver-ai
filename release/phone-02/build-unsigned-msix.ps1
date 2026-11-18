@@ -33,8 +33,13 @@ $midl=Join-Path $sdk.FullName 'x64\midl.exe';$makeappx=Join-Path $sdk.FullName '
 Assert-Check ((Test-Path $midl) -and (Test-Path $makeappx)) 'MIDL_MAKEAPPX_PRESENT'
 $native=Join-Path $repo 'services\phone-supervisor';$idl=Join-Path $native 'phone_supervisor_rpc.idl'
 $midlVersion = (& $midl /? 2>&1 | Select-Object -First 1) -join ''
-$compilerVersion = (& cmd.exe /d /s /c ('"'+$vcvars+'" && cl') 2>&1 | Select-Object -First 3) -join ' | '
-Assert-Check ($compilerVersion -match 'Compiler Version') 'COMPILER_VERSION_CAPTURED'
+$msvcRoot=Join-Path $vs 'VC\Tools\MSVC'
+$msvcToolset=Get-ChildItem $msvcRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+$clExe=if($msvcToolset){Join-Path $msvcToolset.FullName 'bin\Hostx64\x64\cl.exe'}else{''}
+Assert-Check ($clExe -and (Test-Path $clExe)) 'MSVC_COMPILER_PRESENT'
+$compilerOutput = (& $clExe 2>&1 | Out-String)
+$compilerVersion = (($compilerOutput -split "`r?`n" | Where-Object { $_ -match '(?i)Compiler Version' } | Select-Object -First 1) -join '').Trim()
+Assert-Check ($compilerVersion -match '(?i)Compiler Version') 'COMPILER_VERSION_CAPTURED'
 Assert-Check ($midlVersion -match 'MIDL Compiler Version') 'MIDL_VERSION_CAPTURED'
 $cmdMidl='"'+$vcvars+'" && "'+$midl+'" /nologo /env x64 /h "'+(Join-Path $build 'phone_supervisor_rpc.h')+'" /iid "'+(Join-Path $build 'phone_supervisor_rpc_i.c')+'" /out "'+$build+'" "'+$idl+'"'
 & cmd.exe /d /s /c $cmdMidl
