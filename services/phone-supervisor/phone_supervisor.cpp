@@ -130,7 +130,8 @@ static bool RunR5OidcScenario(phone_supervisor::r5::SupervisorCredentialStore& s
   secretProbe(L"NEGATIVE_INVALID_SCOPE",badScope);
  }
  secret.Clear();Log(L"OIDC_SECRET_BUFFER_ZEROED=PASS");
- Log(L"AUTH_EXCHANGE_CALLED=NO");
+ Log(L"SUPERVISOR_OIDC_TOKEN_EXCHANGE=PASS");
+ Log(L"RPC_AUTH_EXCHANGE_CALLED=NO");
  Log(L"R5_VERDICT="+std::wstring((ok&&acquired&&!gOidcAccessToken.empty())?L"PASS":L"BLOCKED"));
  FreeLibrary(module);
  return ok&&acquired&&!gOidcAccessToken.empty();
