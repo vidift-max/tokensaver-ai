@@ -184,14 +184,17 @@ try{
  $keycloakProcess=Start-R5Keycloak $kcBat $kcHome $goodCert $goodKey $true $true
  Mark 'KEYCLOAK_HTTPS' (Test-NetConnection 127.0.0.1 -Port 8443 -InformationLevel Quiet)
  $httpListeners=@(Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue)
- $kcHttpListener=$false
+ $kcHttpListener=$false;$httpListenerOwnerUnknown=$false
  foreach($listener in $httpListeners){
   $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
   $ownerName=if($owner){$owner.Name}else{'UNKNOWN'}
   Write-Host ('HTTP_PORT_8080_LISTENER=PID:'+ $listener.OwningProcess + ';PROCESS:'+ $ownerName)
-  if($owner -and $owner.CommandLine -and $owner.CommandLine.Contains($kcHome)){$kcHttpListener=$true}
+  if(-not $owner -or [string]::IsNullOrWhiteSpace([string]$owner.CommandLine)){
+   $httpListenerOwnerUnknown=$true
+  }elseif($owner.CommandLine.Contains($kcHome)){$kcHttpListener=$true}
  }
- Mark 'KEYCLOAK_HTTP_DISABLED' (-not $kcHttpListener)
+ Mark 'KEYCLOAK_HTTP_LISTENER_OWNER_UNKNOWN' (-not $httpListenerOwnerUnknown)
+ Mark 'KEYCLOAK_HTTP_DISABLED' (-not $kcHttpListener -and -not $httpListenerOwnerUnknown)
  $discovery=Invoke-RestMethod -Uri "$issuer/.well-known/openid-configuration" -TimeoutSec 15
  Mark 'OIDC_DISCOVERY' ($discovery.issuer -ceq $issuer -and $discovery.token_endpoint -ceq "$issuer/protocol/openid-connect/token" -and $discovery.jwks_uri -ceq "$issuer/protocol/openid-connect/certs")
  Mark 'OIDC_ISSUER_VALID' ($discovery.issuer -ceq $issuer)
@@ -304,7 +307,8 @@ try{
  $forbidden='(?i)(client_secret|access_token|bearer_token|team_room_bearer|endpoint_credential|session_token)'
  $rpcSafe=(-not($rpcIdl -match $forbidden) -and -not($rpcClient -match $forbidden))
  Mark 'RPC_TOKEN_EXPOSURE' $rpcSafe
- Mark 'AUTH_EXCHANGE_CALLED_NO' ((Get-Content $svcLog -Raw) -match 'AUTH_EXCHANGE_CALLED=NO')
+ Mark 'SUPERVISOR_OIDC_TOKEN_EXCHANGE' ((Get-Content $svcLog -Raw) -match 'SUPERVISOR_OIDC_TOKEN_EXCHANGE=PASS')
+ Mark 'RPC_AUTH_EXCHANGE_CALLED_NO' ((Get-Content $svcLog -Raw) -match 'RPC_AUTH_EXCHANGE_CALLED=NO')
 
  $processes=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
  $commandLineLeak=$false
@@ -399,7 +403,7 @@ finally{
  Remove-Item Env:PGPASSWORD,Env:KC_BOOTSTRAP_ADMIN_USERNAME,Env:KC_BOOTSTRAP_ADMIN_PASSWORD,Env:KC_DB_PASSWORD,Env:KC_DB_URL_HOST,Env:KC_DB_URL_PORT,Env:KC_DB_URL_DATABASE,Env:KC_DB_USERNAME,Env:KC_DB,Env:KC_HTTP_ENABLED,Env:KC_HTTPS_CERTIFICATE_FILE,Env:KC_HTTPS_CERTIFICATE_KEY_FILE,Env:KC_HTTPS_PORT,Env:KC_HOSTNAME,Env:KC_HOSTNAME_STRICT -ErrorAction SilentlyContinue
  $adminToken=$null;$adminResponse=$null;$secretInfo=$null;$oidcClientSecret=$null;$adminPassword=$null;$pgPassword=$null
  $serviceBody=if($svcLog -and (Test-Path $svcLog)){Get-Content $svcLog -Raw}else{''}
- $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONED=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_STORE_READ=PASS','CREDENTIAL_PROTECTED=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','OIDC_SECRET_BUFFER_ZEROED=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS','R5_VERDICT=PASS')
+ $required=@('CREDENTIAL_STORE_INTEGRATED=PASS','LOCAL_SERVICE=PASS','SERVICE_SID=PASS','CREDENTIAL_PROVISIONED=PASS','CREDENTIAL_PROVISIONING_ADMIN_ONLY=PASS','CREDENTIAL_STORE_READ=PASS','CREDENTIAL_PROTECTED=PASS','DPAPI_NG_SERVICE_SID_BOUND=PASS','OIDC_SECRET_BUFFER_ZEROED=PASS','KEYCLOAK_HTTPS=PASS','OIDC_DISCOVERY=PASS','OIDC_ISSUER_VALID=PASS','CLIENT_CREDENTIALS=PASS','TOKEN_ACQUIRED=PASS','TOKEN_SIGNATURE=PASS','TOKEN_ISSUER=PASS','TOKEN_AUDIENCE=PASS','TOKEN_SCOPE=PASS','TOKEN_EXPIRY=PASS','TOKEN_MEMORY_ONLY=PASS','NEGATIVE_WRONG_SECRET=PASS','NEGATIVE_WRONG_CLIENT=PASS','NEGATIVE_INVALID_SCOPE=PASS','NEGATIVE_BAD_ENDPOINT=PASS','NEGATIVE_TLS=PASS','NEGATIVE_KEYCLOAK_UNAVAILABLE=PASS','NEGATIVE_MALFORMED_RESPONSE=PASS','SUPERVISOR_OIDC_TOKEN_EXCHANGE=PASS','RPC_AUTH_EXCHANGE_CALLED=NO','TOKEN_MEMORY_ZEROED=PASS','CREDENTIAL_REMOVE=PASS','CLEANUP=PASS','R5_VERDICT=PASS')
  $allServiceMarkers=$true
  foreach($marker in $required){if(-not $serviceBody.Contains($marker)){$allServiceMarkers=$false}}
  if($svcLog -and (Test-Path $svcLog)){Copy-Item $svcLog (Join-Path $evidence 'supervisor-r5.log') -Force}
