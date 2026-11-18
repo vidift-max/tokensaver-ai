@@ -116,6 +116,8 @@ jobs:
           $supervisor = Get-Content 'services/phone-supervisor/phone_supervisor.cpp' -Raw
           $harness = Get-Content 'scripts/phone-02-r5-oidc-e2e.ps1' -Raw
           $workflow = Get-Content '.github/workflows/phone-02-r5-oidc-build.yml' -Raw
+          $rpcIdl = Get-Content 'services/phone-supervisor/phone_supervisor_rpc.idl' -Raw
+          $rpcClient = Get-Content 'services/phone-supervisor/phone_supervisor_client.cpp' -Raw
           if ($provision -notmatch 'BOOL reverted\s*=\s*RevertToSelf\(\)' -or $provision -notmatch 'PROVISION_PIPE_REVERT_FAILED_ERROR_' -or $provision -notmatch 'DisconnectNamedPipe\(pipe\);\s*break;') { throw 'F1_REVERTTOSELF_FAIL_CLOSED_STATIC_FAIL' }
           if ($supervisor -notmatch 'SUPERVISOR_OIDC_TOKEN_EXCHANGE=PASS' -or $supervisor -notmatch 'RPC_AUTH_EXCHANGE_CALLED=NO') { throw 'F2_OIDC_RPC_MARKERS_STATIC_FAIL' }
           if ($harness -notmatch 'KEYCLOAK_HTTP_LISTENER_OWNER_UNKNOWN' -or $harness -notmatch 'KEYCLOAK_HTTP_DISABLED=PASS' -or $harness -notmatch 'httpListenerOwnerUnknown') { throw 'F3_UNKNOWN_HTTP_LISTENER_FAIL_CLOSED_STATIC_FAIL' }
@@ -123,7 +125,9 @@ jobs:
             if ($supervisor -notmatch $pattern) { throw "IDENTITY_BINDING_STATIC_MISSING_$pattern" }
           }
           if ($workflow -notmatch 'if: false # Disabled until identity-binding and security gates are explicitly approved\.' -or $workflow -notmatch 'if: false # Runtime integration is disabled; do not manufacture an R5 verdict\.') { throw 'R5_RUNTIME_GUARD_MISSING' }
-          @('F1_REVERTTOSELF=PASS','F2_OIDC_RPC_MARKERS=PASS','F3_HTTP_OWNER_FAIL_CLOSED=PASS','IDENTITY_BINDING_STATIC=PASS','R5_RUNTIME_GUARD=PASS') | Out-File "$env:RUNNER_TEMP/r5-static-gates.txt"
+          if ($rpcIdl -notmatch 'void TeamRoomScenario' -or $rpcIdl -match 'void TeamRoomScenario\([^)]*(token|secret|bearer|operator_key|ai_phone_id|credential)' -or $rpcClient -match 'OIDC_ACCESS_TOKEN|CLIENT_SECRET|ENDPOINT_CREDENTIAL|OPERATOR_KEY|AI_PHONE_ID') { throw 'OIDC_RPC_SECRET_OR_CALLER_ID_BOUNDARY_STATIC_FAIL' }
+          if ($supervisor -notmatch 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO' -or $supervisor -notmatch 'realTeamRoomSessionAuthenticated=false' -or $supervisor -notmatch 'RPC_AUTH_EXCHANGE_CALLED=NO') { throw 'OIDC_RPC_BINDING_NOT_IMPLEMENTED_MARKERS_MISSING' }
+          @('F1_REVERTTOSELF=PASS','F2_OIDC_RPC_MARKERS=PASS','F3_HTTP_OWNER_FAIL_CLOSED=PASS','IDENTITY_BINDING_STATIC=PASS','OIDC_RPC_SECRET_BOUNDARY_STATIC=PASS','OIDC_RPC_BINDING=NOT_IMPLEMENTED','R5_RUNTIME_GUARD=PASS') | Out-File "$env:RUNNER_TEMP/r5-static-gates.txt"
       - name: Run real R5 HTTPS Keycloak client_credentials and DPAPI-NG integration
         if: false # Disabled until identity-binding and security gates are explicitly approved.
         shell: pwsh
