@@ -63,6 +63,24 @@ function Stop-Keycloak($process,[string]$kcHomePath){
  if($process -and (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)){Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue}
  if($process){Wait-Process -Id $process.Id -Timeout 15 -ErrorAction SilentlyContinue}
 }
+function Export-SanitizedKeycloakStartup([string]$stdoutPath,[string]$stderrPath){
+ $diagnostic=Join-Path $evidence 'keycloak-startup-diagnostic.txt'
+ $lines=[System.Collections.Generic.List[string]]::new()
+ foreach($path in @($stdoutPath,$stderrPath)){
+  if(Test-Path $path){
+   $lines.Add(('SOURCE='+$(if($path -eq $stdoutPath){'stdout'}else{'stderr'})))
+   foreach($line in (Get-Content $path -Tail 100 -ErrorAction SilentlyContinue)){
+    $safe=[string]$line
+    $safe=$safe -replace '(?i)(password|client_secret|secret|access_token|refresh_token|authorization|credential)\s*[:=]\s*[^\s,;]+','$1=[REDACTED]'
+    $safe=$safe -replace '(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}','[JWT_REDACTED]'
+    $safe=$safe -replace '(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+=*','$1[REDACTED]'
+    $lines.Add($safe)
+   }
+  }
+ }
+ $lines | Set-Content $diagnostic -Encoding utf8
+ Write-Host 'KEYCLOAK_STARTUP_DIAGNOSTIC_EXPORTED=PASS'
+}
 function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[string]$key,[bool]$importRealm,[bool]$bootstrapAdmin){
  $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='false';$env:KC_HTTPS_PORT='8443'
  $env:KC_HTTPS_CERTIFICATE_FILE=$cert;$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key
@@ -82,7 +100,7 @@ function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[stri
   try{$d=Invoke-RestMethod -Uri "$issuer/.well-known/openid-configuration" -TimeoutSec 4;if($d.issuer -ceq $issuer){$ready=$true}}catch{}
   if(-not $ready){Start-Sleep -Seconds 2}
  }while(-not $ready -and (Get-Date)-lt $deadline)
- if(-not $ready){throw 'KEYCLOAK_HTTPS_READINESS_TIMEOUT'}
+ if(-not $ready){Export-SanitizedKeycloakStartup $out $err;throw 'KEYCLOAK_HTTPS_READINESS_TIMEOUT'}
  return $p
 }
 function Find-Bytes([byte[]]$haystack,[byte[]]$needle){
