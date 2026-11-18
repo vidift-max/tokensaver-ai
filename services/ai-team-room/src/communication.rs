@@ -271,18 +271,23 @@ async fn websocket(
     // extractor-level 426 response.
     let (mut parts,_body)=request.into_parts();
     let ws=WebSocketUpgrade::from_request_parts(&mut parts,&pool).await.map_err(|_|StatusCode::UPGRADE_REQUIRED)?;
-    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,room_id,principal,identity.session_id)))
+    Ok(ws.protocols(["team-room.v1"]).on_upgrade(move |socket| websocket_loop(socket,pool,identity)))
 }
 
-async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:Uuid,session:Uuid){
+async fn websocket_loop(mut socket:WebSocket,pool:PgPool,identity:AuthenticatedIdentity){
+    // Keep the complete authenticated scope for the lifetime of the connection.
+    let tenant=identity.tenant_id;
+    let room_id=identity.room_id;
+    let principal=identity.principal_id;
+    let session=identity.session_id;
     let Ok(mut listener)=PgListener::connect_with(&pool).await else{return;};
     if listener.listen("team_room_outbox").await.is_err(){return;}
     let mut revalidate=tokio::time::interval(std::time::Duration::from_secs(15));
     loop{
         tokio::select!{
             _=revalidate.tick()=>{
-                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.session_id=s.session_id JOIN room_memberships m ON m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.session_id=$1 AND s.room_id=$2 AND s.principal_id=$3 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
-                    .bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
+                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workload_executions w ON w.tenant_id=s.tenant_id AND w.room_id=s.room_id AND w.session_id=s.session_id JOIN room_memberships m ON m.tenant_id=s.tenant_id AND m.session_id=s.session_id AND m.room_id=s.room_id AND m.principal_id=s.principal_id WHERE s.tenant_id=$1 AND s.session_id=$2 AND s.room_id=$3 AND s.principal_id=$4 AND s.status='ACTIVE' AND s.revoked_at IS NULL AND s.expires_at>NOW() AND w.status='ACTIVE' AND w.revoked_at IS NULL AND w.expires_at>NOW() AND m.status='ACTIVE' AND EXISTS(SELECT 1 FROM principal_permissions pp WHERE pp.tenant_id=s.tenant_id AND pp.principal_id=s.principal_id AND pp.permission='room.read' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=s.room_id)))")
+                    .bind(tenant).bind(session).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
                 if !active{let _=socket.send(Message::Close(None)).await;break;}
             }
             incoming=socket.recv()=>{
@@ -295,21 +300,57 @@ async fn websocket_loop(mut socket:WebSocket,pool:PgPool,room_id:Uuid,principal:
             notification=listener.recv()=>{
                 let Ok(notification)=notification else{break;};
                 let Ok(event_id)=Uuid::parse_str(notification.payload()) else{continue;};
-                let event=sqlx::query("SELECT event_type,payload,aggregate_id FROM outbox_events WHERE outbox_event_id=$1")
+                let event=sqlx::query("SELECT tenant_id,aggregate_type,aggregate_id,event_type,payload FROM outbox_events WHERE outbox_event_id=$1")
                     .bind(event_id).fetch_optional(&pool).await;
                 let Ok(Some(event))=event else{continue;};
+                // The outbox row, not its JSON payload or NOTIFY message, is the
+                // authority for tenant scope. Fail closed on every mismatch.
+                let event_tenant:Uuid=match event.try_get("tenant_id"){Ok(value)=>value,Err(_)=>continue};
+                if event_tenant!=tenant{continue;}
+                let aggregate_type:String=match event.try_get("aggregate_type"){Ok(value)=>value,Err(_)=>continue};
+                let aggregate_id:Uuid=match event.try_get("aggregate_id"){Ok(value)=>value,Err(_)=>continue};
                 let payload:serde_json::Value=event.try_get("payload").unwrap_or_default();
-                if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
-                let channel_id:Option<Uuid>=event.try_get("aggregate_id").ok();
-                if let Some(channel)=channel_id{
-                    let channel_type:Option<String>=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1")
-                        .bind(channel).fetch_optional(&pool).await.unwrap_or(None);
-                    if channel_type.as_deref()==Some("PRIVATE"){
-                        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members cm JOIN team_room_channels ch ON ch.channel_id=cm.channel_id JOIN principal_permissions pp ON pp.tenant_id=ch.tenant_id AND pp.principal_id=cm.principal_id AND pp.permission='private_chat' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=ch.room_id) WHERE cm.channel_id=$1 AND cm.principal_id=$2)")
-                            .bind(channel).bind(principal).fetch_one(&pool).await.unwrap_or(false);
-                        if !allowed{continue;}
-                    }
+                let channel_type:Option<String>;
+                let aggregate_matches=match aggregate_type.as_str(){
+                    "room"=>{
+                        channel_type=None;
+                        aggregate_id==room_id && sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM rooms WHERE tenant_id=$1 AND room_id=$2)")
+                            .bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    "team_room_channel"=>{
+                        channel_type=sqlx::query_scalar("SELECT channel_type FROM team_room_channels WHERE channel_id=$1 AND tenant_id=$2 AND room_id=$3")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_optional(&pool).await.unwrap_or(None);
+                        let expected_channel=aggregate_id.to_string();
+                        let payload_channels=[
+                            payload.get("channel_id"),
+                            payload.get("message").and_then(|v|v.get("channel_id")),
+                            payload.get("attachment").and_then(|v|v.get("channel_id")),
+                        ];
+                        let has_payload_channel=payload_channels.iter().any(|value|value.is_some());
+                        let payload_channels_match=payload_channels.iter().flatten().all(|value|value.as_str()==Some(expected_channel.as_str()));
+                        channel_type.is_some() && has_payload_channel && payload_channels_match
+                    },
+                    "team_task"=>{
+                        channel_type=None;
+                        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM team_tasks WHERE task_id=$1 AND tenant_id=$2 AND room_id=$3)")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    "task_handoff"=>{
+                        channel_type=None;
+                        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM task_handoffs h JOIN team_tasks t ON t.task_id=h.task_id AND t.tenant_id=h.tenant_id AND t.room_id=h.room_id WHERE h.handoff_id=$1 AND h.tenant_id=$2 AND h.room_id=$3)")
+                            .bind(aggregate_id).bind(tenant).bind(room_id).fetch_one(&pool).await.unwrap_or(false)
+                    },
+                    _=>{channel_type=None;false}
+                };
+                if !aggregate_matches{continue;}
+                if channel_type.as_deref()==Some("PRIVATE"){
+                    let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM team_room_channel_members cm JOIN team_room_channels ch ON ch.channel_id=cm.channel_id AND ch.tenant_id=$2 AND ch.room_id=$3 JOIN principal_permissions pp ON pp.tenant_id=ch.tenant_id AND pp.principal_id=cm.principal_id AND pp.permission='private_chat' AND pp.revoked_at IS NULL AND (pp.room_id IS NULL OR pp.room_id=ch.room_id) WHERE cm.channel_id=$1 AND cm.principal_id=$4)")
+                        .bind(aggregate_id).bind(tenant).bind(room_id).bind(principal).fetch_one(&pool).await.unwrap_or(false);
+                    if !allowed{continue;}
                 }
+                // Preserve the existing room envelope contract as a required
+                // consistency check. It never grants access without DB scope checks.
+                if payload.get("room_id").and_then(|v|v.as_str())!=Some(room_id.to_string().as_str()){continue;}
                 let raw_type:String=event.try_get("event_type").unwrap_or_default();
                 let event_type=match raw_type.as_str(){"participant.admitted"|"participant.reconnected"=>"PARTICIPANT_JOINED","participant.left"=>"PARTICIPANT_LEFT",other=>other};
                 let data=serde_json::json!({"event_id":event_id,"type":event_type,"payload":payload});
@@ -551,7 +592,141 @@ mod postgres_tests {
         let private_event=client.post(format!("http://{address}/team-room/{room}/private/{}/messages",b.principal)).bearer_auth(&a.token)
             .json(&json!({"client_message_id":Uuid::new_v4(),"body":"private event must not fan out to C","parent_message_id":null})).send().await.unwrap();
         assert_eq!(private_event.status(),reqwest::StatusCode::CREATED);
+        let a_private_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws.next()).await.unwrap().unwrap().unwrap();
+        let a_private_event:serde_json::Value=serde_json::from_str(a_private_frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(a_private_event["type"],"MESSAGE_CREATED");
+        assert_eq!(a_private_event["payload"]["message"]["body"],"private event must not fan out to C");
         assert!(tokio::time::timeout(std::time::Duration::from_millis(500),c_ws.next()).await.is_err(),"non-member C must not receive private-channel outbox notifications");
+
+        // Independent tenant B: each socket must receive only events whose
+        // persisted tenant + aggregate scope matches its authenticated ticket.
+        let tenant_b=Uuid::new_v4();let room_b=Uuid::new_v4();
+        sqlx::query("INSERT INTO tenants(tenant_id,name) VALUES($1,'communication-tenant-b')").bind(tenant_b).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rooms(room_id,tenant_id,name) VALUES($1,$2,'communication-room-b')").bind(room_b).bind(tenant_b).execute(&pool).await.unwrap();
+        let actor_b=actor(&pool,tenant_b,room_b,"Tenant B Agent",&grants).await;
+        let ticket_b=request(app.clone(),"POST",format!("/team-room/{room_b}/ws-ticket"),&actor_b.token,Some(json!({}))).await;
+        assert_eq!(ticket_b.status(),StatusCode::OK);
+        let ticket_b_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(ticket_b.into_body(),4096).await.unwrap()).unwrap();
+        let ws_b_url=format!("ws://{address}/team-room/{room_b}/ws?ticket={}",ticket_b_json["ticket"].as_str().unwrap());
+        let mut ws_b_request=ws_b_url.into_client_request().unwrap();
+        ws_b_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut ws_b,_)=tokio_tungstenite::connect_async(ws_b_request).await.expect("tenant B websocket handshake");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        // An authenticated B principal cannot use the HTTP API to publish into A's room.
+        let cross_room_http=client.post(format!("http://{address}/team-room/{room}/messages"))
+            .bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"cross-tenant attempt","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(cross_room_http.status(),reqwest::StatusCode::FORBIDDEN);
+
+        // A normal B event is delivered to B and never to A.
+        let b_message=client.post(format!("http://{address}/team-room/{room_b}/messages"))
+            .bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"tenant B only","parent_message_id":null}))
+            .send().await.unwrap();
+        assert_eq!(b_message.status(),reqwest::StatusCode::CREATED);
+        let b_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_b.next()).await.unwrap().unwrap().unwrap();
+        let b_event:serde_json::Value=serde_json::from_str(b_frame.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(b_event["type"],"MESSAGE_CREATED");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "tenant A socket must not receive tenant B's valid event");
+
+        // Adversarial database fixture: B-owned outbox row, B room aggregate,
+        // but attacker-controlled/inconsistent payload points at A's room.
+        // This proves consumer behavior for malformed persisted data, not an
+        // HTTP exploit. The API attempt above is tested independently.
+        let forged_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'room',$3,'ADVERSARIAL_TEST',jsonb_build_object('room_id',$4::text,'probe','must-not-cross-tenants'))")
+            .bind(forged_event).bind(tenant_b).bind(room_b).bind(room).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "tenant A socket must reject B-owned event even when payload room_id points to A");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws_b.next()).await.is_err(),
+            "tenant B socket must reject an event whose payload room_id contradicts its DB aggregate");
+
+        // Resolve tenant B's channel before constructing the inconsistent
+        // same-tenant channel envelope below and the later FK fixtures.
+        let channel_b:Uuid=sqlx::query_scalar("SELECT channel_id FROM team_room_channels WHERE tenant_id=$1 AND room_id=$2 AND channel_type='GENERAL'")
+            .bind(tenant_b).bind(room_b).fetch_one(&pool).await.unwrap();
+
+        // Even within the same tenant, the payload cannot substitute a
+        // different channel ID for the channel used as the DB aggregate.
+        let channel_a=Uuid::parse_str(first["channel_id"].as_str().unwrap()).unwrap();
+        let mismatched_channel_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'ADVERSARIAL_CHANNEL_TEST',jsonb_build_object('room_id',$4::text,'channel_id',$5::text,'probe','channel mismatch'))")
+            .bind(mismatched_channel_event).bind(tenant).bind(channel_a).bind(room).bind(channel_b).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "room member must reject payload channel ID that differs from authoritative aggregate channel");
+
+        // Top-level channel scope cannot mask a different channel embedded in
+        // the private message body itself.
+        let mismatched_nested_channel_event=Uuid::new_v4();
+        sqlx::query("INSERT INTO outbox_events(outbox_event_id,tenant_id,aggregate_type,aggregate_id,event_type,payload) VALUES($1,$2,'team_room_channel',$3,'ADVERSARIAL_NESTED_CHANNEL_TEST',jsonb_build_object('room_id',$4::text,'channel_id',$3::text,'message',jsonb_build_object('channel_id',$5::text,'body','must-not-leak')))")
+            .bind(mismatched_nested_channel_event).bind(tenant).bind(channel_a).bind(room).bind(channel_b).execute(&pool).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "private channel members must reject a body whose embedded message belongs to another channel");
+
+        // Concurrent outbox notifications are independently delivered to B;
+        // the idempotent HTTP retry above already proves duplicate requests
+        // create exactly one durable event.
+        let post_one=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"concurrent B event one","parent_message_id":null})).send();
+        let post_two=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"concurrent B event two","parent_message_id":null})).send();
+        let (response_one,response_two)=tokio::join!(post_one,post_two);
+        assert_eq!(response_one.unwrap().status(),reqwest::StatusCode::CREATED);
+        assert_eq!(response_two.unwrap().status(),reqwest::StatusCode::CREATED);
+        for _ in 0..2 {
+            let frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_b.next()).await.unwrap().unwrap().unwrap();
+            let event:serde_json::Value=serde_json::from_str(frame.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(event["type"],"MESSAGE_CREATED");
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(500),ws.next()).await.is_err(),
+            "simultaneous tenant B notifications must not reach tenant A");
+
+        // Reconnect with a fresh one-use ticket, then revoke the session and
+        // verify the live socket closes on server-side periodic revalidation.
+        ws_b.close(None).await.unwrap();
+        let reconnect_ticket=request(app.clone(),"POST",format!("/team-room/{room_b}/ws-ticket"),&actor_b.token,Some(json!({}))).await;
+        assert_eq!(reconnect_ticket.status(),StatusCode::OK);
+        let reconnect_json:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(reconnect_ticket.into_body(),4096).await.unwrap()).unwrap();
+        let reconnect_url=format!("ws://{address}/team-room/{room_b}/ws?ticket={}",reconnect_json["ticket"].as_str().unwrap());
+        let mut reconnect_request=reconnect_url.into_client_request().unwrap();
+        reconnect_request.headers_mut().insert("Sec-WebSocket-Protocol","team-room.v1".parse().unwrap());
+        let (mut ws_reconnected,_)=tokio_tungstenite::connect_async(reconnect_request).await.expect("websocket reconnect with fresh ticket");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let reconnect_message=client.post(format!("http://{address}/team-room/{room_b}/messages")).bearer_auth(&actor_b.token)
+            .json(&json!({"client_message_id":Uuid::new_v4(),"body":"after reconnect","parent_message_id":null})).send().await.unwrap();
+        assert_eq!(reconnect_message.status(),reqwest::StatusCode::CREATED);
+        let reconnect_frame=tokio::time::timeout(std::time::Duration::from_secs(5),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(reconnect_frame.into_text().unwrap().as_str()).unwrap()["type"],"MESSAGE_CREATED");
+        sqlx::query("UPDATE sessions SET status='REVOKED',revoked_at=NOW() WHERE session_id=$1").bind(actor_b.session).execute(&pool).await.unwrap();
+        let revoked_frame=tokio::time::timeout(std::time::Duration::from_secs(17),ws_reconnected.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(revoked_frame,tokio_tungstenite::tungstenite::Message::Close(_)),"revoked session must close its active websocket");
+
+        // Composite-FK regression checks: deliberately mismatched tenant/room
+        // references must be rejected by PostgreSQL, not merely by handlers.
+        let bad_message=sqlx::query("INSERT INTO team_room_messages(message_id,tenant_id,room_id,channel_id,sender_principal_id,client_message_id,body) VALUES($1,$2,$3,$4,$5,$6,'invalid cross-tenant message')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(channel_b).bind(a.principal).bind(Uuid::new_v4()).execute(&pool).await;
+        assert!(bad_message.is_err(),"message channel FK must bind tenant + room + channel");
+
+        let task_a=Uuid::new_v4();
+        sqlx::query("INSERT INTO team_tasks(task_id,tenant_id,room_id,mission_id,title,created_by_principal_id) VALUES($1,$2,$3,$4,'scope FK fixture',$5)")
+            .bind(task_a).bind(tenant).bind(room).bind(Uuid::new_v4()).bind(a.principal).execute(&pool).await.unwrap();
+        let bad_lease=sqlx::query("INSERT INTO task_lease_events(lease_event_id,tenant_id,room_id,task_id,fencing_token,event_type) VALUES($1,$2,$3,$4,1,'ACQUIRED')")
+            .bind(Uuid::new_v4()).bind(tenant_b).bind(room_b).bind(task_a).execute(&pool).await;
+        assert!(bad_lease.is_err(),"lease event FK must bind tenant + room + task");
+        let bad_handoff=sqlx::query("INSERT INTO task_handoffs(handoff_id,task_id,tenant_id,room_id,from_fencing_token,status) VALUES($1,$2,$3,$4,1,'PENDING')")
+            .bind(Uuid::new_v4()).bind(task_a).bind(tenant_b).bind(room_b).execute(&pool).await;
+        assert!(bad_handoff.is_err(),"handoff FK must bind tenant + room + task");
+
+        let bad_attachment=sqlx::query("INSERT INTO team_room_attachment_refs(attachment_id,tenant_id,room_id,channel_id,uploaded_by_principal_id,file_name,storage_ref) VALUES($1,$2,$3,$4,$5,'bad.txt','object://bad')")
+            .bind(Uuid::new_v4()).bind(tenant).bind(room).bind(channel_b).bind(a.principal).execute(&pool).await;
+        assert!(bad_attachment.is_err(),"attachment channel FK must bind tenant + room + channel");
+        let bad_ticket=sqlx::query("INSERT INTO team_room_ws_tickets(ticket_hash,tenant_id,room_id,principal_id,session_id,expires_at) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '30 seconds')")
+            .bind(Sha256::digest(Uuid::new_v4().as_bytes()).to_vec()).bind(tenant).bind(room).bind(a.principal).bind(actor_b.session).execute(&pool).await;
+        assert!(bad_ticket.is_err(),"WebSocket ticket FK must bind tenant + room + principal + session");
+
         server.abort();
 
         let bad_ws=request(app.clone(),"GET",format!("/team-room/{room}/ws?ticket=invalid"),&a.token,None).await;
@@ -561,7 +736,8 @@ mod postgres_tests {
         // actor reference and intentionally has no cascading delete policy.
         sqlx::query("DELETE FROM team_room_channel_members WHERE channel_id IN (SELECT channel_id FROM team_room_channels WHERE tenant_id=$1)")
             .bind(tenant).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant_b).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM tenants WHERE tenant_id=$1").bind(tenant).execute(&pool).await.unwrap();
-        let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session);
+        let _=(a.participant,a.session,b.participant,b.session,c.participant,c.session,actor_b.participant,actor_b.session);
     }
 }
