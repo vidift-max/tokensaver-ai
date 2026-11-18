@@ -114,7 +114,7 @@ $summaryLines=@(
 )
 $summaryLines|Set-Content $buildSummary -Encoding utf8
 $hashRows=@($msix,$supervisor,$client,$hostClient,$manifestPath,$provenanceFile)+$assetFiles.FullName|ForEach-Object{
-  $relative=[IO.Path]::GetRelativePath($OutputDirectory,$_.ToString()).Replace('\\','/')
+  $relative=[IO.Path]::GetRelativePath($OutputDirectory,$_.ToString()).Replace('\','/')
   (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()+'  '+$relative
 }
 $hashRows|Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
