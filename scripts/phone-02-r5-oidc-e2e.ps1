@@ -183,7 +183,15 @@ try{
  $realm=$null;$realmJson=$null
  $keycloakProcess=Start-R5Keycloak $kcBat $kcHome $goodCert $goodKey $true $true
  Mark 'KEYCLOAK_HTTPS' (Test-NetConnection 127.0.0.1 -Port 8443 -InformationLevel Quiet)
- Mark 'KEYCLOAK_HTTP_DISABLED' (-not(Test-NetConnection 127.0.0.1 -Port 8080 -InformationLevel Quiet))
+ $httpListeners=@(Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue)
+ $kcHttpListener=$false
+ foreach($listener in $httpListeners){
+  $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+  $ownerName=if($owner){$owner.Name}else{'UNKNOWN'}
+  Write-Host ('HTTP_PORT_8080_LISTENER=PID:'+ $listener.OwningProcess + ';PROCESS:'+ $ownerName)
+  if($owner -and $owner.CommandLine -and $owner.CommandLine.Contains($kcHome)){$kcHttpListener=$true}
+ }
+ Mark 'KEYCLOAK_HTTP_DISABLED' (-not $kcHttpListener)
  $discovery=Invoke-RestMethod -Uri "$issuer/.well-known/openid-configuration" -TimeoutSec 15
  Mark 'OIDC_DISCOVERY' ($discovery.issuer -ceq $issuer -and $discovery.token_endpoint -ceq "$issuer/protocol/openid-connect/token" -and $discovery.jwks_uri -ceq "$issuer/protocol/openid-connect/certs")
  Mark 'OIDC_ISSUER_VALID' ($discovery.issuer -ceq $issuer)
@@ -409,6 +417,10 @@ finally{
      Write-Host ('TEMP_DIRECTORY_REMOVE_ATTEMPT='+$attempt+';ERROR='+$errText)
      $lockedPath=$_.TargetObject
      if($lockedPath){Write-Host ('TEMP_DIRECTORY_LOCKED_TARGET='+$lockedPath)}
+     $remainingFiles=@(Get-ChildItem $root -File -Recurse -Force -ErrorAction SilentlyContinue|Select-Object -First 15 -ExpandProperty FullName)
+     foreach($remain in $remainingFiles){Write-Host ('TEMP_DIRECTORY_REMAINING_FILE='+$remain)}
+     $rootProcesses=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object {$_.CommandLine -and $_.CommandLine.Contains($root)})
+     foreach($rp in $rootProcesses){Write-Host ('TEMP_DIRECTORY_REMAINING_PROCESS='+$rp.ProcessId+':'+$rp.Name)}
     }
    }
   }
