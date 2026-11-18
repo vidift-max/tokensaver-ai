@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$ExpectedSourceSha,
-  [string]$Publisher = 'CN=TokenSaver Publisher PENDING APPROVAL',
-  [string]$PublisherDisplayName = 'Publisher pending approval',
+  [string]$Publisher = 'CN=TokenSaver Publisher',
+  [string]$PublisherDisplayName = 'TokenSaver AI',
   [string]$PackageVersion = '0.1.0.0',
   [string]$OutputDirectory = ''
 )

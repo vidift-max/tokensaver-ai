@@ -40,8 +40,8 @@ jobs:
           PACKAGE_VERSION: ${{ inputs.package_version }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $publisher = 'CN=TokenSaver Publisher PENDING APPROVAL'
-          $displayName = 'Publisher pending approval'
+          $publisher = 'CN=TokenSaver Publisher'
+          $displayName = 'TokenSaver AI'
           $version = $env:PACKAGE_VERSION
           if (-not $version) { $version = '0.1.0.0' }
           $out = Join-Path $env:RUNNER_TEMP 'phone02-release-package'
