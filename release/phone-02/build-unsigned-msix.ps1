@@ -76,6 +76,7 @@ Assert-Check ($LASTEXITCODE -eq 0 -and (Test-Path $msix)) 'MAKEAPPX_PACK'
 & $makeappx validate /p $msix
 Assert-Check ($LASTEXITCODE -eq 0) 'MAKEAPPX_VALIDATE'
 $sha=(Get-FileHash $msix -Algorithm SHA256).Hash.ToLower()
+$assetFiles=Get-ChildItem $assets -File
 $files=@($msix,$supervisor,$client,$hostClient,$manifestPath)+$assetFiles.FullName | ForEach-Object { $f=Get-Item $_;[ordered]@{name=$f.Name;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();bytes=$f.Length} }
 $provenance=[ordered]@{
   release_id=('phone02-'+$actualSha.Substring(0,12)+'-run-'+$env:GITHUB_RUN_ID)
@@ -89,7 +90,6 @@ $provenance=[ordered]@{
 $provenanceFile=Join-Path $evidence 'provenance.json';$provenance|ConvertTo-Json -Depth 10|Set-Content $provenanceFile -Encoding utf8
 $buildSummary=Join-Path $evidence 'build-summary.txt'
 @('PHASE_BUILD=PASS','PHASE_PACKAGE=PASS','PHASE_HASH=PASS','PACKAGE_VALIDATION=MAKEAPPX_VALIDATE_PASS','PHASE_SIGN=NOT_RUN_UNSIGNED','SOURCE_SHA='+$actualSha,'PACKAGE_IDENTITY='+$identity.Name,'PUBLISHER='+$Publisher,'PUBLISHER_DISPLAY_NAME='+$PublisherDisplayName,'VERSION='+$PackageVersion,'ARCH=x64','TARGET=Windows.Desktop','MSIX_SHA256='+$sha,'PROVENANCE=provenance.json')|Set-Content $buildSummary -Encoding utf8
-$assetFiles=Get-ChildItem $assets -File
 $hashRows=@($msix,$supervisor,$client,$hostClient,$manifestPath,$provenanceFile)+$assetFiles.FullName|ForEach-Object{(Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()+'  '+([IO.Path]::GetRelativePath($OutputDirectory,$_.ToString()))}
 $hashRows|Set-Content (Join-Path $evidence 'SHA256SUMS') -Encoding ascii
 Write-Host "PACKAGE_STATUS=UNSIGNED"
