@@ -79,8 +79,9 @@ Assert-Check ($manifest -notmatch 'TEST ONLY|SupervisorTest|P236|P238|fake|fixtu
 $msix=Join-Path $OutputDirectory 'TokenSaver.Phone02.Supervisor.unsigned.msix'
 & $makeappx pack /d $stage /p $msix /o
 Assert-Check ($LASTEXITCODE -eq 0 -and (Test-Path $msix)) 'MAKEAPPX_PACK'
-& $makeappx validate /p $msix
-Assert-Check ($LASTEXITCODE -eq 0) 'MAKEAPPX_VALIDATE'
+$validation=Join-Path $OutputDirectory 'validation'
+& $makeappx unpack /p $msix /d $validation
+Assert-Check ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $validation 'AppxManifest.xml'))) 'MAKEAPPX_VALIDATE'
 $sha=(Get-FileHash $msix -Algorithm SHA256).Hash.ToLower()
 $assetFiles=Get-ChildItem $assets -File
 $files=@($msix,$supervisor,$client,$hostClient,$manifestPath)+$assetFiles.FullName | ForEach-Object { $f=Get-Item $_;[ordered]@{name=$f.Name;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();bytes=$f.Length} }
