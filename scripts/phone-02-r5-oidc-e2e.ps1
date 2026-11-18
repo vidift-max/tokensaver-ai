@@ -83,7 +83,7 @@ function Export-SanitizedKeycloakStartup([string]$stdoutPath,[string]$stderrPath
 }
 function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[string]$key,[bool]$importRealm,[bool]$bootstrapAdmin){
  $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='false';$env:KC_HTTPS_PORT='8443'
- $env:KC_HTTPS_CERTIFICATE_FILE=$cert;$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key
+ $env:KC_HTTPS_CERTIFICATE_FILE=$cert.Replace('\','/');$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key.Replace('\','/')
  $env:KC_HOSTNAME='https://keycloak.p238.test:8443';$env:KC_HOSTNAME_STRICT='true'
  $env:KC_DB='postgres';$env:KC_DB_URL_HOST='127.0.0.1';$env:KC_DB_URL_PORT='5432';$env:KC_DB_URL_DATABASE=$pgDatabase
  $env:KC_DB_USERNAME='postgres';$env:KC_DB_PASSWORD=$pgPassword
@@ -399,10 +399,10 @@ finally{
  try{
   if(Test-Path $clientLog){Remove-Item $clientLog -Force}
   if(Test-Path $root){
-   for($attempt=1;$attempt -le 3 -and (Test-Path $root);$attempt++){
+   for($attempt=1;$attempt -le 10 -and (Test-Path $root);$attempt++){
     $remainingRootProcesses=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Where-Object {$_.CommandLine -and $_.CommandLine.Contains($root)})
     foreach($rp in $remainingRootProcesses){Stop-Process -Id $rp.ProcessId -Force -ErrorAction SilentlyContinue}
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
     try{Remove-Item $root -Recurse -Force -ErrorAction Stop}catch{
      $errText=[string]$_.Exception.Message
      $errText=$errText -replace '(?i)(password|secret|token|credential)\s*[:=]\s*[^\s,;]+','$1=[REDACTED]'
