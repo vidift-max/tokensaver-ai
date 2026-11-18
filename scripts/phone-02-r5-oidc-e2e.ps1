@@ -195,7 +195,7 @@ try{
  Mark 'CLIENT_SECRET_NOT_IN_REALM_IMPORT_FILE' (-not $realmText.Contains($oidcClientSecret))
  $env:PGPASSWORD=$pgPassword
  $sqlRealm=& $psql -h 127.0.0.1 -p 5432 -U postgres -d $pgDatabase -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM realm WHERE name='$realmName'" 2>$null
- $sqlClient=& $psql -h 127.0.0.1 -p 5432 -U postgres -d keycloak_p238b -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM client WHERE client_id='$clientId' AND enabled=true AND public_client=false AND service_accounts_enabled=true" 2>$null
+ $sqlClient=& $psql -h 127.0.0.1 -p 5432 -U postgres -d $pgDatabase -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM client WHERE client_id='$clientId' AND enabled=true AND public_client=false AND service_accounts_enabled=true" 2>$null
  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
  Mark 'KEYCLOAK_POSTGRES_REALM_PERSISTED' ([int]$sqlRealm -eq 1 -and [int]$sqlClient -eq 1)
  Remove-Item $importFile -Force
@@ -321,7 +321,7 @@ finally{
  }
  if($badTlsProcess){Stop-Process -Id $badTlsProcess.Id -Force -ErrorAction SilentlyContinue;Wait-Process -Id $badTlsProcess.Id -Timeout 10 -ErrorAction SilentlyContinue}
  $badTlsClosed=Wait-TcpPort '127.0.0.1' 8444 15 $false
- $badTlsAbsent=($null -eq (Get-Process -Id $badTlsProcess.Id -ErrorAction SilentlyContinue))
+ $badTlsAbsent=($null -eq $badTlsProcess -or $null -eq (Get-Process -Id $badTlsProcess.Id -ErrorAction SilentlyContinue))
  $cleanup.Add('BAD_TLS_PROCESS_CLEANUP='+$(if($badTlsClosed -and $badTlsAbsent){'PASS'}else{'FAIL'}))
  if($keycloakProcess){Stop-Keycloak $keycloakProcess $kcHome}
  $keycloakClosed=Wait-TcpPort '127.0.0.1' 8443 30 $false
