@@ -48,8 +48,31 @@ jobs:
           path: ${{ runner.temp }}/phone02-release-package
           if-no-files-found: error
           retention-days: 30
+  signing-infrastructure-tests:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Parse PowerShell signing scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @('.\\release\\phone-02\\sign-msix.ps1', '.\\release\\phone-02\\verify-signature.ps1')
+          foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; throw "PowerShell parse failed: $file" }
+          }
+      - name: Run signing infrastructure guard tests
+        shell: pwsh
+        run: node --test tests/release-package/*.test.mjs
+
   sign:
-    needs: [build-unsigned]
+    needs: [build-unsigned, signing-infrastructure-tests]
     if: needs.build-unsigned.result == 'success'
     # Required reviewers and branch restrictions must be configured in GitHub Settings > Environments.
     environment:
