@@ -1,0 +1,57 @@
+name: AI-PHONE-02 Release Package (unsigned build only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Four-part MSIX version
+        required: false
+        default: 0.1.0.0
+        type: string
+  push:
+    branches:
+      - mission/phone-02-p238-b-oidc
+    paths:
+      - 'release/phone-02/**'
+      - 'services/phone-supervisor/**'
+      - '.github/workflows/phone-02-release-package.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone02-release-package-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Build native components and unsigned MSIX
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publisher = 'CN=TokenSaver Publisher'
+          $displayName = 'TokenSaver AI'
+          $version = $env:PACKAGE_VERSION
+          if (-not $version) { $version = '0.1.0.0' }
+          $out = Join-Path $env:RUNNER_TEMP 'phone02-release-package'
+          & .\\release\\phone-02\\build-unsigned-msix.ps1 -ExpectedSourceSha $env:GITHUB_SHA -Publisher $publisher -PublisherDisplayName $displayName -PackageVersion $version -OutputDirectory $out
+
+      - name: Upload unsigned MSIX and provenance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-release-package
+          if-no-files-found: warn
+          retention-days: 30
