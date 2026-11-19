@@ -7,6 +7,11 @@ on:
         required: false
         default: 0.1.0.0
         type: string
+      enable_signing:
+        description: Explicitly authorize the signing job after certificate and runner readiness
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [mission/phone-02-p238-b-oidc]
     paths:
@@ -73,7 +78,7 @@ jobs:
 
   sign:
     needs: [build-unsigned, signing-infrastructure-tests]
-    if: needs.build-unsigned.result == 'success'
+    if: needs.build-unsigned.result == 'success' && inputs.enable_signing == true
     # Required reviewers and branch restrictions must be configured in GitHub Settings > Environments.
     environment:
       name: phone-02-signing
