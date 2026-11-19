@@ -157,7 +157,7 @@ jobs:
       - name: Upload verified release evidence
         uses: actions/upload-artifact@v4
         with:
-          name: phone02-release-evidence-${{ github.sha }}
+          name: phone02-verified-signed-${{ github.sha }}
           path: ${{ runner.temp }}/phone02-signed
           if-no-files-found: error
           retention-days: 90
@@ -166,18 +166,55 @@ jobs:
     if: always()
     runs-on: windows-2025
     steps:
-      - name: Report final state
+      - name: Checkout exact source SHA
+        if: needs.build-unsigned.result == 'success'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Collect original unsigned artifact and provenance
+        if: needs.build-unsigned.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: phone02-release-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-final-evidence/unsigned
+      - name: Collect verified signed artifact when available
+        if: needs.verify-signature.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: phone02-verified-signed-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-final-evidence/signed
+      - name: Write release state evidence
+        if: always()
         shell: pwsh
         env:
           BUILD_RESULT: ${{ needs.build-unsigned.result }}
           SIGN_RESULT: ${{ needs.sign.result }}
           VERIFY_RESULT: ${{ needs.verify-signature.result }}
         run: |
-          Write-Host "BUILD_UNSIGNED=$env:BUILD_RESULT"
-          Write-Host "SIGN=$env:SIGN_RESULT"
-          Write-Host "VERIFY_SIGNATURE=$env:VERIFY_RESULT"
-          if ($env:SIGN_RESULT -ne 'success') {
-            Write-Host 'SIGNING_INFRASTRUCTURE=READY_PENDING_CERTIFICATE'
-            Write-Host 'REAL_SIGNING=NOT_RUN'
-            Write-Host 'CERTIFICATE=NOT_AVAILABLE_OR_NOT_APPROVED'
-          }
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'phone02-final-evidence'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $state = @(
+            "SOURCE_SHA=$env:GITHUB_SHA"
+            "BUILD_UNSIGNED=$env:BUILD_RESULT"
+            "SIGN=$env:SIGN_RESULT"
+            "VERIFY_SIGNATURE=$env:VERIFY_RESULT"
+            "REAL_SIGNING=$(if ($env:SIGN_RESULT -eq 'success') { 'EXECUTED' } else { 'NOT_RUN' })"
+            "SIGNATURE_STATUS=$(if ($env:VERIFY_RESULT -eq 'success') { 'SIGNATURE_VALID' } elseif ($env:SIGN_RESULT -eq 'skipped') { 'SIGNATURE_PENDING' } else { 'SIGNATURE_INVALID_OR_PENDING' })"
+            "SIGNING_INFRASTRUCTURE=$(if ($env:SIGN_RESULT -eq 'skipped') { 'READY_PENDING_CERTIFICATE' } elseif ($env:SIGN_RESULT -eq 'success' -and $env:VERIFY_RESULT -eq 'success') { 'VERIFIED' } else { 'SIGNING_BLOCKED' })"
+            'INSTALLATION=NOT_RUN'
+            'ACTIVATION=NOT_RUN'
+            'OIDC=NOT_RUN'
+            'TEAM_ROOM=NOT_RUN'
+          )
+          $state | Set-Content (Join-Path $root 'release-state.txt') -Encoding utf8
+          $state | ForEach-Object { Write-Host $_ }
+      - name: Upload consolidated release evidence
+        if: always() && needs.build-unsigned.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-final-evidence
+          if-no-files-found: error
+          retention-days: 90
