@@ -3,59 +3,44 @@ param(
  [Parameter(Mandatory=$true)][string]$MsixPath,
  [Parameter(Mandatory=$true)][string]$ExpectedPublisher,
  [Parameter(Mandatory=$true)][string]$ExpectedPublisherDisplayName,
- [Parameter(Mandatory=$true)][string]$SecurityApprovalSecret,
- [Parameter(Mandatory=$true)][string]$CertificatePath,
- [Parameter(Mandatory=$true)][string]$CertificatePassword,
- [Parameter(Mandatory=$true)][string]$ManifestPath,
  [Parameter(Mandatory=$true)][string]$ApprovedThumbprint,
+ [Parameter(Mandatory=$true)][string]$ManifestPath,
  [Parameter(Mandatory=$true)][string]$ProvenancePath,
  [Parameter(Mandatory=$true)][string]$HashManifestPath,
- [string]$TimestampUrl='http://timestamp.digicert.com'
+ [Parameter(Mandatory=$true)][string]$ExpectedUnsignedSha256,
+ [string]$TimestampUrl='https://timestamp.digicert.com',
+ [string]$OutputDirectory=''
 )
 $ErrorActionPreference='Stop'
-if($ExpectedPublisher -match 'PENDING APPROVAL|TEST ONLY'){throw 'Signing denied: Publisher is not approved'}
-if($ExpectedPublisherDisplayName -match 'PENDING APPROVAL|TEST ONLY'){throw 'Signing denied: Publisher display name is not approved'}
-if($SecurityApprovalSecret -ne 'APPROVED'){throw 'Signing denied: explicit Security approval secret is missing or invalid'}
-if(-not(Test-Path $MsixPath)){throw 'MSIX input missing'}
-if(-not(Test-Path $CertificatePath)){throw 'Certificate input missing'}
-$cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CertificatePath,$CertificatePassword,[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
-if($cert.Subject -ne $ExpectedPublisher){throw 'Certificate subject does not match approved Publisher'}
-if(-not $cert.HasPrivateKey){throw 'Signing certificate has no private key'}
-if($cert.Thumbprint -ne $ApprovedThumbprint){throw 'Certificate fingerprint does not match separately approved fingerprint'}
-if(-not(Test-Path $ManifestPath)){throw 'Package manifest evidence missing'}
-$manifest=[xml](Get-Content $ManifestPath -Raw)
-if($manifest.Package.Identity.Publisher -ne $ExpectedPublisher){throw 'Package manifest Publisher mismatch'}
-if($manifest.Package.Identity.Name -ne 'TokenSaver.Phone02.Supervisor'){throw 'Package Identity name mismatch'}
-if($manifest.Package.Identity.ProcessorArchitecture -ne 'x64'){throw 'Package architecture mismatch'}
-if($manifest.Package.Identity.Version -notmatch '^\d+\.\d+\.\d+\.\d+$'){throw 'Package version invalid'}
-if(-not(Test-Path $ProvenancePath)){throw 'Provenance evidence missing before signing'}
-$preSignProvenance=Get-Content $ProvenancePath -Raw|ConvertFrom-Json
-$preSignHash=(Get-FileHash $MsixPath -Algorithm SHA256).Hash.ToLower()
-if($preSignProvenance.unsigned_msix_sha256 -ne $preSignHash){throw 'Unsigned package hash does not match provenance'}
-if($preSignProvenance.source_sha -notmatch '^[0-9a-f]{40}$'){throw 'Provenance source SHA missing or invalid'}
-if($preSignProvenance.package_identity -ne $manifest.Package.Identity.Name -or $preSignProvenance.publisher -ne $ExpectedPublisher -or $preSignProvenance.publisher_display_name -ne $ExpectedPublisherDisplayName -or $preSignProvenance.version -ne $manifest.Package.Identity.Version){throw 'Manifest fields do not match provenance record'}
-if($manifest.Package.Properties.PublisherDisplayName -ne $ExpectedPublisherDisplayName){throw 'Package manifest PublisherDisplayName mismatch'}
-$sdk=Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Directory|Where-Object Name -Match '^10\.'|Sort-Object Name -Descending|Select-Object -First 1
-$signtool=Join-Path $sdk.FullName 'x64\SignTool.exe';if(-not(Test-Path $signtool)){throw 'SignTool unavailable'}
-& $signtool sign /fd SHA256 /f $CertificatePath /p $CertificatePassword /tr $TimestampUrl /td SHA256 $MsixPath
-if($LASTEXITCODE -ne 0){throw 'SignTool signing failed'}
-$verifyOutput = & $signtool verify /pa /v $MsixPath 2>&1
-if($LASTEXITCODE -ne 0){throw 'SignTool verification failed'}
-$verifyText=($verifyOutput -join ' ')
-if($verifyText -notmatch '(?i)timestamp|time stamp'){throw 'Timestamp verification evidence missing'}
-$signature=Get-AuthenticodeSignature $MsixPath
-if($signature.Status -ne 'Valid'){throw 'Signed package signature status is not Valid'}
-Write-Host ('SIGNED_MSIX_SHA256='+(Get-FileHash $MsixPath -Algorithm SHA256).Hash.ToLower())
-Write-Host ('SIGNER_SUBJECT='+$cert.Subject)
-Write-Host ('SIGNER_THUMBPRINT='+$cert.Thumbprint)
-Write-Host ('TIMESTAMP_URL='+$TimestampUrl)
-Write-Host 'SIGNATURE_VALID=PASS'
-if(Test-Path $ProvenancePath){
- $p=[ordered]@{}; (Get-Content $ProvenancePath -Raw|ConvertFrom-Json -AsHashtable).GetEnumerator()|ForEach-Object{$p[$_.Key]=$_.Value}
- $p['signed_msix_sha256']=(Get-FileHash $MsixPath -Algorithm SHA256).Hash.ToLower();$p['signature_status']='VALID';$p['certificate_fingerprint']=$cert.Thumbprint;$p['timestamp_status']='SIGNTOOL_VERIFY_OUTPUT_TIMESTAMP_PRESENT';$p['signing_approval_status']='CERTIFICATE_FINGERPRINT_MATCH';$p['security_approval_status']='SECURITY_APPROVAL_SECRET_PRESENT; GITHUB_ENVIRONMENT_PROTECTION_POLICY_NOT_VERIFIED';$p['status']='SIGNED_AND_VERIFIED';$p|ConvertTo-Json -Depth 10|Set-Content $ProvenancePath -Encoding utf8
-}
-if(Test-Path $HashManifestPath){
- $root=Split-Path (Split-Path $HashManifestPath -Parent) -Parent
- $entries=Get-ChildItem $root -File -Recurse | Where-Object FullName -ne $HashManifestPath | ForEach-Object{(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()+'  '+([IO.Path]::GetRelativePath($root,$_.FullName))}
- $entries|Set-Content $HashManifestPath -Encoding ascii
-}
+function Block([string]$s,[string]$m){Write-Host "SIGNING_STATUS=$s";throw $m}
+if($TimestampUrl -notmatch '^https://'){Block 'SIGNING_BLOCKED' 'TSA must use HTTPS'}
+if($ExpectedPublisher -cne 'CN=TokenSaver Publisher'){Block 'SIGNING_BLOCKED' 'Publisher mismatch'}
+if($ApprovedThumbprint -notmatch '^[A-Fa-f0-9]{40}$'){Block 'CERTIFICATE_PENDING' 'Approved thumbprint unavailable'}
+foreach($p in @($MsixPath,$ManifestPath,$ProvenancePath,$HashManifestPath)){if(-not(Test-Path -LiteralPath $p -PathType Leaf)){Block 'SIGNING_BLOCKED' 'Unsigned evidence missing'}}
+$hash=(Get-FileHash $MsixPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$prov=Get-Content $ProvenancePath -Raw|ConvertFrom-Json
+if($hash -cne $ExpectedUnsignedSha256.ToLowerInvariant() -or $prov.signature_status -ne 'UNSIGNED' -or $prov.unsigned_msix_sha256 -cne $hash -or $prov.source_sha -notmatch '^[0-9a-f]{40}$'){Block 'SIGNING_BLOCKED' 'Unsigned artifact/provenance mismatch'}
+[xml]$manifest=Get-Content $ManifestPath -Raw;$id=$manifest.Package.Identity
+if($id.Publisher -cne $ExpectedPublisher -or $manifest.Package.Properties.PublisherDisplayName -cne $ExpectedPublisherDisplayName -or $id.Name -cne 'TokenSaver.Phone02.Supervisor' -or $id.ProcessorArchitecture -cne 'x64'){Block 'SIGNING_BLOCKED' 'MSIX identity mismatch'}
+$cert=Get-ChildItem Cert:\LocalMachine\My|Where-Object{$_.Thumbprint -ceq $ApprovedThumbprint.ToUpperInvariant()}|Select-Object -First 1
+if($null -eq $cert){Block 'CERTIFICATE_PENDING' 'Certificate absent from LocalMachine\My'}
+if($cert.Subject -cne $ExpectedPublisher -or $cert.Thumbprint -cne $ApprovedThumbprint.ToUpperInvariant()){Block 'SIGNING_BLOCKED' 'Certificate Subject/thumbprint mismatch'}
+$now=[DateTime]::UtcNow
+if($now -lt $cert.NotBefore.ToUniversalTime() -or $now -gt $cert.NotAfter.ToUniversalTime()){Block 'SIGNING_BLOCKED' 'Certificate outside validity'}
+if(-not $cert.HasPrivateKey){Block 'SIGNING_BLOCKED' 'Private key unavailable'}
+$eku=@($cert.Extensions|Where-Object{$_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]}|ForEach-Object{$_.EnhancedKeyUsages}|ForEach-Object{$_.Value})
+if($eku -notcontains '1.3.6.1.5.5.7.3.3'){Block 'SIGNING_BLOCKED' 'Code Signing EKU missing'}
+$chain=[System.Security.Cryptography.X509Certificates.X509Chain]::new();$chain.ChainPolicy.RevocationMode='Online';$chain.ChainPolicy.RevocationFlag='ExcludeRoot'
+if(-not $chain.Build($cert)){Block 'SIGNING_BLOCKED' 'Certificate chain/revocation validation failed'}
+$pf=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+$sdk=Get-ChildItem (Join-Path $pf 'Windows Kits\10\bin') -Directory|Where-Object Name -Match '^10\\.'|Sort-Object Name -Descending|Select-Object -First 1
+$st=if($sdk){Join-Path $sdk.FullName 'x64\signtool.exe'}else{$null}
+if(-not $st -or -not(Test-Path $st)){Block 'SIGNING_BLOCKED' 'SignTool unavailable'}
+if(-not $OutputDirectory){$OutputDirectory=Split-Path -Parent $MsixPath};New-Item -ItemType Directory -Force $OutputDirectory|Out-Null
+$signed=Join-Path $OutputDirectory 'TokenSaver.Phone02.Supervisor.signed.msix';Copy-Item $MsixPath $signed -Force
+# Uses Windows certificate store private key. No PFX, password, /f or /p.
+& $st sign /fd SHA256 /sha1 $cert.Thumbprint /s My /sm /tr $TimestampUrl /td SHA256 $signed
+if($LASTEXITCODE -ne 0){Block 'SIGNING_BLOCKED' 'SignTool failed'}
+$meta=[ordered]@{source_sha=$prov.source_sha;unsigned_msix_sha256=$hash;signed_msix_sha256=(Get-FileHash $signed -Algorithm SHA256).Hash.ToLowerInvariant();package_identity=$id.Name;publisher=$ExpectedPublisher;publisher_display_name=$ExpectedPublisherDisplayName;certificate_thumbprint=$cert.Thumbprint;certificate_subject=$cert.Subject;certificate_not_before_utc=$cert.NotBefore.ToUniversalTime().ToString('o');certificate_not_after_utc=$cert.NotAfter.ToUniversalTime().ToString('o');certificate_chain_status='BUILT_AND_TRUSTED';tsa_url=$TimestampUrl;timestamp_status='PENDING_CRYPTOGRAPHIC_VERIFY';signature_status='PENDING_VERIFICATION';verification_status='PENDING'}
+$meta|ConvertTo-Json -Depth 8|Set-Content (Join-Path $OutputDirectory 'signer-metadata.json') -Encoding utf8
+Write-Host "UNSIGNED_MSIX_SHA256=$hash";Write-Host "SIGNED_MSIX_SHA256=$($meta.signed_msix_sha256)";Write-Host "PUBLISHER=$ExpectedPublisher";Write-Host "CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)";Write-Host 'SIGNATURE_STATUS=SIGNATURE_PENDING'

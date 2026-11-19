@@ -1,5 +1,4 @@
-name: AI-PHONE-02 Release Package (unsigned build only)
-
+name: AI-PHONE-02 Release Package
 on:
   workflow_dispatch:
     inputs:
@@ -9,20 +8,17 @@ on:
         default: 0.1.0.0
         type: string
   push:
-    branches:
-      - mission/phone-02-p238-b-oidc
+    branches: [mission/phone-02-p238-b-oidc]
     paths:
       - 'release/phone-02/**'
       - 'services/phone-supervisor/**'
+      - 'tests/release-package/**'
       - '.github/workflows/phone-02-release-package.yml'
-
 permissions:
   contents: read
-
 concurrency:
   group: phone02-release-package-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
-
 jobs:
   build-unsigned:
     runs-on: windows-2025
@@ -33,8 +29,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Build native components and unsigned MSIX
+      - name: Build unsigned MSIX
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ inputs.package_version }}
@@ -46,12 +41,116 @@ jobs:
           if (-not $version) { $version = '0.1.0.0' }
           $out = Join-Path $env:RUNNER_TEMP 'phone02-release-package'
           & .\release\phone-02\build-unsigned-msix.ps1 -ExpectedSourceSha $env:GITHUB_SHA -Publisher $publisher -PublisherDisplayName $displayName -PackageVersion $version -OutputDirectory $out
-
-      - name: Upload unsigned MSIX and provenance evidence
-        if: always()
+      - name: Upload unsigned artifact and original provenance
         uses: actions/upload-artifact@v4
         with:
           name: phone02-release-unsigned-${{ github.sha }}
           path: ${{ runner.temp }}/phone02-release-package
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
+  sign:
+    needs: [build-unsigned]
+    if: needs.build-unsigned.result == 'success'
+    # Required reviewers and branch restrictions must be configured in GitHub Settings > Environments.
+    environment:
+      name: phone-02-signing
+    runs-on: [self-hosted, windows, x64, phone02-signing]
+    timeout-minutes: 20
+    env:
+      APPROVED_THUMBPRINT: ${{ vars.PHONE02_SIGNING_CERT_THUMBPRINT }}
+      TSA_URL: https://timestamp.digicert.com
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download only this run unsigned artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phone02-release-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-unsigned
+      - name: Fail closed if approved certificate is absent
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:APPROVED_THUMBPRINT -notmatch '^[A-Fa-f0-9]{40}$') {
+            Write-Host 'SIGNING_STATUS=CERTIFICATE_PENDING'
+            throw 'CERTIFICATE_PENDING'
+          }
+          $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object Thumbprint -CEQ $env:APPROVED_THUMBPRINT.ToUpperInvariant() | Select-Object -First 1
+          if ($null -eq $cert) {
+            Write-Host 'SIGNING_STATUS=CERTIFICATE_PENDING'
+            throw 'CERTIFICATE_PENDING'
+          }
+      - name: Sign using Windows certificate store
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'phone02-unsigned'
+          $msix = Join-Path $root 'TokenSaver.Phone02.Supervisor.unsigned.msix'
+          $manifest = Join-Path $root 'package\AppxManifest.xml'
+          $provenance = Join-Path $root 'evidence\provenance.json'
+          $hashes = Join-Path $root 'evidence\SHA256SUMS'
+          $out = Join-Path $env:RUNNER_TEMP 'phone02-signed'
+          $prov = Get-Content $provenance -Raw | ConvertFrom-Json
+          & .\release\phone-02\sign-msix.ps1 -MsixPath $msix -ExpectedPublisher 'CN=TokenSaver Publisher' -ExpectedPublisherDisplayName 'TokenSaver AI' -ApprovedThumbprint $env:APPROVED_THUMBPRINT -ManifestPath $manifest -ProvenancePath $provenance -HashManifestPath $hashes -ExpectedUnsignedSha256 $prov.unsigned_msix_sha256 -TimestampUrl $env:TSA_URL -OutputDirectory $out
+      - name: Upload signed package, signer metadata and retained unsigned evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-signed-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phone02-signed
+            ${{ runner.temp }}/phone02-unsigned/TokenSaver.Phone02.Supervisor.unsigned.msix
+            ${{ runner.temp }}/phone02-unsigned/evidence/provenance.json
+            ${{ runner.temp }}/phone02-unsigned/evidence/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+  verify-signature:
+    needs: [sign]
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download signed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phone02-release-signed-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-signed
+      - name: Verify Authenticode, chain and RFC3161 timestamp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'phone02-signed'
+          & .\release\phone-02\verify-signature.ps1 -MsixPath (Join-Path $root 'TokenSaver.Phone02.Supervisor.signed.msix') -MetadataPath (Join-Path $root 'signer-metadata.json') -ExpectedPublisher 'CN=TokenSaver Publisher' -ExpectedPublisherDisplayName 'TokenSaver AI' -TimestampUrl 'https://timestamp.digicert.com'
+      - name: Upload verified release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone02-release-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/phone02-signed
+          if-no-files-found: error
+          retention-days: 90
+  release-evidence:
+    needs: [build-unsigned, sign, verify-signature]
+    if: always()
+    runs-on: windows-2025
+    steps:
+      - name: Report final state
+        shell: pwsh
+        env:
+          BUILD_RESULT: ${{ needs.build-unsigned.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+          VERIFY_RESULT: ${{ needs.verify-signature.result }}
+        run: |
+          Write-Host "BUILD_UNSIGNED=$env:BUILD_RESULT"
+          Write-Host "SIGN=$env:SIGN_RESULT"
+          Write-Host "VERIFY_SIGNATURE=$env:VERIFY_RESULT"
+          if ($env:SIGN_RESULT -ne 'success') {
+            Write-Host 'SIGNING_INFRASTRUCTURE=READY_PENDING_CERTIFICATE'
+            Write-Host 'REAL_SIGNING=NOT_RUN'
+            Write-Host 'CERTIFICATE=NOT_AVAILABLE_OR_NOT_APPROVED'
+          }

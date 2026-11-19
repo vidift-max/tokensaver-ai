@@ -1,0 +1,14 @@
+# AI-PHONE-02 signing infrastructure
+- Approved identity: CN=TokenSaver Publisher / TokenSaver AI / TokenSaver.Phone02.Supervisor x64.
+- No certificate, PFX, private key, password or signing secret belongs in Git.
+- Create Environment phone-02-signing and configure required reviewers plus branch restrictions in GitHub Settings > Environments; YAML alone does not configure protection.
+- Provision controlled self-hosted Windows x64 runner labeled phone02-signing.
+- Install official Code Signing certificate in Cert:\\LocalMachine\\My; prefer non-exportable/HSM-backed key; grant only runner service identity access.
+- Set Environment variable PHONE02_SIGNING_CERT_THUMBPRINT to the separately approved public thumbprint. Do not add PFX/password secrets.
+- Build runs on hosted Windows with no signing credentials. Only sign uses the controlled runner and protected Environment.
+- Signer validates Subject/Publisher, thumbprint, validity, Code Signing EKU, private-key access, online chain/revocation, MSIX identity, provenance and unsigned SHA-256.
+- SignTool uses Windows certificate store selection (/sha1, /s My, /sm), never PFX/password arguments.
+- Verifier uses Authenticode plus SignTool verify /pa /all /tw /v. WinTrust must validate the signature and embedded RFC3161 token/chain. Unrecognized timestamp evidence returns TIMESTAMP_VERIFICATION_BLOCKED.
+- TSA endpoint is HTTPS-only. TSA URL is configuration metadata; SignTool/WinTrust validates embedded timestamp cryptographically.
+- Unsigned artifact and original provenance are retained unchanged. Signing produces a separate signed MSIX and metadata.
+- Missing runner leaves sign queued; missing certificate/thumbprint fails closed with CERTIFICATE_PENDING.
