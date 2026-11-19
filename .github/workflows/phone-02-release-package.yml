@@ -99,11 +99,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: phone02-release-signed-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/phone02-signed
-            ${{ runner.temp }}/phone02-unsigned/TokenSaver.Phone02.Supervisor.unsigned.msix
-            ${{ runner.temp }}/phone02-unsigned/evidence/provenance.json
-            ${{ runner.temp }}/phone02-unsigned/evidence/SHA256SUMS
+          path: ${{ runner.temp }}/phone02-signed
           if-no-files-found: error
           retention-days: 30
   verify-signature:
