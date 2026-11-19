@@ -39,20 +39,24 @@ test('unsigned build enforces source integrity, identity checks and provenance',
   assert.ok(builder.includes('Get-FileHash'));
 });
 
-test('signing script requires exact approved Publisher and separately approved certificate fingerprint', () => {
+test('signing script uses the protected Windows certificate store without password inputs', () => {
   for (const marker of ['ExpectedPublisher', 'ExpectedPublisherDisplayName', 'ApprovedThumbprint',
-    'SecurityApprovalSecret', 'Certificate subject does not match approved Publisher',
-    'Certificate fingerprint does not match separately approved fingerprint',
-    'SIGNATURE_VALID=PASS', 'Timestamp verification evidence missing']) {
+    'CERTIFICATE_PENDING', 'SIGNING_BLOCKED', 'HasPrivateKey', 'X509Chain', '1.3.6.1.5.5.7.3.3']) {
     assert.ok(signer.includes(marker), 'missing signing guard: ' + marker);
   }
+  assert.doesNotMatch(signer, /CertificatePassword|CertificatePath|SecurityApprovalSecret|\\/p\\s+\\$/i);
+  assert.match(signer, /Cert:\\\\LocalMachine\\\\My/);
 });
 
-test('release workflow is unsigned-only, Windows x64 and read-only', () => {
+test('release workflow separates build/sign/verify and requires explicit signing opt-in', () => {
   assert.ok(workflow.includes('runs-on: windows-2025'));
   assert.ok(workflow.includes('ref: ${{ github.sha }}'));
   assert.ok(workflow.includes('ExpectedSourceSha $env:GITHUB_SHA'));
   assert.ok(workflow.includes('contents: read'));
   assert.ok(workflow.includes('phone02-release-unsigned-'));
-  assert.doesNotMatch(workflow, /MSIX_CERTIFICATE_BASE64|MSIX_SECURITY_RELEASE_APPROVED|sign-approved:|id-token: write/);
+  assert.ok(workflow.includes('enable_signing:'));
+  assert.ok(workflow.includes('default: false'));
+  assert.ok(workflow.includes('environment:\\n      name: phone-02-signing'));
+  assert.ok(workflow.includes('verify-signature:'));
+  assert.doesNotMatch(workflow, /MSIX_CERTIFICATE_BASE64|MSIX_SECURITY_RELEASE_APPROVED|SecurityApprovalSecret|CertificatePassword|id-token: write/);
 });
