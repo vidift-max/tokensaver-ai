@@ -95,6 +95,9 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'phone02-signed'
           $prov = Get-Content $provenance -Raw | ConvertFrom-Json
           & .\release\phone-02\sign-msix.ps1 -MsixPath $msix -ExpectedPublisher 'CN=TokenSaver Publisher' -ExpectedPublisherDisplayName 'TokenSaver AI' -ApprovedThumbprint $env:APPROVED_THUMBPRINT -ManifestPath $manifest -ProvenancePath $provenance -HashManifestPath $hashes -ExpectedUnsignedSha256 $prov.unsigned_msix_sha256 -TimestampUrl $env:TSA_URL -OutputDirectory $out
+          Copy-Item $msix (Join-Path $out 'TokenSaver.Phone02.Supervisor.unsigned.msix')
+          Copy-Item $provenance (Join-Path $out 'provenance-unsigned.json')
+          Copy-Item $hashes (Join-Path $out 'SHA256SUMS-unsigned')
       - name: Upload signed package, signer metadata and retained unsigned evidence
         uses: actions/upload-artifact@v4
         with:
