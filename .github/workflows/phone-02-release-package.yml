@@ -45,7 +45,7 @@ jobs:
           $version = $env:PACKAGE_VERSION
           if (-not $version) { $version = '0.1.0.0' }
           $out = Join-Path $env:RUNNER_TEMP 'phone02-release-package'
-          & .\\release\\phone-02\\build-unsigned-msix.ps1 -ExpectedSourceSha $env:GITHUB_SHA -Publisher $publisher -PublisherDisplayName $displayName -PackageVersion $version -OutputDirectory $out
+          & .\release\phone-02\build-unsigned-msix.ps1 -ExpectedSourceSha $env:GITHUB_SHA -Publisher $publisher -PublisherDisplayName $displayName -PackageVersion $version -OutputDirectory $out
 
       - name: Upload unsigned MSIX and provenance evidence
         if: always()
