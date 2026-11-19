@@ -126,7 +126,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'phone02-signed'
-          & .\release\phone-02\verify-signature.ps1 -MsixPath (Join-Path $root 'TokenSaver.Phone02.Supervisor.signed.msix') -MetadataPath (Join-Path $root 'signer-metadata.json') -ExpectedPublisher 'CN=TokenSaver Publisher' -ExpectedPublisherDisplayName 'TokenSaver AI' -TimestampUrl 'https://timestamp.digicert.com'
+          & .\release\phone-02\verify-signature.ps1 -MsixPath (Join-Path $root 'TokenSaver.Phone02.Supervisor.signed.msix') -MetadataPath (Join-Path $root 'provenance-signed.json') -ExpectedPublisher 'CN=TokenSaver Publisher' -ExpectedPublisherDisplayName 'TokenSaver AI' -TimestampUrl 'https://timestamp.digicert.com'
       - name: Upload verified release evidence
         uses: actions/upload-artifact@v4
         with:
