@@ -1,0 +1,133 @@
+Você é a IA que está pendente no projeto AI-PHONE-02.
+
+Quero que você entenda primeiro a ideia que estamos estudando antes de qualquer implementação.
+
+1. Prioridade imediata
+
+Antes de criar uma nova arquitetura, quero verificar se conseguimos finalmente estabelecer comunicação real com você através da infraestrutura que já foi preparada para o AI-PHONE-02.
+
+Não quero começar outro projeto se o canal existente puder ser aproveitado.
+
+Faça uma análise do estado atual e responda objetivamente:
+
+- O canal de comunicação existente está funcional?
+- Você consegue receber uma mensagem/missão enviada pelo GPT-6?
+- Você consegue responder e devolver essa resposta ao GPT-6?
+- O que já está implementado?
+- O que está apenas documentado?
+- O que ainda está bloqueado?
+- Qual é o menor teste possível para comprovar comunicação real entre nós?
+
+Não considere algo "funcional" apenas porque existe código ou documentação. Quero evidência de execução real.
+
+2. Ideia que estamos estudando
+
+Se conseguirmos estabelecer essa comunicação, existe uma segunda possibilidade que quero investigar.
+
+A ideia é ter apenas duas IAs trabalhando juntas:
+
+- IA-1 = GPT-6, como coordenador principal;
+- IA-2 = você, como segunda IA.
+
+Não quero começar com 5 ou 10 IAs porque isso aumentaria muito a complexidade e a lentidão.
+
+3. Objetivo
+
+A ideia é permitir que o GPT-6 e a IA-2 trabalhem continuamente em conjunto, enquanto o usuário fica praticamente fora do processo.
+
+O GPT-6 poderia:
+
+1. analisar o projeto;
+2. criar uma missão para a IA-2;
+3. enviar essa missão;
+4. receber a resposta da IA-2;
+5. analisar o resultado;
+6. criar a próxima missão;
+7. repetir o ciclo.
+
+A IA-2 executaria as tarefas atribuídas e devolveria evidências/resultados.
+
+4. Ideia futura de controle do tablet
+
+Também estamos estudando uma possibilidade mais avançada.
+
+Em vez de simplesmente transportar mensagens entre duas IAs, queremos que um controlador no tablet possa funcionar como as "mãos" do GPT-6.
+
+Ele poderia, por exemplo:
+
+- visualizar a tela;
+- clicar/tocar;
+- digitar;
+- abrir um navegador;
+- trocar de navegador;
+- copiar texto;
+- colar texto;
+- ler uma resposta;
+- voltar para outra sessão;
+- executar a próxima ação.
+
+A ideia seria que o controlador pudesse operar uma sessão do ChatGPT da mesma forma que o usuário faria manualmente.
+
+5. Possível arquitetura
+
+No futuro poderíamos ter:
+
+Tablet
+→ Navegador/Sessão 1 = GPT-6
+→ Navegador/Sessão 2 = IA-2
+
+O controlador seria responsável por alternar entre as duas sessões.
+
+Exemplo:
+
+GPT-6
+→ cria missão
+→ controlador leva missão para IA-2
+→ IA-2 trabalha
+→ controlador captura a resposta
+→ devolve ao GPT-6
+→ GPT-6 analisa
+→ cria próxima missão
+→ repete.
+
+Tudo seria feito uma IA por vez, evitando que duas IAs tentem controlar o mesmo dispositivo simultaneamente.
+
+6. Autonomia
+
+O objetivo final seria que esse processo pudesse continuar por longos períodos sem o usuário precisar ficar manualmente copiando e colando mensagens.
+
+O usuário apenas iniciaria ou autorizaria a missão e poderia acompanhar quando quisesse.
+
+Porém, não quero que você presuma que isso já é tecnicamente possível.
+
+Quero que você investigue primeiro.
+
+7. Regras
+
+Não invente capacidades que não estejam comprovadas.
+
+Separe claramente:
+
+- IMPLEMENTADO;
+- FUNCIONANDO E TESTADO;
+- NÃO TESTADO;
+- BLOQUEADO;
+- PROPOSTA FUTURA.
+
+Não faça alterações destrutivas.
+
+Não faça merge, deploy, reset ou force-push sem autorização explícita.
+
+8. Sua primeira tarefa
+
+Ignore a implementação da arquitetura futura por enquanto.
+
+Primeiro responda:
+
+CONSEGUIMOS OU NÃO CONSEGUIMOS ESTABELECER UM CANAL REAL DE COMUNICAÇÃO ENTRE GPT-6 E VOCÊ COM O QUE JÁ EXISTE?
+
+Se sim, mostre a evidência.
+
+Se não, identifique exatamente o bloqueio e diga qual é o menor próximo passo necessário para testar a comunicação.
+
+A prioridade agora é conectar você ao GPT-6, não construir uma arquitetura nova.
