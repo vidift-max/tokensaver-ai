@@ -1,0 +1,117 @@
+PROJETO AI AUDIO BRIDGE — COMUNICAÇÃO POR VOZ ENTRE DUAS IAs NO TABLET ANDROID
+
+Você participará do planejamento e desenvolvimento de uma solução para permitir que duas instâncias do ChatGPT conversem por voz continuamente, utilizando o mesmo tablet Android.
+
+1. Objetivo principal
+
+Queremos preparar o tablet para manter duas sessões do ChatGPT funcionando simultaneamente:
+
+- ChatGPT aberto no navegador.
+- ChatGPT aberto no aplicativo oficial instalado pela Play Store.
+
+A intenção é permitir que uma IA escute a outra, converse, responda e trabalhe em conjunto, sem que o usuário precise alternar manualmente entre os aplicativos.
+
+2. Hierarquia das duas IAs
+
+IA 1 — Líder (ChatGPT no navegador)
+
+- Será a responsável por coordenar o trabalho.
+- Dará orientações e instruções.
+- Supervisionará as respostas da segunda IA.
+- Receberá os resultados e decidirá os próximos passos.
+- Deverá permanecer funcionando com a aba do navegador minimizada, se tecnicamente possível.
+
+IA 2 — Executora (ChatGPT no aplicativo)
+
+- Receberá as instruções da IA líder.
+- Responderá por voz.
+- Executará as tarefas solicitadas.
+- Comunicará resultados, dúvidas e dificuldades à IA líder.
+
+3. Funcionamento desejado
+
+Queremos estabelecer um canal de comunicação por áudio:
+
+1. A IA líder fala pelo navegador.
+2. A IA executora escuta essa fala pelo aplicativo.
+3. A IA executora responde.
+4. A IA líder escuta a resposta.
+5. A IA líder continua orientando.
+6. O processo se repete automaticamente.
+
+O objetivo é criar uma conversa contínua entre as duas IAs.
+
+O usuário poderá acompanhar, intervir e dar novas instruções quando desejar, mas não precisará ficar alternando entre os aplicativos para manter a comunicação.
+
+4. Projeto a desenvolver
+
+Nome provisório: AI Audio Bridge.
+
+Queremos estudar e, se tecnicamente possível, desenvolver um aplicativo Android próprio que funcione como central de áudio.
+
+Funções desejadas:
+
+- Gerenciamento das sessões de áudio.
+- Distribuição do áudio entre as duas IAs.
+- Comunicação bidirecional.
+- Funcionamento em segundo plano.
+- Controle de volume.
+- Monitoramento das sessões.
+- Prevenção de eco e realimentação de áudio.
+- Indicadores de atividade e conexão.
+- Recuperação de falhas de áudio.
+
+5. Ambiente disponível
+
+O equipamento inicial é um Samsung Galaxy A10 com Android 11.
+
+Restrições:
+
+- Não utilizar root.
+- Não desbloquear o bootloader.
+- Não comprometer o funcionamento do aparelho.
+- Não remover os aplicativos existentes.
+- Priorizar ferramentas gratuitas.
+- Não contratar APIs pagas sem autorização.
+- Preservar as sessões oficiais do ChatGPT.
+
+6. Investigação técnica obrigatória
+
+Antes de desenvolver, investigar:
+
+1. Se o Android 11 permite manter as duas sessões de voz ativas.
+2. Se o navegador consegue continuar transmitindo e recebendo áudio com a aba minimizada.
+3. Se o aplicativo oficial consegue permanecer em conversa por voz em segundo plano.
+4. Se é possível capturar e distribuir o áudio das duas sessões.
+5. Quais limitações existem no Android Audio Focus e Audio Playback Capture.
+6. Se existem alternativas legais e tecnicamente viáveis sem root.
+7. Se podemos implementar a solução como APK próprio.
+
+Não presumir que o Android permite injetar áudio diretamente nos microfones dos aplicativos.
+
+Se a arquitetura original não funcionar, apresentar alternativas antes de abandonar o objetivo.
+
+7. Regras de desenvolvimento
+
+- Não instalar nada no aparelho sem autorização.
+- Não alterar configurações críticas sem autorização.
+- Não afirmar que uma função funciona sem testes.
+- Separar claramente o que foi implementado, testado e comprovado no aparelho físico.
+- Não substituir a comunicação por voz por uma simples troca de textos sem autorização.
+- Não criar dependência de serviços pagos sem aprovação.
+
+8. Primeira missão
+
+Realizar uma avaliação técnica completa e apresentar:
+
+- Arquitetura recomendada.
+- Viabilidade no Android 11.
+- Limitações identificadas.
+- Componentes necessários.
+- Plano de desenvolvimento.
+- Plano de testes no Galaxy A10.
+- Critérios objetivos para aprovar ou rejeitar a solução.
+
+Trabalhar em 10 rodadas de análise e implementação planejada, consolidando os resultados.
+
+Resultado final pretendido: duas instâncias reais do ChatGPT conversando por voz, com o ChatGPT do navegador como líder e o ChatGPT do aplicativo como executora, utilizando o mesmo tablet, sem intervenção manual constante do usuário.
