@@ -59,9 +59,28 @@ services:
     networks:
       - team-room-private
 
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      TEAM_ROOM_DOMAIN: ${TEAM_ROOM_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.first-contact:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - team-room
+    networks:
+      - team-room-private
+
 networks:
   team-room-private:
     driver: bridge
 
 volumes:
   team_room_postgres:
+  caddy_data:
+  caddy_config:
