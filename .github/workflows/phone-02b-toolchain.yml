@@ -1,0 +1,38 @@
+name: Phone-02B pinned toolchain validation
+
+on:
+  push:
+    branches:
+      - fix/phone-02b-rustfmt-p2-71
+  pull_request:
+    branches:
+      - v2-saas-alpha
+    paths:
+      - "services/ai-team-room/**"
+      - ".github/workflows/phone-02b-toolchain.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  phone-02b-toolchain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt
+      - name: Verify pinned toolchain versions
+        run: |
+          set -euo pipefail
+          rustc --version | tee /tmp/rustc-version.txt
+          cargo --version | tee /tmp/cargo-version.txt
+          rustfmt --version | tee /tmp/rustfmt-version.txt
+          grep -Eq "^rustc 1\.100\.0([[:space:]]|$)" /tmp/rustc-version.txt
+          grep -Eq "^cargo 1\.100\.0([[:space:]]|$)" /tmp/cargo-version.txt
+          grep -Eq "^rustfmt 1\.11\.0(-stable)?([[:space:]]|$)" /tmp/rustfmt-version.txt
+      - name: Check formatting without modifying source
+        continue-on-error: true
+        run: cargo fmt --manifest-path services/ai-team-room/Cargo.toml -- --check
+      - name: Check service compilation
+        run: cargo check --manifest-path services/ai-team-room/Cargo.toml

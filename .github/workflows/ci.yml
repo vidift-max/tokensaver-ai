@@ -7,9 +7,17 @@ concurrency:
 
 on:
   push:
-    branches: [v2-saas-alpha]
+    branches:
+      - v2-saas-alpha
+      - fix/phone-message-inbox-ack-filter
+      - security/phone-02-mission-authorization
+      - security/phone-02-encrypted-result-store
+      - security/phone-02-os-key-provider
+      - security/phone-02-windows-acl
   pull_request:
-    branches: [v2-saas-alpha]
+    branches:
+      - v2-saas-alpha
+      - mission/phone-02-first-contact-pair-auth
 
 jobs:
   foundation:
@@ -37,6 +45,14 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run test:missions
+      - run: npm run test:phone-runtime
+      - run: npm run test:phone-worker
+      - run: npm run test:phone-store
+      - run: npm run test:phone-key-provider
+      - run: npm run test:phone-windows-acl
+      - run: npm run test:phone-envelope
+      - run: npm run test:phone-authorizer
+      - run: npm run test:phone-bootstrap
       - run: npm run build
       - name: Package source ZIP
         run: zip -r tokensaver-ai-v2-saas-alpha.zip . -x ".git/*" "node_modules/*" "src-tauri/target/*" "dist/*" "*/node_modules/*" "*/target/*"
@@ -78,6 +94,16 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm install
       - run: npm run test:missions
+      - run: npm run test:phone-runtime
+      - run: npm run test:phone-worker
+      - name: Probe Windows temporary PowerShell PS1 transport independently
+        run: node --test --test-reporter=spec tests/phone-powershell-ps1.test.mjs
+      - run: npm run test:phone-store
+      - run: npm run test:phone-windows-acl
+      - run: npm run test:phone-key-provider
+      - run: npm run test:phone-envelope
+      - run: npm run test:phone-authorizer
+      - run: npm run test:phone-bootstrap
       - run: npm run build
 
 
@@ -101,7 +127,9 @@ jobs:
       DATABASE_URL: postgres://team_room:ci-only-password@localhost:5432/team_room_test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt
       - name: Check independent service
         run: cargo check --manifest-path services/ai-team-room/Cargo.toml
       - name: Run service unit and PostgreSQL integration tests

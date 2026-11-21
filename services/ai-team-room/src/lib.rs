@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod phone;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -196,7 +197,11 @@ pub async fn admit_authenticated_participant(
     .await?;
 
     let event_id = Uuid::new_v4();
-    let action = if reconnected { "participant.reconnected" } else { "participant.admitted" };
+    let action = if reconnected {
+        "participant.reconnected"
+    } else {
+        "participant.admitted"
+    };
     let metadata = serde_json::json!({
         "room_id": room_id,
         "participant_id": participant_id,
@@ -286,7 +291,10 @@ pub async fn leave_participant(
 }
 
 pub async fn readiness(pool: &PgPool) -> bool {
-    sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool).await.is_ok()
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(pool)
+        .await
+        .is_ok()
 }
 
 pub fn utc_now() -> DateTime<Utc> {
