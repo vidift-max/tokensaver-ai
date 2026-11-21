@@ -54,8 +54,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_started
-    ports:
-      - "8081:8081"
+    expose:
+      - "8081"
     networks:
       - team-room-private
 
