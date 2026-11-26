@@ -83,7 +83,11 @@ function Export-SanitizedKeycloakStartup([string]$stdoutPath,[string]$stderrPath
 }
 function Start-R5Keycloak([string]$kcBat,[string]$kcHomePath,[string]$cert,[string]$key,[bool]$importRealm,[bool]$bootstrapAdmin){
  $env:KC_HEALTH_ENABLED='true';$env:KC_HTTP_ENABLED='false';$env:KC_HTTPS_PORT='8443'
- $env:KC_HTTPS_CERTIFICATE_FILE=$cert.Replace('\','/');$env:KC_HTTPS_CERTIFICATE_KEY_FILE=$key.Replace('\','/')
+  $certPath = [IO.Path]::GetFullPath($cert).Replace([char]92,[char]47)
+  $keyPath = [IO.Path]::GetFullPath($key).Replace([char]92,[char]47)
+  if ($certPath.Contains([char]92) -or $keyPath.Contains([char]92)) { throw 'KEYCLOAK_TLS_PATH_NORMALIZATION_FAILED' }
+  $env:KC_HTTPS_CERTIFICATE_FILE=$certPath
+  $env:KC_HTTPS_CERTIFICATE_KEY_FILE=$keyPath
  $env:KC_HOSTNAME='https://keycloak.p238.test:8443';$env:KC_HOSTNAME_STRICT='true'
  $env:KC_DB='postgres';$env:KC_DB_URL_HOST='127.0.0.1';$env:KC_DB_URL_PORT='5432';$env:KC_DB_URL_DATABASE=$pgDatabase
  $env:KC_DB_USERNAME='postgres';$env:KC_DB_PASSWORD=$pgPassword
