@@ -124,10 +124,13 @@ jobs:
           foreach ($pattern in @('RPC_C_AUTHN_WINNT','RPC_C_AUTHN_LEVEL_PKT_PRIVACY','TokenIsAppContainer','TokenAppContainerSid','APPCONTAINER_SID_PIN_MISMATCH','PACKAGE_FULL_PIN_MISMATCH','SameIdentity\(','nonceUsed','ConstantEqual\(','RPC_CLIENT_APPCONTAINER_SID','RPC_CLIENT_USER_SID')) {
             if ($supervisor -notmatch $pattern) { throw "IDENTITY_BINDING_STATIC_MISSING_$pattern" }
           }
+          if ($harness -notmatch '\$certPath\s*=\s*\[IO\.Path\]::GetFullPath\(\$cert\)\.Replace\(\[char\]92,\[char\]47\)' -or $harness -notmatch '\$keyPath\s*=\s*\[IO\.Path\]::GetFullPath\(\$key\)\.Replace\(\[char\]92,\[char\]47\)') { throw 'R5_TLS_PATH_NORMALIZATION_STATIC_FAIL' }
+          $pathProbe = [IO.Path]::GetFullPath('C:\phone02-r5\keycloak-good.crt').Replace([char]92,[char]47)
+          if ($pathProbe -cne 'C:/phone02-r5/keycloak-good.crt') { throw 'R5_TLS_PATH_NORMALIZATION_TEST_FAIL' }
           if ($workflow -notmatch 'if: false # Disabled until identity-binding and security gates are explicitly approved\.' -or $workflow -notmatch 'if: false # Runtime integration is disabled; do not manufacture an R5 verdict\.') { throw 'R5_RUNTIME_GUARD_MISSING' }
           if ($rpcIdl -notmatch 'void TeamRoomScenario' -or $rpcIdl -match 'void TeamRoomScenario\([^)]*(token|secret|bearer|operator_key|ai_phone_id|credential)' -or $rpcClient -match 'OIDC_ACCESS_TOKEN|CLIENT_SECRET|ENDPOINT_CREDENTIAL|OPERATOR_KEY|AI_PHONE_ID') { throw 'OIDC_RPC_SECRET_OR_CALLER_ID_BOUNDARY_STATIC_FAIL' }
           if ($supervisor -notmatch 'TEAM_ROOM_AUTH_EXCHANGE_CALLED=NO' -or $supervisor -notmatch 'realTeamRoomSessionAuthenticated=false' -or $supervisor -notmatch 'RPC_AUTH_EXCHANGE_CALLED=NO') { throw 'OIDC_RPC_BINDING_NOT_IMPLEMENTED_MARKERS_MISSING' }
-          @('F1_REVERTTOSELF=PASS','F2_OIDC_RPC_MARKERS=PASS','F3_HTTP_OWNER_FAIL_CLOSED=PASS','IDENTITY_BINDING_STATIC=PASS','OIDC_RPC_SECRET_BOUNDARY_STATIC=PASS','OIDC_RPC_BINDING=NOT_IMPLEMENTED','R5_RUNTIME_GUARD=PASS') | Out-File "$env:RUNNER_TEMP/r5-static-gates.txt"
+          @('F1_REVERTTOSELF=PASS','F2_OIDC_RPC_MARKERS=PASS','F3_HTTP_OWNER_FAIL_CLOSED=PASS','IDENTITY_BINDING_STATIC=PASS','OIDC_RPC_SECRET_BOUNDARY_STATIC=PASS','R5_TLS_PATH_NORMALIZATION=PASS','OIDC_RPC_BINDING=NOT_IMPLEMENTED','R5_RUNTIME_GUARD=PASS') | Out-File "$env:RUNNER_TEMP/r5-static-gates.txt"
       - name: Run real R5 HTTPS Keycloak client_credentials and DPAPI-NG integration
         if: false # Disabled until identity-binding and security gates are explicitly approved.
         shell: pwsh
