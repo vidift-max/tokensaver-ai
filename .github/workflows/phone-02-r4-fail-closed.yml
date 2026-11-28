@@ -153,7 +153,7 @@ jobs:
           name: phone02-p238b-r4-fail-closed-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/phone02-p238a-evidence
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90
 
       - name: Record R4 artifact locator and digest
         if: always()
